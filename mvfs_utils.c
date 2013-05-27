@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2006. */
+/* * (C) Copyright IBM Corporation 1990, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_utils.c */
 #include "mvfs_systm.h"
 #include "mvfs.h"
@@ -544,6 +544,7 @@ mfs_uniq_name()
     s = newstr = (char *)KMEM_ALLOC(15, KM_NOSLEEP);
     if (s == NULL) return(s);	/* No memory */
 
+
     if (mfs_uid == 0) uid = MDKI_CTIME();
     SPLOCK(mvfs_uniqlock, sp);
     if (mfs_uid == 0) mfs_uid = uid;	/* Set to a uniq value on boot */
@@ -981,9 +982,10 @@ STATIC void *printf_filp;
 extern int mvfs_cnprint_delay;
 
 int
-mvfs_logfile_set(logfile, cred)
-char *logfile;
-CRED_T *cred;
+mvfs_logfile_set(
+    char *logfile,
+    CALL_DATA_T *cd
+)
 {
     int error;
     CLR_VNODE_T *newvp;
@@ -997,19 +999,20 @@ CRED_T *cred;
 
     MVFS_LOCK(&mvfs_printf_lock);
     error = LOOKUP_FOR_IOCTL(lfname, UIO_SYSSPACE, FOLLOW_LINK,
-			     0, NULL, &newvp, cred);
+			     0, NULL, &newvp, cd);
     if (error == 0) {
 	if (MFS_VPISMFS(MVFS_CVP_TO_VP(newvp))) {
 	    error = EINVAL;
 	} else if (!MVFS_ISVTYPE(MVFS_CVP_TO_VP(newvp), VREG)) {
 	    error = EISDIR;
 	} else
-	    error = MVOP_OPEN_KERNEL(&newvp, FWRITE, cred, &tmp_printf_filp);
+	    error = MVOP_OPEN_KERNEL(&newvp, FWRITE, MVFS_CD2CRED(cd),
+                                     &tmp_printf_filp);
 
 	if (error == 0) {
 	    if (mvfs_printf_logvp != 0) {
 		MVOP_FSYNC_KERNEL(MVFS_CVP_TO_VP(mvfs_printf_logvp),
-                                  FLAG_DATASYNC, cred, printf_filp);
+                                  FLAG_DATASYNC, MVFS_CD2CRED(cd), printf_filp);
 		(void) MVOP_CLOSE_KERNEL(mvfs_printf_logvp, FWRITE,
                                          MVFS_LASTCLOSE_COUNT,
                                          (MOFFSET_T)0, printf_log_cred,
@@ -1027,7 +1030,7 @@ CRED_T *cred;
 	    /* and don't free it... */
 	    lfname = NULL;
 	    printf_loglen = STRLEN(logfile)+1;
-	    printf_log_cred = MDKI_CRDUP(cred); /* take private copy */
+	    printf_log_cred = MDKI_CRDUP(MVFS_CD2CRED(cd)); /* take private copy */
 	} else {
 	    CVN_RELE(newvp);
 	}
@@ -1088,7 +1091,7 @@ int nofileoffset;
     struct uio uios;
     IOVEC_T iov;
     struct uio *uiop;
-    VATTR_T *vap;
+    VATTR_T *vap = NULL;
     int error = 0;
 
     if (mvfs_printf_logvp == NULL) {
@@ -1101,11 +1104,12 @@ int nofileoffset;
 	return;
     }
 
-    if ((vap = VATTR_ALLOC()) == NULL) {
+    if ((vap = MVFS_VATTR_ALLOC()) == NULL) {
         MVFS_REAL_PRINTF("mvfs_logfile_putstr: failed to allocate a struct "
                          "vattr for use by subsequent code.");
 	return;
     }
+
     MVFS_LOCK(&mvfs_printf_lock);
     uiop = &uios;
     uios.uio_iov = &iov;
@@ -1127,10 +1131,14 @@ int nofileoffset;
   cleanup:
     MVFS_UNLOCK(&mvfs_printf_lock);
     MVFS_FREE_VATTR_FIELDS(vap); /* free sids if copied in getattr */
-    VATTR_FREE(vap);
+    MVFS_VATTR_FREE(vap);
     return;
 }
 
+#if defined(ATRIA_WIN32_COMMON) && defined(ATRIA_NT_60)
+/* Export for Windows to share with minifilter */
+__declspec(dllexport)
+#endif
 void
 mvfs_log(
     int pri,
@@ -1465,4 +1473,43 @@ mvfs_ensure_power2(int n)
     return size;
 }
 
-static const char vnode_verid_mvfs_utils_c[] = "$Id:  76a368ac.66ba11dc.9bbb.00:01:83:09:5e:0d $";
+/*
+ * MVFS_BUMPTIME - keep statistics on real time.  This routine takes the
+ * start time which is passed in as the first arg.  It reads in the current
+ * time into the second arg and computes the delta between those.  This delta
+ * is added to the total time which is the third arg to this.  This routine
+ * can be used to keep a running total of delta times as well as returning
+ * the current delta, or it can just be used to compute the current delta
+ * by setting the third arg to 0.  This routine assumes the caller is taking
+ * care of syncronizing access to the total time by locking or disabling
+ * preemption.  This routine assumes that tvp->tv_nsec is canonical.
+ */
+
+void
+mvfs_bumptime(
+    timestruc_t *stp,
+    timestruc_t *dtp,
+    timestruc_t *tvp
+)
+{
+    MDKI_HRTIME(dtp);
+
+    /*
+     * Calculate time operation took.
+     */
+
+    if ((dtp->tv_nsec -= stp->tv_nsec) < 0) {
+        dtp->tv_nsec += 1000000000;
+        dtp->tv_sec--;
+    }
+    dtp->tv_sec -= stp->tv_sec;
+
+    if ((tvp->tv_nsec += dtp->tv_nsec) >= 1000000000) {
+        tvp->tv_nsec -= 1000000000;
+        tvp->tv_sec++;
+    }
+    tvp->tv_sec += dtp->tv_sec;
+
+    return;
+}
+static const char vnode_verid_mvfs_utils_c[] = "$Id:  63dbe5cb.dc5411df.9210.00:01:83:0a:3b:75 $";

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2008 IBM Corporation.
+ * Copyright (C) 1999, 2011 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,29 +28,21 @@
 #include "mvfs_linux_shadow.h"
 #include <linux/delay.h>
 #include <linux/seq_file.h>
-#ifdef RATL_COMPAT32
+#if defined(RATL_COMPAT32) && LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
 /*
  * For 64-bit kernels, include the definitions for ioctl 32-bit
- * compatibility.
+ * compatibility,  Since 2.6.22 compat.c and compat_ioctl.c were
+ * unified, and ioctl32.h was removed.
  */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 # include <linux/ioctl32.h>
-#else
-/* only x86_64 supported in 64-bit mode on 2.4.x kernels */
-# include <asm/ioctl32.h>
-#endif /* 2.6 vs. other */
 #endif /* RATL_COMPAT32 */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 #include <linux/swap.h>
-#endif
 
-STATIC kmem_cache_t *vnlayer_cred_cache;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+STATIC MVFS_KMEM_CACHE_T *vnlayer_cred_cache;
 /* Defined here because we initialize it below, but it is used in
 ** mvfs_linux_sops.c
 */
-kmem_cache_t *vnlayer_vnode_cache;
-#endif
+MVFS_KMEM_CACHE_T *vnlayer_vnode_cache;
 
 #ifdef MVFS_DEBUG
 #if defined(__i386__)
@@ -67,16 +59,12 @@ mdki_linux_chksp(
     unsigned long val
 )
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    int sleft = get_sp() - (char *)(&current->self_exec_id);
-#else
     /* In Linux 2.6 they moved the struct task_struct out of the stack pages
     ** and now there is just an 8 word struct thread_info there (the first word
     ** of which points to the task_struct).  Therefore, we need to do a
     ** slightly different check.
     */
     int sleft = get_sp() - ((char *)current_thread_info() + sizeof(struct thread_info));
-#endif
     if (sleft  < 400) {
         printk("stack check %ld too low\n", val);
         BUG();
@@ -231,24 +219,12 @@ static const char vnlayer_device_name[] = "mvfs";
 STATIC int
 vnlayer_register_blkdev(int dev)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    /*
-     * vnlayer_device_ops points to operations that allow open, but don't
-     * allow any real operations on the device file.
-     *
-     * We need to provide a file_ops pointer, since register_blkdev
-     * uses that to keep track of whether a device number has been used
-     * or not.
-     */
-    dev = register_blkdev(dev, vnlayer_device_name, &vnlayer_device_ops);
-#else
     /*
      * register_blkdev no longer needs the
      * device_ops ptr and it returns a major number just the same.
      * Without operations, the device cannot be opened (fails with ENXIO).
      */
     dev = register_blkdev(dev, vnlayer_device_name);
-#endif
     return dev;
 }
 
@@ -287,11 +263,6 @@ mdki_linux_periodic_error_cnt = 0;
 mdki_linux_emomem_generated = 0;
 #endif
 
-#ifndef __GFP_NOFAIL
-/* 2.4.x */
-#define __GFP_NOFAIL 0
-#endif
-
 extern void *
 mdki_linux_kmalloc(
     size_t size,
@@ -307,10 +278,15 @@ mdki_linux_kmalloc(
 	return NULL;
     }
 #endif
-    if (size > SIZE_BRKPOINT)
+    if (size > SIZE_BRKPOINT) {
          ptr = vmalloc(size);
-     else
+    } else {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
          ptr = kmalloc(size, flag == KM_SLEEP ? (GFP_KERNEL|__GFP_NOFAIL) : GFP_ATOMIC);
+#else
+         ptr = kmalloc(size, flag == KM_SLEEP ? GFP_KERNEL : GFP_ATOMIC);
+#endif
+    }
     return(ptr);
 }
 
@@ -395,7 +371,7 @@ vnlayer_hijack_root_inode(void)
 #ifdef USE_ROOTALIAS_CURVIEW
     LOCK_INODE(vnlayer_sysroot_dentry->d_inode);
     if (vnlayer_original_root_iops == NULL) {
-        vnlayer_original_root_iops = vnlayer_sysroot_dentry->d_inode->i_op;
+        vnlayer_original_root_iops = (struct inode_operations *) vnlayer_sysroot_dentry->d_inode->i_op;
         vnlayer_root_iops_copy = *vnlayer_original_root_iops;
         vnlayer_hijacked_iops = vnlayer_root_iops_copy;
         vnlayer_hijacked_iops.lookup = &vnlayer_hijacked_lookup;
@@ -529,6 +505,7 @@ vnlayer_get_view_dentry(
     ASSERT(tmp && tmp->d_inode == vwip);
     return tmp;
 }
+
 
 #ifdef USE_ROOTALIAS_CURVIEW
 
@@ -916,9 +893,13 @@ mdki_linux_procexists(
     mdki_boolean_t exists = TRUE;
     mvfs_process_t *task;
 
-    read_lock(&tasklist_lock);
+    MDKI_TASKLIST_LOCK();
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     task = (mvfs_process_t *)find_task_by_pid(pid);
-    read_unlock(&tasklist_lock);
+#else
+    task = (mvfs_process_t *)pid_task(find_pid_ns(pid, &init_pid_ns), PIDTYPE_PID);
+#endif
+    MDKI_TASKLIST_UNLOCK();
     if ((task == NULL) || ((proc != NULL) && (proc != task)))
         exists = FALSE;
     return(exists);
@@ -1162,29 +1143,23 @@ mdki_linux_set_vobrt_vfsmnt(const char *vpath)
     VFS_T *vfsp;
     VNODE_T *rootvp;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    err = path_init(vpath, LOOKUP_FOLLOW, &nd);
-    /* path_init returns 0 if did emulated path_walk, otherwise 1 */
-    if (err) err = path_walk(vpath, &nd);
-#else
     /* path_lookup() now does all the work. */
     err = path_lookup(vpath, LOOKUP_FOLLOW, &nd);
-#endif
     if (!err) {
-        if (!MDKI_SBISMVFS(nd.dentry->d_sb))
+        if (!MDKI_SBISMVFS(MDKI_NAMEI_DENTRY(&nd)->d_sb))
             err = -EINVAL;
         else {
-            vfsp = SBTOVFS(nd.dentry->d_sb);
+            vfsp = SBTOVFS(MDKI_NAMEI_DENTRY(&nd)->d_sb);
             err = VFS_ROOT(vfsp, &rootvp);
             err = mdki_errno_unix_to_linux(err);
             if (err == 0) {
                 ASSERT(!VTOVFSMNT(rootvp));
-                SET_VTOVFSMNT(rootvp, MDKI_MNTGET(nd.mnt));
+                SET_VTOVFSMNT(rootvp, MDKI_MNTGET(MDKI_NAMEI_MNT(&nd)));
                 VN_RELE(rootvp);
             }
         }
     }
-    path_release(&nd);
+    MDKI_PATH_RELEASE(&nd);
     return vnlayer_errno_linux_to_unix(err);
 }
 
@@ -1254,15 +1229,10 @@ mdki_linux_vattr_pullup(
     if (mask & AT_NODEID)
         ip->i_ino = VATTR_GET_NODEID(vap);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    if (mask & AT_FSID)
-        ip->i_dev = VATTR_GET_FSID(vap);
-#else
     /* There is no longer a i_dev field in the 2.6 kernel.  We now do the right
     ** thing in vnode_iop_getattr by putting the fsid into the struct kstat
     ** that we return there.
     */
-#endif
 
 #define GET(lll,UUU)                            \
     if (mask & AT_ ## UUU)                      \
@@ -1281,13 +1251,11 @@ mdki_linux_vattr_pullup(
     }
 #endif
     GET(blocks,NBLOCKS);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 #undef GET
 #define GET(lll, UUU)                                    \
     if (mask & AT_ ## UUU) {                             \
         VATTR_GET_ ## UUU ## _TS(vap, &(ip->i_ ## lll)); \
     }
-#endif
     GET(atime,ATIME);
     GET(mtime,MTIME);
     GET(ctime,CTIME);
@@ -1353,6 +1321,7 @@ mdki_make_sysroot_vnode(void)
     return scvp;
 }
 
+
 extern void
 mdki_release_sysroot_vnode(VNODE_T *sysrootvp)
 {
@@ -1372,20 +1341,12 @@ mdki_makevfsdev(
 {
     SUPER_T *sb;
     sb = VFSTOSB(vfsp);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     /*
      * To make NFS exports work, the device in sb_dev needs to be the
      * same as the view-extended results.  Do that with the
      * "other-view" device number.
      */
     sb->s_dev = MKDEV(major, minor);
-#else
-    /* 2.4: use standard method */
-    if (nvminor == -1)
-        sb->s_dev = MKDEV(major, minor);
-    else
-        sb->s_dev = MKDEV(nvmajor, nvminor);
-#endif
     return;
 }
 
@@ -1403,12 +1364,11 @@ mdki_mark_vfs_dirty(VFS_T *vfsp)
     SUPER_T *sb;
 
     /*
-     * As of kernel 2.4.8 we have to treat the viewroot s_dirty flag with a
-     * little more respect.  We can no longer just set it as dirty and leave
-     * it alone so that file system sync routines can be called on every sync.
-     * If we do that, we will hang because linux rewrote the loop so that it
-     * won't move on until the dirty bit is cleared.  So we will now have to
-     * set it when the file system asks us to.
+     * We cannot just set the viewroot s_dirty flag as dirty and leave it 
+     * alone so that file system sync routines can be called on every sync.  
+     * If we do that, we will hang because linux rewrote the loop that calls
+     * us so that it won't move on until the dirty bit is cleared.  So we will 
+     * now have to set it when the file system asks us to.
      */
 
     /* XXX You would think that there would be some locking needed
@@ -1422,11 +1382,7 @@ mdki_mark_vfs_dirty(VFS_T *vfsp)
 extern u_long
 mdki_physmem_pagecnt(void)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     return totalram_pages;
-#else
-    return max_mapnr;
-#endif
 }
 
 extern int
@@ -1439,11 +1395,7 @@ mdki_set_accessed(
     int err;
 
     attr.ia_valid = ATTR_ATIME;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    attr.ia_atime = VATTR_GET_ATIME(vap);
-#else
     VATTR_GET_ATIME_TS(vap, &(attr.ia_atime));
-#endif
     err = inode_setattr(VTOI(vp), &attr);
     return vnlayer_errno_linux_to_unix(err);
 }
@@ -1457,11 +1409,7 @@ mdki_set_ichg(
     struct iattr attr;
     int err;
     attr.ia_valid = ATTR_CTIME;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    attr.ia_ctime = VATTR_GET_CTIME(vap);
-#else
     VATTR_GET_CTIME_TS(vap, &(attr.ia_ctime));
-#endif
     err = inode_setattr(VTOI(vp), &attr);
     return vnlayer_errno_linux_to_unix(err);
 }
@@ -1476,11 +1424,7 @@ mdki_set_modified(
     int err;
 
     attr.ia_valid = ATTR_MTIME;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    attr.ia_mtime = VATTR_GET_MTIME(vap);
-#else
     VATTR_GET_MTIME_TS(vap, &(attr.ia_mtime));
-#endif
     err = inode_setattr(VTOI(vp), &attr);
     return vnlayer_errno_linux_to_unix(err);
 }
@@ -1498,16 +1442,10 @@ mdki_set_vfs_opvec(struct vfsops *vfsopp)
 extern int
 mdki_suser(void)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    return(suser());
-#else
-    /* XXX We probably shouldn't do the euid check, but I'm not sure how we
-    ** should really use the capable stuff.  There is a PF_SUPERPRIV flag in
-    ** current->flags, but I can't see that anybody sets it for 2.6 (suser
-    ** did for 2.4).
+    /* capable() sets the PF_SUPERPRIV flag for this process and returns 1
+    ** if we have CAP_SYS_ADMIN rights.
     */
-    return(capable(CAP_SYS_ADMIN) || (current->euid == 0));
-#endif
+    return(capable(CAP_SYS_ADMIN) || (MDKI_GET_CURRENT_EUID() == 0));
 }
 
 extern int
@@ -1545,79 +1483,6 @@ mdki_vpismfs(VNODE_T *vp)
         return FALSE;
     return MDKI_INOISMVFS(VTOI(vp));
 }
-
-#if 0
-/*
- * i_mapping swap only works for ext2 resident files: NFS uses the
- * file pointer and cannot tolerate being a backing storage for our
- * mapped nodes.  Revert Linux 2.4 to the file-swapping game at map
- * time (sigh).
- */
-
-/*
- * These functions are called around the changing of cltxt, mostly to
- * set it to NULL but potentially to a recently-COWed container file
- * during an open.
- */
-extern void
-mdki_linux_stop_paging(
-    VNODE_T *vp
-)
-{
-    VNODE_T *cvp;
-    INODE_T *ip = VTOI(vp);
-    /* XXX what locking around this stuff? */
-
-    ASSERT(MDKI_INOISMVFS(ip));
-    cvp = MFS_CVP(vp);
-
-    if (!cvp) {
-        /* if no cltxt, mapping must be set to our own stuff */
-        ASSERT(ip->i_mapping == &ip->i_data);
-        return;
-    }
-    if (vp->v_type != VREG) {
-        /* if not a regular file, just return */
-        return;
-    }
-    /* If a cltxt, the mapping must be ours or the cltxt's */
-    ASSERT(ip->i_mapping == &ip->i_data ||
-           ip->i_mapping == VTOI(cvp)->i_mapping);
-
-    /* XXX flush pages? */
-    ip->i_mapping = &ip->i_data;
-}
-
-extern void
-mdki_linux_start_paging(
-    VNODE_T *vp
-)
-{
-    VNODE_T *cvp;
-    INODE_T *ip = VTOI(ip);
-
-    /* XXX what locking around this stuff? */
-
-    ASSERT(MDKI_INOISMVFS(vp));
-    cvp = MFS_CVP(vp);
-
-    /* mapping must always be our own when this begins */
-    ASSERT(ip->i_mapping == &ip->i_data);
-
-    if (!cvp) {
-        /* if no cltxt, nothing to do here */
-        return;
-    }
-    if (vp->v_type != VREG) {
-        /* if not a regular file, just return */
-        return;
-    }
-
-    /* XXX flush pages? */
-    /* set paging handler to new cltxt */
-    ip->i_mapping = VTOI(cvp)->i_mapping;
-}
-#endif
 
 /************************************************************************
  *
@@ -1673,31 +1538,13 @@ mdki_getreturn(void)
 caddr_t
 mdki_getmycaller(void)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#if defined(__ia64__) || defined(__s390__) || defined(__x86_64__)
-    /* doesn't support __builtin_return_address(1)! */
-    return 0;                           /* XXX */
-#else
-    return __builtin_return_address(1);
-#endif
-#else
     return 0;
-#endif
 }
 
 caddr_t
 mdki_getmycallerscaller(void)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#if defined(__ia64__) || defined(__s390__) || defined(__x86_64__)
-    /* doesn't support __builtin_return_address(2)! */
-    return 0;                           /* XXX */
-#else
-    return __builtin_return_address(2);
-#endif
-#else
     return 0;
-#endif
 }
 
 void
@@ -1795,14 +1642,45 @@ vnlayer_groups_task_to_cred(
     struct task_struct *task
 )
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
     register int i;
 
     cred->cr_ngroups = LINUX_TASK_NGROUPS(task);
-    for (i = 0; i < MIN(cred->cr_ngroups, MDKI_NGROUPS); i++)
+    for (i = 0; i < MIN(cred->cr_ngroups, MDKI_NGROUPS); i++) {
         cred->cr_groups[i] = LINUX_TASK_GROUPS(task)[i];
-    for (; i < MDKI_NGROUPS; i++)
-        /* be clean and zap the rest of the structure */
+    }
+    /* be clean and zap the rest of the array (if any) */
+    for (; i < MDKI_NGROUPS; i++) {
         cred->cr_groups[i] = 0;
+    }
+#else
+    struct cred *task_cred;
+    struct group_info *gi_p;
+    int i;
+
+    task_cred = prepare_kernel_cred(task);
+    if (task_cred) {
+        gi_p = get_group_info(task_cred->group_info);
+        put_cred(task_cred);
+        cred->cr_ngroups = MIN(gi_p->ngroups, MDKI_NGROUPS);
+        for (i = 0; i < cred->cr_ngroups; i++) {
+            cred->cr_groups[i] =  gi_p->blocks[0][i];
+        }
+        /* be clean and zap the rest of the array (if any) */
+        for (; i < MDKI_NGROUPS; i++) {
+            cred->cr_groups[i] = 0;
+        }
+        put_group_info(gi_p);
+    } else {
+        /* not enough memory? Can't do anything but log the error */
+        MDKI_VFS_LOG(VFS_LOG_ERR, "%s: prepare_kernel_cred returned NULL\n",
+                     __func__)
+        /* clean stale data */
+        for (i = 0; i < MDKI_NGROUPS; i++) {
+                cred->cr_groups[i] = 0;
+        }
+    }
+#endif
 }
 
 /*
@@ -1825,16 +1703,16 @@ mdki_dup_default_creds(
 {
     CRED_T *cred;
 
-    if ((cred = kmem_cache_alloc(vnlayer_cred_cache, SLAB_KERNEL)) != NULL) {
+    if ((cred = kmem_cache_alloc(vnlayer_cred_cache, GFP_KERNEL)) != NULL) {
         atomic_set(&cred->cr_ref, 1);   /* One user for now */
-        cred->cr_euid = current->euid;
-        cred->cr_egid = current->egid;
-        cred->cr_ruid = current->uid;
-        cred->cr_rgid = current->gid;
-        cred->cr_suid = current->suid;
-        cred->cr_sgid = current->sgid;
-        cred->cr_fsuid = current->fsuid;
-        cred->cr_fsgid = current->fsgid;
+        cred->cr_euid = MDKI_GET_CURRENT_EUID();
+        cred->cr_egid = MDKI_GET_CURRENT_EGID();
+        cred->cr_ruid = MDKI_GET_CURRENT_UID();
+        cred->cr_rgid = MDKI_GET_CURRENT_GID();
+        cred->cr_suid = MDKI_GET_CURRENT_SUID();
+        cred->cr_sgid = MDKI_GET_CURRENT_SGID();
+        cred->cr_fsuid = MDKI_GET_CURRENT_FSUID();
+        cred->cr_fsgid = MDKI_GET_CURRENT_FSGID();
         vnlayer_groups_task_to_cred(cred, current);
 
         MDKI_TRACE(TRACE_CREDS,"crdefault %p (%d/%d) from %s:%s:%d\n",
@@ -1856,7 +1734,7 @@ mdki_crdup(
 {
     CRED_T *new_cred;
 
-    if ((new_cred = kmem_cache_alloc(vnlayer_cred_cache, SLAB_KERNEL)) != NULL) {
+    if ((new_cred = kmem_cache_alloc(vnlayer_cred_cache, GFP_KERNEL)) != NULL) {
         /* Our caller must have a ref for the original cred, so it won't go
         ** away during this copy.  Also, I guess nobody else can be changing
         ** it, which might make the copy inconsistent (at least we didn't worry
@@ -1913,32 +1791,8 @@ mdki_crfree(
 extern time_t
 mdki_ctime(void)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    return(CURRENT_TIME);
-#else
     /* current_kernel_time reads xtime as does get_seconds, <linux/time.h>. */
     return(get_seconds());
-#endif
-}
-
-/*
- * MDKI_CURPID - get pid of current process
- */
-
-mvfs_procid_t
-mdki_curpid(void)
-{
-    return((mvfs_procid_t)current->pid);
-}
-
-/*
- * MDKI_CURPROC - get pointer to current proc
- */
-
-extern mvfs_process_t *
-mdki_curproc(void)
-{
-    return((mvfs_process_t *)current);
 }
 
 /*
@@ -2020,53 +1874,31 @@ mdki_increment_link(VNODE_T *vp)
     VTOI(vp)->i_nlink++;
 }
 
+#if HZ == 1000
+#define MDKI_MSECS_TO_JIFFIES(X) (X)
+#else
+#define MDKI_MSECS_TO_JIFFIES(X) (((X) * HZ) / 1000)
+#endif
+
+/* We don't expect to be called with a value of less
+ * than about 100000.  If this changes, you will need
+ * to make sure that we always have a non-zero timeout
+ * value.
+ */
+
 extern void
 mdki_delay_usec(unsigned long us)
 {
-    mdelay(us/1000);
-}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9)
+    unsigned long timeout = MDKI_MSECS_TO_JIFFIES(us/1000);
 
-extern mvfs_process_t *
-mdki_get_parent(mvfs_process_t *p)
-{
-    struct task_struct *task = (struct task_struct *) p;
-#if defined(RATL_REDHAT) || (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))
-    return((mvfs_process_t *)task->parent);
+    set_current_state(TASK_UNINTERRUPTIBLE);
+    while (timeout)
+        timeout = schedule_timeout(timeout);
 #else
-    return((mvfs_process_t *)task->p_pptr);
+    msleep(us/1000);
 #endif
-}
 
-extern mvfs_procid_t
-mdki_get_proc_pid(mvfs_process_t *p)
-{
-    struct task_struct *task = (struct task_struct *) p;
-    return((mvfs_procid_t)task->pid);
-}
-
-extern unsigned long
-mdki_get_proc_state(mvfs_process_t *p)
-{
-    struct task_struct *task = (struct task_struct *) p;
-#ifdef EXIT_ZOMBIE
-    /* In RHEL4 Update 1 Red Hat moved the TASK_ZOMBIE and TASK_DEAD
-     * flags from the state field to the exit_state field and renamed
-     * them EXIT_ZOMBIE and EXIT_DEAD.  For now, the bit offsets have
-     * not changed and the bits that were moved out of the state word
-     * have not been reused.  Of course, this can change at any time
-     * but until then, this simple minded fix should work.
-     */
-    return(task->state | task->exit_state);
-#else
-    return(task->state);
-#endif
-}
-
-extern mvfs_proctag_t
-mdki_get_proctag(mvfs_process_t *p)
-{
-    struct task_struct *task = (struct task_struct *) p;
-    return((mvfs_proctag_t)task->fs);
 }
 
 extern void
@@ -2085,7 +1917,8 @@ mdki_get_ucdir_vnode(void)
     if (MDKI_INOISMVFS(ip))
         return VN_HOLD(ITOV(ip));
     /* make a clrvnode out of current->fs->pwd{,mnt} */
-    vp = CVN_CREATE(current->fs->pwd, current->fs->pwdmnt);
+    vp = CVN_CREATE(MDKI_FS_PWDDENTRY(current->fs),
+                    MDKI_FS_PWDMNT(current->fs));
     return vp;
 }
 
@@ -2098,28 +1931,9 @@ mdki_get_urdir_vnode(void)
     if (MDKI_INOISMVFS(ip))
         return VN_HOLD(ITOV(ip));
     /* make a clrvnode out of current->fs->root{,mnt} */
-    vp = CVN_CREATE(current->fs->root, current->fs->rootmnt);
+    vp = CVN_CREATE(MDKI_FS_ROOTDENTRY(current->fs),
+                    MDKI_FS_ROOTMNT(current->fs));
     return vp;
-}
-
-/*
- * MDKI_GET_UCMASK - get current umask of current process
- */
-
-int
-mdki_get_ucmask(void)
-{
-    return(current->fs->umask);
-}
-
-/*
- * MDKI_GET_UCOMM_PTR - get pointer to string name for current process
- */
-
-const char *
-mdki_get_ucomm_ptr(void)
-{
-    return(current->comm);
 }
 
 extern void
@@ -2157,11 +1971,7 @@ mdki_inactive_finalize(VNODE_T *vp)
 extern void
 mdki_invalidate_vnode_pages(VNODE_T *vp)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    invalidate_inode_pages(VTOI(vp));
-#else
     invalidate_remote_inode(VTOI(vp));
-#endif
 }
 
 /*
@@ -2175,33 +1985,31 @@ mvfs_unlink_dev_file(void)
     DENT_T *dent;
     struct nameidata nd;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    path_init("/dev/mvfs", LOOKUP_PARENT, &nd);
-    err = path_walk("/dev/mvfs", &nd);
-#else
     /* path_lookup() now does all the work. */
     err = path_lookup("/dev/mvfs", LOOKUP_PARENT, &nd);
-#endif
     if (err)
         return(err);
-    LOCK_INODE(nd.dentry->d_inode);
+    LOCK_INODE(MDKI_NAMEI_DENTRY(&nd)->d_inode);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
     dent = lookup_hash(&nd.last, nd.dentry);
 #else
-    dent = lookup_one_len(nd.last.name, nd.dentry, nd.last.len);
+    dent = lookup_one_len(nd.last.name, MDKI_NAMEI_DENTRY(&nd), nd.last.len);
 #endif
     if (IS_ERR(dent))
         err = PTR_ERR(dent);
     if (!err) {
-#if defined(SLES10SP2)
-        err = vfs_unlink(nd.dentry->d_inode, dent, nd.mnt);
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
+        err = vfs_unlink(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
+                         MDKI_NAMEI_MNT(&nd));
 #else
-        err = vfs_unlink(nd.dentry->d_inode, dent);
+        err = vfs_unlink(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent);
 #endif
         VNODE_DPUT(dent);
     }
-    UNLOCK_INODE(nd.dentry->d_inode);
-    path_release(&nd);
+    UNLOCK_INODE(MDKI_NAMEI_DENTRY(&nd)->d_inode);
+    MDKI_PATH_RELEASE(&nd);
     return(err);
 }
 
@@ -2212,56 +2020,61 @@ mvfs_make_dev_file(void)
     DENT_T *dent;
     struct nameidata nd;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    path_init("/dev/mvfs", LOOKUP_PARENT, &nd);
-    err = path_walk("/dev/mvfs", &nd);
-#else
     /* path_lookup() now does all the work. */
     err = path_lookup("/dev/mvfs", LOOKUP_PARENT, &nd);
-#endif
     if (err)
         return(err);
-    LOCK_INODE(nd.dentry->d_inode);
+    LOCK_INODE(MDKI_NAMEI_DENTRY(&nd)->d_inode);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
     dent = lookup_hash(&nd.last, nd.dentry);
 #else
-    dent = lookup_one_len(nd.last.name, nd.dentry, nd.last.len);
+    dent = lookup_one_len(nd.last.name, MDKI_NAMEI_DENTRY(&nd), nd.last.len);
 #endif
     if (IS_ERR(dent))
         err = PTR_ERR(dent);
     if (!err) {
-#if defined(SLES10SP2)
-        err = vfs_mknod(nd.dentry->d_inode, dent, nd.mnt,
-                        S_IFBLK|S_IRUGO, MKDEV(mvfs_major, 0));
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
+        err = vfs_mknod(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
+                        MDKI_NAMEI_MNT(&nd), S_IFBLK|S_IRUGO,
+                        MKDEV(mvfs_major, 0));
 #else
-        err = vfs_mknod(nd.dentry->d_inode, dent,
+        err = vfs_mknod(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
                         S_IFBLK|S_IRUGO, MKDEV(mvfs_major, 0));
 #endif
         if (err == -EEXIST) {
-#if defined(SLES10SP2)
-            err = vfs_unlink(nd.dentry->d_inode, dent, nd.mnt);
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
+            err = vfs_unlink(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
+                             MDKI_NAMEI_MNT(&nd));
 #else
-            err = vfs_unlink(nd.dentry->d_inode, dent);
+            err = vfs_unlink(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent);
 #endif
             /* Get rid of the old dentry and find a new one */
             VNODE_DPUT(dent);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
             dent = lookup_hash(&nd.last, nd.dentry);
 #else
-            dent = lookup_one_len(nd.last.name, nd.dentry, nd.last.len);
+            dent = lookup_one_len(nd.last.name, MDKI_NAMEI_DENTRY(&nd),
+                                  nd.last.len);
 #endif
-#if defined(SLES10SP2)
-            err = vfs_mknod(nd.dentry->d_inode, dent, nd.mnt, 
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
+            err = vfs_mknod(MDKI_NAMEI_DENTRY(&nd)->d_inode,
+                            dent, MDKI_NAMEI_MNT(&nd),
                             S_IFBLK|S_IRUGO, MKDEV(mvfs_major, 0));
 #else
-            err = vfs_mknod(nd.dentry->d_inode, dent,
+            err = vfs_mknod(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
                             S_IFBLK|S_IRUGO, MKDEV(mvfs_major, 0));
 #endif
         }
         VNODE_DPUT(dent);
     }
-    UNLOCK_INODE(nd.dentry->d_inode);
-    path_release(&nd);
+    UNLOCK_INODE(MDKI_NAMEI_DENTRY(&nd)->d_inode);
+    MDKI_PATH_RELEASE(&nd);
     return(err);
 }
 
@@ -2269,26 +2082,6 @@ STATIC int
 vnlayer_check_types(void)
 {
     int err = 0;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    /* In Linux 2.6 we no longer put the vnode in the inode.  Instead, they
-    ** are adjacent in struct vnlayer_vnode (in mvfs_linux_only.h).
-    */
-    INODE_T *dummy;
-
-    if (sizeof(VNODE_T) > sizeof(dummy->u)) {
-        printk("inode u (%d) too small to hold vnode (%d) in-line\n",
-               (int)sizeof(dummy->u), (int)sizeof(VNODE_T));
-        err = -EINVAL;
-    }
-    if (sizeof(LINUX_TASK_GROUPS(current)) !=
-        sizeof(((vnlayer_fsuid_save_struct_t *)0)->groups))
-    {
-        printk("task group block (%d) not same size as saved group block (%d)\n",
-               (int)sizeof(LINUX_TASK_GROUPS(current)),
-               (int)sizeof(((vnlayer_fsuid_save_struct_t *)0)->groups));
-        err = -EINVAL;
-    }
-#endif
     return err;
 }
 
@@ -2308,9 +2101,7 @@ vnlayer_check_types(void)
  * terminator, so make sure these names (plus suffix) fit.
  */
 STATIC char vnlayer_cred_cache_name[]   = "vn_cred" SUFFIX;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 STATIC char vnlayer_vnode_cache_name[]  = "vn_vnode" SUFFIX;
-#endif
 
 STATIC char *
 vnlayer_encode_epoch_suffix(
@@ -2321,12 +2112,6 @@ vnlayer_encode_epoch_suffix(
 {
     int indx = namelen - sizeof(SUFFIX);
     snprintf(&name[indx], sizeof(SUFFIX), "%08X", (unsigned int)epoch);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    if (strlen(name) >= 19) {
-        printk("vnode cache name `%s' too long\n", name);
-        return NULL;
-    }
-#endif
     return name;
 }
 
@@ -2342,6 +2127,7 @@ vnlayer_encode_epoch_suffix(
 # error need do_all_processes implementation
 #endif
 
+
 #ifdef USE_ROOTALIAS_CURVIEW
 static inline mdki_boolean_t
 vnlayer_task_matches(struct task_struct *task)
@@ -2353,7 +2139,7 @@ vnlayer_task_matches(struct task_struct *task)
         return FALSE;
 
     read_lock(&fs->lock);
-    val = DENT_IS_ROOT_ALIAS(fs->root);
+    val = DENT_IS_ROOT_ALIAS(MDKI_FS_ROOTDENTRY(fs));
     read_unlock(&fs->lock);
     return val;
 }
@@ -2376,7 +2162,9 @@ vnlayer_task_matches(struct task_struct *task)
 }
 #endif /* USE_CHROOT_CURVIEW */
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
 typedef unsigned long int uintptr_t;    /* XXX why not available in kernel headers? */
+#endif
 
 STATIC void *
 vnlayer_nth_proc(loff_t offset)
@@ -2385,21 +2173,21 @@ vnlayer_nth_proc(loff_t offset)
     int pid;
     struct task_struct *task;
 
-    read_lock(&tasklist_lock);
+    MDKI_TASKLIST_LOCK();
     do_all_processes(task,
         task_lock(task);
         if (vnlayer_task_matches(task)) {
             if (offset == idx) {
                 pid = task->pid;
                 task_unlock(task);
-                read_unlock(&tasklist_lock);
+                MDKI_TASKLIST_UNLOCK();
                 return (void *)(uintptr_t)pid;
             }
             idx++;
         }
         task_unlock(task);
     );
-    read_unlock(&tasklist_lock);
+    MDKI_TASKLIST_UNLOCK();
     return NULL;
 }
 
@@ -2510,9 +2298,7 @@ enum err_state {
     REGISTERED_FILESYS,
     CALLED_MKDEV,
     CALLED_CRED_CACHE_CREATE,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     CALLED_VNODE_CACHE_CREATE,
-#endif
     INITIALIZED_MVFS,
     DONE_EVERYTHING
 };
@@ -2524,10 +2310,8 @@ vnlayer_cleanup_vnode(enum err_state init_state)
       case DONE_EVERYTHING:
       case INITIALIZED_MVFS:
         cleanup_mvfs_module();
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
       case CALLED_VNODE_CACHE_CREATE:
         kmem_cache_destroy(vnlayer_vnode_cache);
-#endif
       case CALLED_CRED_CACHE_CREATE:
         kmem_cache_destroy(vnlayer_cred_cache);
       case CALLED_MKDEV:
@@ -2592,10 +2376,17 @@ init_module(void)
     if (name == NULL)
         err = -EINVAL;
     else {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
         vnlayer_cred_cache =
             kmem_cache_create(name,
                               sizeof(CRED_T),
                               0, 0, NULL, NULL);
+#else
+        vnlayer_cred_cache =
+            kmem_cache_create(name,
+                              sizeof(CRED_T),
+                              0, 0, NULL);
+#endif
         if (vnlayer_cred_cache == NULL)
             err = -ENOMEM;
     }
@@ -2603,22 +2394,28 @@ init_module(void)
         goto cleanup;
     init_state = CALLED_CRED_CACHE_CREATE;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     name = encode_epoch_suffix(vnode);
     if (name == NULL)
         err = -EINVAL;
     else {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
         vnlayer_vnode_cache =
             kmem_cache_create(name,
                               sizeof(vnlayer_vnode_t),
                               0, 0, NULL, NULL);
+#else
+        vnlayer_vnode_cache =
+            kmem_cache_create(name,
+                              sizeof(vnlayer_vnode_t),
+                              0, 0, NULL);
+#endif
         if (vnlayer_vnode_cache == NULL)
             err = -ENOMEM;
     }
     if (err != 0)
         goto cleanup;
     init_state = CALLED_VNODE_CACHE_CREATE;
-#endif
+
 
     err = init_mvfs_module();
     if (err != 0) {
@@ -2648,17 +2445,11 @@ extern int
 mdki_handle_ioctl(unsigned int cmd)
 {
     int err = 0;
-/* A version check on 2.4.21 is not sufficient.
- * Red Hat Enterprise Linux 3 2.4.21-4.EL accepts NULL to mean sys_ioctl,
- * while SuSE Linux Enterprise Server SP3 (2.4.21-143) does not accept NULL.
- * So for 2.4 kernels, always pass in sys_ioctl as the handler.
- *
- * 2.6 kernels have the Red Hat behavior.
- * Until 2.6.16 which puts the handler in the file ops compat_ioctl field.
+/* 
+ * 2.6 kernels accept NULL to mean sys_ioctl until 2.6.16 which puts the 
+ * handler in the file ops compat_ioctl field.
  */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    err = register_ioctl32_conversion(cmd, (void *)sys_ioctl);
-#elif  LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
+#if  LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
     err = register_ioctl32_conversion(cmd, NULL /* use sys_ioctl() */);
 #endif
     return vnlayer_errno_linux_to_unix(err);
@@ -2710,4 +2501,69 @@ mdki_file_ctx_open_for_lfs(
 
     return(filep->f_flags & O_LARGEFILE);
 }
-static const char vnode_verid_mvfs_linux_mdki_c[] = "$Id:  da0dcedb.541d11dd.90ce.00:01:83:09:5e:0d $";
+
+/* These two functions will initialze and release a call_data structure.
+ * The structure pointer is passed in in both cases so that the code will
+ * work even if the actual structures are allocated on the stack.
+ */
+
+extern void
+mdki_linux_init_call_data(CALL_DATA_T *cd)
+{
+    cd->cred = MDKI_GET_UCRED();
+    cd->thr = mvfs_get_thread_ptr();
+    return;
+}
+
+extern void
+mdki_linux_destroy_call_data(CALL_DATA_T *cd)
+{
+    MDKI_CRFREE(cd->cred);
+    cd->cred = NULL;
+    mvfs_release_thread_ptr(cd->thr);
+    cd->thr = NULL;
+    return;
+}
+
+/* This function will take a pointer to a call_data structure and to
+ * a cred and return a newly allocated call_data structure that is a 
+ * copy of the original but with the subsitute cred in it.  This is
+ * used in places where we need to pass a cached cred to a function
+ * that takes a call_data structure.  It returns a NULL pointer if it
+ * cannot allocate a new call_data structure.
+ *
+ * This function does not get holds on the cred and thread structures.
+ * The thread structure is for the currently running process so it should
+ * not go away on us.  The cred structure is being picked up from 
+ * somewhere before we were called and it presumably had a hold placed
+ * on it when it was stored.  The substitute call_data being created is
+ * a short lived structure being used to encapsulate to values that would
+ * otherwise be passed as separate arguments without holds.  If any of
+ * these assumptions are no longer valid, change these functions to 
+ * increment and decrement the appropriate counts.
+ */
+
+extern CALL_DATA_T *
+mdki_linux_make_substitute_cred(
+    CALL_DATA_T *ocd,
+    CRED_T *cred
+)
+{
+    CALL_DATA_T *ncd;
+
+    ncd = KMEM_ALLOC(sizeof(*ncd), KM_SLEEP);
+    if (ncd != NULL) {
+        ncd->thr = MVFS_CD2THREAD(ocd);
+        ncd->cred = cred;
+    }
+    return ncd;
+}
+
+extern void
+mdki_linux_free_substitute_cred(
+    CALL_DATA_T *cd
+)
+{
+    KMEM_FREE(cd, sizeof(*cd));
+}
+static const char vnode_verid_mvfs_linux_mdki_c[] = "$Id:  221ac7da.32d111e0.9ded.00:09:6b:4f:fe:99 $";

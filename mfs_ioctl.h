@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2007. */
+/* * (C) Copyright IBM Corporation 1991, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MFS_IOCTL_H_
 #define MFS_IOCTL_H_
 
@@ -325,6 +325,15 @@ typedef struct mfs_strbufpn_pair mfs_strbufpn_pair_t;
         (ec) = mfs_copyin_strbufpn((pnp_p)->upn, &((pnp_p)->upn.s)); \
         (pnp_p)->kpn.s = (pnp_p)->upn.s; \
     }
+#define MFS_INIT_STRBUFPN_IN_ABSOBJPN(BP, PATHP, RC) \
+    { \
+	RC = 0; \
+	MFS_INIT_STRBUFPN_IN (BP, PATHP); \
+    }
+#define MFS_FREE_STRBUFPN_IN_ABSOBJPN(BP) \
+    { \
+	    (BP)->s = NULL; \
+    }
 
 /*
  * Used to indicate optional fields solely for documentation
@@ -566,14 +575,14 @@ struct mvfs_mkviewtag_info {
         mfs_strbuf_t	host;		/* (IN)	 Host name of view server */
 	mfs_strbufpn_t	rpath;		/* (IN)  Remote path of view storage */
 	tbs_uuid_t	uuid;		/* (IN)  View UUID */
-	struct sockaddr_in addr;	/* (IN)  Addr */
+	ks_sockaddr_storage_t addr;	/* (IN)  Addr */
         u_int windows_view : 1;         /* (IN) Windows view */
         u_int pad : 31;                 /* (IN) filler */
 }; 
 typedef struct mvfs_mkviewtag_info mvfs_mkviewtag_info_t;
 
 struct mvfs_viewaddr {
-	struct sockaddr_in addr;	/* Internet address */
+	ks_sockaddr_storage_t addr;	/* Internet address */
 };
 typedef struct mvfs_viewaddr mvfs_viewaddr_t;
 
@@ -1181,7 +1190,6 @@ struct mvfs_statbufs {
 	OPTIONAL mfs_strbuf_t viewopcnt;
 	OPTIONAL mfs_strbuf_t viewoptime;
 	OPTIONAL mfs_strbuf_t viewophist;
-	OPTIONAL mfs_strbuf_t io_stat;
 };
 typedef struct mvfs_statbufs mvfs_statbufs_t;
 	
@@ -1761,9 +1769,29 @@ typedef struct mvfs_sid mvfs_sid_t;
  * }
  */
 
-/* 
- * MVFS CMD corresponding to number 55 has been retired.
- * This number is available for use.
+/*
+ * MVFS_CMD_GET_GFSINFO is an ioctl added for AIX. It is needed to get the new
+ * gfsno once the mvfs extension is loaded. gfsno is required to update the
+ * /etc/vfs file, among other things.
+ */
+struct mvfs_gfsinfo {
+    int gfsno;
+    /* only one for the time being... */
+};
+typedef struct mvfs_gfsinfo mvfs_gfsinfo_t;
+
+#define MVFS_CMD_GET_GFSINFO 55
+/*
+ * {
+ *     int rc;
+ *
+ *     MVFS_CMD(mh, rc, status, MVFS_CMD_GET_GFSNO,
+ *		0,
+ *		&MFS_NULL_STRBUFPN_PAIR, vob_path, sizeof(*vob_path));
+ *     if (rc != 0) {
+ *         <error handling>
+ *     }
+ * }
  */
 
 /*
@@ -1823,13 +1851,39 @@ typedef struct mvfs_sid mvfs_sid_t;
  *     }
  * }
  */
+struct mvfs_mkviewtag_info_ex {
+        mfs_strbuf_t	viewtag;	/* (IN)	 view tag */
+	mfs_strbufpn_pair_t spath;	/* (IN)  Path to view storage */
+        mfs_strbuf_t	host;		/* (IN)	 Host name of view server */
+	mfs_strbufpn_t	rpath;		/* (IN)  Remote path of view storage */
+	mfs_strbufpn_t  net_path;	/* (IN)  Net path to view storage */
+	tbs_uuid_t	uuid;		/* (IN)  View UUID */
+	ks_sockaddr_storage_t addr;	/* (IN)  Addr */
+        u_int windows_view : 1;         /* (IN) Windows view */
+        u_int pad : 31;                 /* (IN) filler */
+}; 
+typedef struct mvfs_mkviewtag_info_ex mvfs_mkviewtag_info_ex_t;
+
+#define MVFS_CMD_MKVIEWTAG_EX 62
+/*
+ * {
+ *     int rc;
+ *
+ *     MVFS_CMD(mh, rc, status, MVFS_CMD_MKVIEWTAG_EX,
+ *		0,
+ *		pairp, viewtaginfop, sizeof(*viewtaginfop));
+ *     if (rc != 0) {
+ *         <error handling>
+ *     }
+ * }
+ */
 #define MVFS_FILEUTL_ABSOBJPN(AP, AOP, SZAOP, RC) *(AOP) = NULLC, (RC) = 0
 
 /*
  * Used for validation in mfs_vnodeops.c
  */
 #define MVFS_CMD_MIN 1
-#define MVFS_CMD_MAX 60
+#define MVFS_CMD_MAX 62
 
 #endif /* MFSMIOCTL_H_ */
-/* $Id: 4a35cc48.bf1b11dc.89dd.00:01:83:09:5e:0d $ */
+/* $Id: 1393a11f.a23a11df.8bc7.00:01:84:7a:f2:e4 $ */

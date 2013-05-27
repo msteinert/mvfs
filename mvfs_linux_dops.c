@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2007 IBM Corporation.
+ * Copyright (C) 1999, 2011 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,11 +31,7 @@
 extern int
 vnode_dop_revalidate(
     DENT_T *dentry,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    int flags
-#else
     struct nameidata *nd
-#endif
 );
 
 extern int
@@ -92,21 +88,19 @@ struct dentry_operations vnode_setview_dentry_ops = { DOPS_INITIALIZER };
 extern int
 vnode_dop_revalidate(
     DENT_T *dentry,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    int flags
-#else
     struct nameidata *nd
-#endif
 )
 {
-    CRED_T *cred;
     INODE_T *parent, *ip;
     VNODE_T *dvp, *vp;
     DENT_T *rdent;
+    DENT_T *rpdent;
     VNODE_T *cvp;
+    VNODE_T *pcvp;
     int error;
     int ok = 1;
     struct lookup_ctx ctx;
+    CALL_DATA_T cd;
 
     ASSERT_DCACHE_UNLOCKED();
     /* always claim file entries are invalid (we have a better name cache
@@ -130,7 +124,7 @@ vnode_dop_revalidate(
         ok = 0;
         return ok;
     }
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     ASSERT(MDKI_INOISMVFS(parent));
     ASSERT(MDKI_INOISMVFS(ip));
     /* For loopback nodes, call the underlying revalidate */
@@ -141,11 +135,62 @@ vnode_dop_revalidate(
             ok = 0;   /* if no realdentry, get rid of it */
         } else {
             if (rdent->d_op && rdent->d_op->d_revalidate) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-                ok = (*rdent->d_op->d_revalidate)(rdent, flags);
-#else
                 ok = (*rdent->d_op->d_revalidate)(rdent, nd);
-#endif
+            } else {
+                /* Neither ext3 nor reiserfs provide a d_revalidate
+                 * function.  We need to verify the real dentry ourselves
+                 * I will assume that our loopback parent has already
+                 * validated its real dentry
+                 */
+                if (rdent != rdent->d_parent) {
+                    /* We will trust mountpoints to be valid */
+                    rpdent = REALDENTRY_LOCKED(dentry->d_parent, &pcvp);
+                    /* Check if there is one.  Our parent might not be a
+                     * loopback directory */
+                    if (rpdent != 0) {
+#if defined(RATL_REDHAT) && (RATL_VENDOR_VER == 600) && \
+    defined(CONFIG_SPARSEMEM) && defined(CONFIG_X86_32)
+                        /*
+                         * Because d_validate always returns 0 on PAE kernels,
+                         * just check if the dentry is in the parent's
+                         * children list.
+                         */
+                        ok = 0;
+                        if (rdent->d_parent == rpdent) {
+                            struct dentry *dp;
+                            spin_lock(&dcache_lock);
+                            list_for_each_entry(dp, &rpdent->d_subdirs,
+                                                d_u.d_child) {
+                                if (rdent == dp) {
+                                    /* mimic d_validate's behaviour */
+                                    dget_locked(rdent);
+                                    ok = 1;
+                                    break;
+                                }
+                            }
+                            spin_unlock(&dcache_lock);
+                        }
+#else
+                        /* d_validate does a dget on rdent if valid */
+                        ok = d_validate(rdent, rpdent);
+#endif /* defined(RATL_REDHAT) && RATL_VENDOR_VER == 600 && defined(CONFIG_SPARSEMEM) && defined(CONFIG_X86_32) */
+                        if (ok != 0) {
+                            VNODE_DPUT(rdent);
+                        } else {
+                        /* This is no good.  Get another one. */
+                            if (VTOVFSMNT(pcvp) != VTOVFSMNT(cvp)) {
+                                MDKI_MNTPUT(VTOVFSMNT(cvp));
+                                SET_VTOVFSMNT(cvp, MDKI_MNTGET(VTOVFSMNT(pcvp)));
+                            }
+                            VNODE_DPUT((DENT_T *)cvp->v_dent);
+                            rdent = lookup_one_len(dentry->d_name.name,
+                                                    rpdent,
+                                                    dentry->d_name.len);
+                            cvp->v_dent = (caddr_t)rdent; 
+                        }
+                        REALDENTRY_UNLOCK(dentry->d_parent, pcvp);
+                    }
+                }
             }
             REALDENTRY_UNLOCK(dentry, cvp);
         }
@@ -154,7 +199,7 @@ vnode_dop_revalidate(
         ctx.flags = 0;
         ctx.dentrypp = NULL;
         (void) VOP_LOOKUP(ITOV(parent), (char *)dentry->d_name.name,
-                          &vp, NULL, VNODE_LF_AUDIT, NULL, cred, &ctx);
+                          &vp, NULL, VNODE_LF_AUDIT, NULL, &cd, &ctx);
     } else { /* Not Loopback, one of our files */
         /*
          * Call VFS layer to inform it of a lookup of the name being
@@ -163,8 +208,9 @@ vnode_dop_revalidate(
         VNODE_T *rvp = NULL;
         ctx.flags = 0;
         ctx.dentrypp = NULL;
+        /* LF_LOOKUP includes full auditing */
         error = VOP_LOOKUP(dvp, (char *)dentry->d_name.name, &rvp,
-                           NULL, VNODE_LF_LOOKUP, NULL, cred, &ctx);
+                           NULL, VNODE_LF_LOOKUP, NULL, &cd, &ctx);
         if (error) {
             ASSERT(rvp == NULL);
 	    if (vp->v_type != VDIR)
@@ -204,7 +250,7 @@ vnode_dop_revalidate(
 			} else {
                             VATTR_SET_MASK(vap, AT_ALL);
 		            error = VOP_GETATTR(vp, vap, 
-				        GETATTR_FLAG_UPDATE_ATTRS, cred);
+				        GETATTR_FLAG_UPDATE_ATTRS, &cd);
 			    VATTR_FREE(vap);
 			}
 		    }
@@ -215,7 +261,7 @@ vnode_dop_revalidate(
             VN_RELE(rvp);
         }
     }
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     MDKI_TRACE(TRACE_DCACHE,
               "%s: ok %d dp %p cnt %d vp %p parent %p real %p \"%s/%s\"\n",
               __func__, ok, dentry, D_COUNT(dentry), dentry->d_inode,
@@ -235,9 +281,9 @@ vnode_dop_hash(
     struct qstr *namep                  /* unused */
 )
 {
-    CRED_T *cred;
     VNODE_T *dvp, *vp;
     struct lookup_ctx ctx;
+    CALL_DATA_T cd;
 
     ASSERT_DCACHE_UNLOCKED();
     ASSERT_KERNEL_UNLOCKED();
@@ -249,18 +295,18 @@ vnode_dop_hash(
         return 0;
     dvp = ITOV(dentry->d_parent->d_inode);
     ASSERT(MDKI_INOISMVFS(dentry->d_parent->d_inode));
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     vp = ITOV(dentry->d_inode);
     ctx.flags = 0;
     ctx.dentrypp = NULL;
     (void) VOP_LOOKUP(dvp, (char *)dentry->d_name.name,
-                      &vp, NULL, VNODE_LF_AUDIT, NULL, cred, &ctx);
+                      &vp, NULL, VNODE_LF_AUDIT, NULL, &cd, &ctx);
     /* LF_AUDIT means no extra reference returned on vpp */
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     return 0;
 }
 
-/* In Linux 2.4.0 we are now called with the dcache_lock already held.  We
+/* In Linux we are called with the dcache_lock already held.  We
  * cannot block and we cannot call d_drop directly because it will try to
  * get the dcache_lock.  Therefore we return 1 if we want the VFS to handle
  * unhashing this for us.
@@ -281,8 +327,16 @@ vnode_dop_delete(DENT_T *dentry)
     ASSERT_KERNEL_UNLOCKED();
     /* This routine must not block, it holds a spinlock */
 
-    if (!DENT_HASH_IS_EMPTY(dentry)) {
+    if (!d_unhashed(dentry)) {
         dropit = 1;
+        /* If this is a negative dentry but there is a cvp pointer in the
+         * d_fsdata field, set up d_inode so that the subsequent iput will
+         * clean it up for us.
+         */
+        if ((dentry->d_inode == NULL) && (REALCVN(dentry) != NULL)) {
+            dentry->d_inode = VTOI(REALCVN(dentry));
+            SET_REALCVN(dentry, NULL); 
+        }
     } else {
         dropit = 0;
     }
@@ -419,7 +473,7 @@ mdki_rm_dcache(VNODE_T *vp)
         UNLOCK_DCACHE();
     } else {
         /* dcache code takes its lock as required */
-        if (!DENT_HASH_IS_EMPTY(dp)) {
+        if (!d_unhashed(dp)) {
             (void) d_invalidate(dp);
             d_drop(dp);
         }
@@ -593,7 +647,6 @@ vnode_d_alloc_root(
     return dent;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 extern DENT_T *
 vnode_d_alloc_anon(
     INODE_T * anonip,
@@ -623,7 +676,6 @@ vnode_d_splice_alias(
               ip, dent, mydent, file, func, line);
     return mydent;
 }
-#endif
 
 extern DENT_T *
 vnode_d_alloc(
@@ -724,4 +776,4 @@ vnlayer_dent2vfsmnt(DENT_T *dentry)
         mnt = MDKI_MNTGET(mnt);
     return(mnt);
 }
-static const char vnode_verid_mvfs_linux_dops_c[] = "$Id:  bf15e010.bf1a11dc.89dd.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_linux_dops_c[] = "$Id:  5d1ce261.469911e0.9073.00:09:6b:4f:fe:99 $";

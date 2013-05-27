@@ -1,7 +1,7 @@
 #ifndef _MVFS_VNODE_H_
 #define _MVFS_VNODE_H_
 /*
- * Copyright (C) 1994, 2006 IBM Corporation.
+ * Copyright (C) 1994, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,14 +22,17 @@
  * Multi-version file system (MVFS).
  * For support, please visit http://www.ibm.com/software/support
  */
-#ifdef ATRIA_LINUX
-#define MDKI_FID fid
-#define MDKI_FID_T fid_t
+#if defined(ATRIA_LINUX) && LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+# define MDKI_FID fid
+# define MDKI_FID_T fid_t
 #else
-/* renaming to coexist with other file systems that took these names already */
-#define MDKI_FID mdki_fid
-#define MDKI_FID_T mdki_fid_t
-#endif
+   /*
+    * renaming to coexist with other file systems that 
+    * took these names already
+    */
+# define MDKI_FID mdki_fid
+# define MDKI_FID_T mdki_fid_t
+#endif /* ATRIA_LINUX && LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24) */
 
 typedef struct MDKI_FID {           /* Dummy fid struct for lendgth */
 	u_short		fid_len;		/* length of data in bytes */
@@ -115,7 +118,8 @@ typedef int (*vfs_unmount_fn_t)(
 typedef int (*vfs_vget_fn_t)(
     vfs_t *vfsp,
     struct mdki_vnode **vpp,
-    MDKI_FID_T *fidp
+    MDKI_FID_T *fidp,
+    CALL_DATA_T *cd
 );
 typedef int (*vfs_init_fn_t)(void);
 typedef int (*vfs_log_fn_t)(
@@ -148,7 +152,7 @@ typedef struct vfsops {
 #define VFS_LOG(vfsp, level, str, ...)   (*(vfsp)->vfs_op->vfs_log)(vfsp, level, str, __VA_ARGS__)
 #define VFS_MOUNT(vfsp, mntpt, devpath, flags, data, datalen, cr, ctx)   (*(vfsp)->vfs_op->vfs_mount)(vfsp, mntpt, devpath, flags, data, datalen, cr, ctx)
 #define VFS_UNMOUNT(vfsp, cr)   (*(vfsp)->vfs_op->vfs_unmount)(vfsp, cr)
-#define VFS_VGET(vfsp, vp, fidp)   (*(vfsp)->vfs_op->vfs_vget)(vfsp, vp, fidp)
+#define VFS_VGET(vfsp, vp, fidp, cd)   (*(vfsp)->vfs_op->vfs_vget)(vfsp, vp, fidp, cd)
 
 #define VFS_LOG_ERR	1	/* Log errors */
 #define VFS_LOG_WARN	2	/* Log warnings */
@@ -258,7 +262,7 @@ typedef struct lookup_ctx {
 typedef int (*vop_open_fn_t)(
     struct mdki_vnode **vpp,
     int fmode,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx
 );
 typedef int (*vop_close_fn_t)(
@@ -266,7 +270,7 @@ typedef int (*vop_close_fn_t)(
     int flag,
     int count,
     MOFFSET_T offset,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx 
 );
 typedef int (*vop_rdwr_fn_t)(
@@ -275,7 +279,7 @@ typedef int (*vop_rdwr_fn_t)(
     uio_rw_t rw,
     int ioflag,
     VATTR_T *vap,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx
 );
 typedef int (*vop_ioctl_fn_t)(
@@ -283,7 +287,7 @@ typedef int (*vop_ioctl_fn_t)(
     int cmd,
     caddr_t data,
     int flag,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     int *rvalp,
     VOPBD_T *vopbdp,
     MVFS_CALLER_INFO *callinfo
@@ -292,7 +296,7 @@ typedef int (*vop_getattr_fn_t)(
     struct mdki_vnode *vp,
     VATTR_T *vap,
     int flag,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 #define GETATTR_FLAG_UPDATE_ATTRS 0x00000001
 #define GETATTR_FLAG_PULLUP_ATTRS 0x00000002
@@ -301,13 +305,13 @@ typedef int (*vop_setattr_fn_t)(
     struct mdki_vnode *vp,
     VATTR_T *vap,
     int flag,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 typedef int (*vop_access_fn_t)(
     struct mdki_vnode *vp,
     int mode,
     int flag,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     nameidata_ctx *ctx
 );
 typedef int (*vop_lookup_fn_t)(
@@ -317,7 +321,7 @@ typedef int (*vop_lookup_fn_t)(
     struct pathname *pnp,
     int flags,
     ROOTDIR_T *rootdir,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     lookup_ctx *ctx
 );
 typedef int (*vop_create_fn_t)(
@@ -327,21 +331,21 @@ typedef int (*vop_create_fn_t)(
     enum vcexcl excl,
     int mode,
     struct mdki_vnode **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     create_ctx *ctx
 );
 typedef int (*vop_remove_fn_t)(
     struct mdki_vnode *dvp,
     struct mdki_vnode *vp,
     char *nm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     unlink_ctx *ctx 
 );
 typedef int (*vop_link_fn_t)(
     struct mdki_vnode *tdvp,
     struct mdki_vnode *vp,
     char *tnm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     link_ctx *ctx
 );
 typedef int (*vop_rename_fn_t)(
@@ -349,7 +353,7 @@ typedef int (*vop_rename_fn_t)(
     char *onm,
     struct mdki_vnode *tdvp,
     char *tnm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     rename_ctx *ctx 
 );
 typedef int (*vop_mkdir_fn_t)(
@@ -357,20 +361,20 @@ typedef int (*vop_mkdir_fn_t)(
     char *nm,
     VATTR_T *vap,
     struct mdki_vnode **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     mkdir_ctx *ctx
 );
 typedef int (*vop_rmdir_fn_t)(
     struct mdki_vnode *dvp,
     char *nm,
     struct mdki_vnode *cdir,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     dent_ctx *ctx
 );
 typedef int (*vop_readdir_fn_t)(
     struct mdki_vnode *dvp,
     struct uio *uiop,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     int *eofp,
     readdir_ctx *ctx
 );
@@ -380,23 +384,23 @@ typedef int (*vop_symlink_fn_t)(
     VATTR_T *vap,
     char *tnm,
     VNODE_T **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     symlink_ctx *ctx 
 );
 typedef int (*vop_readlink_fn_t)(
     struct mdki_vnode *vp,
     struct uio *uiop,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 typedef int (*vop_fsync_fn_t)(
     struct mdki_vnode *vp,
     int flag,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx
 );
 typedef int (*vop_inactive_fn_t)(
     struct mdki_vnode *vp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 typedef int (*vop_fid_fn_t)(
     struct mdki_vnode *vp,
@@ -420,7 +424,7 @@ typedef int (*vop_mmap_fn_t)(
     struct mdki_vnode *vp,
     u_int sharing,
     u_int rwx,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     mmap_ctx *ctx
 );
 typedef int (*vop_seek_fn_t)(
@@ -433,7 +437,7 @@ typedef int (*vop_lockctl_fn_t)(
     struct mdki_vnode *vp,
     void *lockp,
     int cmd,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx
 );
 typedef void (*vop_print_fn_t)(
@@ -474,37 +478,64 @@ struct vnodeops {
  * Vnode ops in MVOP form.
  */
 
-#define VOP_OPEN(VPP,MODE,CR,CTX)	(*(*(VPP))->v_op->vop_open)(VPP,MODE,CR,CTX)
-#define VOP_CLOSE(VP,F,C,O,CR,CTX)	(*(VP)->v_op->vop_close)(VP,F,C,O,CR,CTX)
-#define VOP_RDWR(VP,UIOP,RW,F,VAP,CR,CTX) (*(VP)->v_op->vop_rdwr)(VP,UIOP,RW,F,VAP,CR,CTX)
+#define VOP_OPEN(VPP,MODE,CD,CTX)	(*(*(VPP))->v_op->vop_open)(VPP,MODE,CD,CTX)
+#define VOP_CLOSE(VP,F,C,O,CD,CTX)	(*(VP)->v_op->vop_close)(VP,F,C,O,CD,CTX)
+#define VOP_RDWR(VP,UIOP,RW,F,VAP,CD,CTX) (*(VP)->v_op->vop_rdwr)(VP,UIOP,RW,F,VAP,CD,CTX)
 /* Variants for Sysv.4 style calls of rdwr */
-#define VOP_READ(VP,UIOP,F,VAP,CR,CTX) (*(VP)->v_op->vop_rdwr)(VP,UIOP,UIO_READ,F,VAP,CR,CTX)
-#define VOP_WRITE(VP,UIOP,F,VAP,CR,CTX) (*(VP)->v_op->vop_rdwr)(VP,UIOP,UIO_WRITE,F,VAP,CR,CTX)
+#define VOP_READ(VP,UIOP,F,VAP,CD,CTX) (*(VP)->v_op->vop_rdwr)(VP,UIOP,UIO_READ,F,VAP,CD,CTX)
+#define VOP_WRITE(VP,UIOP,F,VAP,CD,CTX) (*(VP)->v_op->vop_rdwr)(VP,UIOP,UIO_WRITE,F,VAP,CD,CTX)
 
-#define VOP_IOCTL(VP,C,D,F,CR,RVP,VBD,CINFO) (*(VP)->v_op->vop_ioctl)(VP,C,D,F,CR,RVP,VBD,CINFO)
-#define VOP_GETATTR(VP,VAP,F,CR) (*(VP)->v_op->vop_getattr)(VP,VAP,F,CR)
-#define VOP_SETATTR(VP,VAP,F,CR) (*(VP)->v_op->vop_setattr)(VP,VAP,F,CR)
-#define VOP_ACCESS(VP,M,F,CR,CTX)       (*(VP)->v_op->vop_access)(VP,M,F,CR,CTX)
-#define VOP_LOOKUP(VP,NM,VPP,PNP,F,RVP,CR,CTX) (*(VP)->v_op->vop_lookup)(VP,NM,VPP,PNP,F,RVP,CR,CTX)
-#define VOP_CREATE(VP,NM,VAP,E,M,VPP,CR,CTX) (*(VP)->v_op->vop_create)(VP,NM,VAP,E,M,VPP,CR,CTX)
-#define VOP_REMOVE(DVP,VP,NM,CR,CTX)	(*(DVP)->v_op->vop_remove)(DVP,VP,NM,CR,CTX)
-#define VOP_LINK(TDVP,FVP,TNM,CR,CTX) (*(TDVP)->v_op->vop_link)(TDVP,FVP,TNM,CR,CTX)
-#define VOP_RENAME(VP,NM,TDVP,TNM,CR,CTX) (*(VP)->v_op->vop_rename)(VP,NM,TDVP,TNM,CR,CTX)
-#define VOP_MKDIR(VP,NM,VAP,VPP,CR,CTX) (*(VP)->v_op->vop_mkdir)(VP,NM,VAP,VPP,CR,CTX)
-#define VOP_RMDIR(VP,NM,CDIR,CR,CTX)    (*(VP)->v_op->vop_rmdir)(VP,NM,CDIR,CR,CTX)
-#define VOP_READDIR(VP,UIOP,CR,EOFP,CTX) (*(VP)->v_op->vop_readdir)(VP,UIOP,CR,EOFP,CTX)
-#define VOP_SYMLINK(VP,LNM,VAP,TNM,VPP,CR,CTX) (*(VP)->v_op->vop_symlink)(VP,LNM,VAP,TNM,VPP,CR,CTX)
-#define VOP_READLINK(VP,UIOP,CR) (*(VP)->v_op->vop_readlink)(VP,UIOP,CR)
-#define VOP_FSYNC(VP,FL,CR,CTX)	(*(VP)->v_op->vop_fsync)(VP,FL,CR,CTX)
-#define VOP_INACTIVE(VP,CR)	(*(VP)->v_op->vop_inactive)(VP,CR)
+#define VOP_IOCTL(VP,C,D,F,CD,RVP,VBD,CINFO) (*(VP)->v_op->vop_ioctl)(VP,C,D,F,CD,RVP,VBD,CINFO)
+#define VOP_GETATTR(VP,VAP,F,CD) (*(VP)->v_op->vop_getattr)(VP,VAP,F,CD)
+#define VOP_SETATTR(VP,VAP,F,CD) (*(VP)->v_op->vop_setattr)(VP,VAP,F,CD)
+#define VOP_ACCESS(VP,M,F,CD,CTX)       (*(VP)->v_op->vop_access)(VP,M,F,CD,CTX)
+#define VOP_LOOKUP(VP,NM,VPP,PNP,F,RVP,CD,CTX) (*(VP)->v_op->vop_lookup)(VP,NM,VPP,PNP,F,RVP,CD,CTX)
+#define VOP_CREATE(VP,NM,VAP,E,M,VPP,CD,CTX) (*(VP)->v_op->vop_create)(VP,NM,VAP,E,M,VPP,CD,CTX)
+#define VOP_REMOVE(DVP,VP,NM,CD,CTX)	(*(DVP)->v_op->vop_remove)(DVP,VP,NM,CD,CTX)
+#define VOP_LINK(TDVP,FVP,TNM,CD,CTX) (*(TDVP)->v_op->vop_link)(TDVP,FVP,TNM,CD,CTX)
+#define VOP_RENAME(VP,NM,TDVP,TNM,CD,CTX) (*(VP)->v_op->vop_rename)(VP,NM,TDVP,TNM,CD,CTX)
+#define VOP_MKDIR(VP,NM,VAP,VPP,CD,CTX) (*(VP)->v_op->vop_mkdir)(VP,NM,VAP,VPP,CD,CTX)
+#define VOP_RMDIR(VP,NM,CDIR,CD,CTX)    (*(VP)->v_op->vop_rmdir)(VP,NM,CDIR,CD,CTX)
+#define VOP_READDIR(VP,UIOP,CD,EOFP,CTX) (*(VP)->v_op->vop_readdir)(VP,UIOP,CD,EOFP,CTX)
+#define VOP_SYMLINK(VP,LNM,VAP,TNM,VPP,CD,CTX) (*(VP)->v_op->vop_symlink)(VP,LNM,VAP,TNM,VPP,CD,CTX)
+#define VOP_READLINK(VP,UIOP,CD) (*(VP)->v_op->vop_readlink)(VP,UIOP,CD)
+#define VOP_FSYNC(VP,FL,CD,CTX)	(*(VP)->v_op->vop_fsync)(VP,FL,CD,CTX)
+#define VOP_INACTIVE(VP,CD)	(*(VP)->v_op->vop_inactive)(VP,CD)
 #define VOP_FID(VP,FIDPP)	(*(VP)->v_op->vop_fid)(VP,FIDPP)
 #define VOP_PATHCONF(VP,CMD,VALP,CR) (*(VP)->v_op->vop_pathconf)(VP,CMD,VALP,CR)
 #define VOP_CMP(VP1,VP2)	(*(VP1)->v_op->vop_cmp)(VP1,VP2)
 #define VOP_REALVP(VP,VPP)	(*(VP)->v_op->vop_realvp)(VP,VPP)
-#define VOP_MMAP(VP,SHR,RWX,CR,CTX)	(*(VP)->v_op->vop_mmap)(VP,SHR,RWX,CR,CTX)
+#define VOP_MMAP(VP,SHR,RWX,CD,CTX)	(*(VP)->v_op->vop_mmap)(VP,SHR,RWX,CD,CTX)
 #define VOP_SEEK(VP,OOFF,NOFFP,CTX)	(*(VP)->v_op->vop_seek)(VP,OOFF,NOFFP,CTX)
-#define VOP_LOCKCTL(VP,LKP,CMD,CR,CTX)	(*(VP)->v_op->vop_lockctl)(VP,LKP,CMD,CR,CTX)
+#define VOP_LOCKCTL(VP,LKP,CMD,CD,CTX)	(*(VP)->v_op->vop_lockctl)(VP,LKP,CMD,CD,CTX)
 #define VOP_PRINT(VP)           (*(VP)->v_op->vop_print)(VP)
 
+/* 
+ * In most cases, we use the same vnode interface to dispatch calls from
+ * the Linux wrapper code to the MVFS and back from the MVFS to the 
+ * underlying Linux code.  Now that we are passing call_data blocks
+ * instead of creds from the Linux code to the MVFS, this does not always
+ * work because some functions that call MVOP macros do not have the 
+ * call_data information readily at hand.  We declare those functions here.
+ */
+
+/* This function is sometimes called with cached creds */
+extern int
+mvop_linux_getattr(
+    VNODE_T *vp,
+    VATTR_T *vap,                       /* RETURN */
+    int flags,
+    CRED_T *cred
+);
+
+extern int
+mvop_linux_close(
+    VNODE_T *vp,
+    int flags,
+    VNODE_LASTCLOSE_T count,
+    MOFFSET_T off,
+    CRED_T *cred,
+    file_ctx *ctx
+);
 #endif /* _MVFS_VNODE_H_ */
-/* $Id: b3d07b55.bdb911da.874a.00:01:83:a6:4c:63 $ */
+/* $Id: a86bf7e3.dc5411df.9210.00:01:83:0a:3b:75 $ */

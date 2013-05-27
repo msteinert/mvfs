@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 2006. */
+/* * (C) Copyright IBM Corporation 2006, 2007. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_VIEWROOT_H_
 #define MVFS_VIEWROOT_H_
 
@@ -38,4 +38,4 @@ typedef struct mvfs_viewroot_data
 } mvfs_viewroot_data_t;
 
 #endif /* MVFS_VIEWROOT_H_ */
-/* $Id: 2bd388d4.66bb11dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: cb914d6e.9c1e11dd.9a62.00:01:83:29:c0:fc $ */

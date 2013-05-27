@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1992, 2005. */
+/* * (C) Copyright IBM Corporation 1992, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,10 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* tbs_errno.c */
+
 /*LINTLIBRARY*/
 
 #include "mvfs_systm.h"
@@ -31,6 +32,16 @@
 #include "tbs_errno.h"
 
 #include <tbs_base.h>
+
+/* This routine accepts either a status code or Unix errno.
+ *
+ * When called with a status code: convert the status code to a Unix errno, 
+ * it should never be called with any of the status codes that are greater
+ * than TBS_STLIMIT. If it is, it will be converted to EIO.
+ *
+ * When called with a Unix errno: if errno is < TBS_STBASE then just pass 
+ * it thru, otherwise convert it to EIO.
+ */
 
 int
 tbs_status2errno(status)
@@ -95,12 +106,20 @@ tbs_status2errno(status)
 	return (ESTALE);	/* Stale VIEW file handle */
       case TBS_ST_EBUSY:
 	return (EBUSY);		/* Device/MVFS busy */
+      case TBS_ST_EPFNOSUPPORT:
+        return (EPFNOSUPPORT);  /* Protocol family not supported */
+#ifdef ECANCELED /* if not defined, use default below */
+      case TBS_ST_ABORT:
+        return (ECANCELED);
+#endif
       case -1:			/* in case rpc status makes its way here */
 	return(EIO);
+      case 0:
+        return(status);
       default:
-	if (status >= TBS_STBASE && status < TBS_STLIMIT)
-	    return (EIO);
-	return (int)status;
+        if (status < TBS_STBASE)
+            return (int) status;
+        return (EIO);
     }
     
 }
@@ -156,6 +175,12 @@ tbs_errno2status(st_errno)
 	return (TBS_ST_ESTALE);		/* Stale VIEW file handle */
       case EBUSY:
 	return (TBS_ST_EBUSY);		/* Device/MVFS busy */
+      case EPFNOSUPPORT:
+        return (TBS_ST_EPFNOSUPPORT);   /* Protocol family not supported */
+#ifdef ECANCELED /* if not defined, use default below */
+      case ECANCELED:
+        return (TBS_ST_ABORT);
+#endif
       default:
 	return (TBS_ST_ERR);
     }

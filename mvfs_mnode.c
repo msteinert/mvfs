@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2008. */
+/* * (C) Copyright IBM Corporation 1991, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,10 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_mnode.c */
+
 #include "mvfs_systm.h"
 #include "mvfs.h"
 
@@ -1236,7 +1237,6 @@ int *newnode;
     VFS_T *nvfsp;
     int mngen;
     int mnum = 0;
-    SPL_T s;
     mvfs_mnode_data_t *mndp = MDKI_MNODE_GET_DATAP();
     mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
     mvfs_viewroot_data_t *vrdp = MDKI_VIEWROOT_GET_DATAP();
@@ -1259,7 +1259,7 @@ int *newnode;
      */
     ASSERT(MVFS_VFSISMVFS(nvfsp, mfs_vfsopp));
 
-    BUMPSTAT(mfs_mnstat.mnget, s);	/* Count gets */
+    BUMPSTAT(mfs_mnstat.mnget);	/* Count gets */
 
     /*
      * The restart label is jumped to when we need to re-evaluate fetching 
@@ -1458,7 +1458,6 @@ mvfs_mnfindexisting(
     register mfs_mnode_t *mnp;
     int hash_val;
     LOCK_T *mlplockp;
-    SPL_T s;
 
     ASSERT(fidp);
 
@@ -1495,7 +1494,6 @@ mvfs_mnfindexisting_subr1(
     register mfs_mnode_t *mnp;
     int hash_val;
     LOCK_T *mlplockp;
-    SPL_T s;
     mvfs_mnode_data_t *mndp = MDKI_MNODE_GET_DATAP();
 
 	    ASSERT(fidp->mf_mnum > 0 && fidp->mf_mnum <= mndp->mvfs_mtmhwm);
@@ -1546,7 +1544,6 @@ mvfs_mnfindexisting_subr2(
     register mfs_mnode_t *mnp;
     int hash_val;
     LOCK_T *mlplockp;
-    SPL_T s;
     mvfs_mnode_data_t *mndp = MDKI_MNODE_GET_DATAP();
     mvfs_viewroot_data_t *vrdp = MDKI_VIEWROOT_GET_DATAP();
 
@@ -1622,7 +1619,6 @@ mvfs_mnfindexisting_subr3(
     LOCK_T *mlplockp;
     int f_hash_val;
     LOCK_T *flplockp;
-    SPL_T s;
     void *flusharg;
     mvfs_mnode_data_t *mndp = MDKI_MNODE_GET_DATAP();
 
@@ -1655,7 +1651,7 @@ restart:
 		    if (fidp->mf_gen != MFS_UNK_GEN && 
 				fidp->mf_gen != mnp->mn_hdr.fid.mf_gen) {
 			/* Mark duplicate dbid's as stale to help FSS */
-			BUMPSTAT(mfs_mnstat.mnfoundstale, s);
+			BUMPSTAT(mfs_mnstat.mnfoundstale);
 
 			/* 
 			 * We manipulate mn_hdr.stale under the mnode lock.
@@ -1741,14 +1737,14 @@ restart:
 			 */
 			if (mnp->mn_hdr.mfree) {
 			    MN_RMFREE(mndp, flplockp, mnp);
-			    BUMPSTAT(mfs_mnstat.mnreclaim, s);
+			    BUMPSTAT(mfs_mnstat.mnreclaim);
 			}
 			MNVOBFREEHASH_MVFS_UNLOCK(&flplockp);
 
 			/* Now unlock the mnode hash chain. */
 			MNVOBHASH_MVFS_UNLOCK(&mlplockp);
 
-			BUMPSTAT(mfs_mnstat.mnfound, s);
+			BUMPSTAT(mfs_mnstat.mnfound);
 			return(mnp);
 		    }
 		}
@@ -1777,7 +1773,6 @@ mvfs_mnnew(
     int msize;
     register mfs_mnode_t *mnp;
     char name[8];	/* For lock name */
-    SPL_T s;
 
     /* Determine size of object we need */
     msize = mvfs_mngetmnodesize(class);
@@ -1788,10 +1783,10 @@ mvfs_mnnew(
     /* Set up common mnode vars */
     if (mnp) {
 
-	INITLOCK((MHDRLOCK_ADDR(mnp)), MAKESNAME(name, "mh", mnum));
+	INITLOCK((MHDRLOCK_ADDR(mnp)), MAKESNAME(name, MHDRLOCK_PREFIX, mnum));
 	mnp->mn_hdr.vp = NULL;	/* Not hooked to vnode yet (see makenode) */
 	mnp->mn_hdr.msize = msize;
-	INITLOCK(MLOCK_ADDR(mnp), MAKESNAME(name, "mn", mnum));
+	INITLOCK(MLOCK_ADDR(mnp), MAKESNAME(name, MLOCK_PREFIX, mnum));
 	mnp->mn_hdr.mclass = class;
 	mnp->mn_hdr.dncgen = mngen;
 	/* 
@@ -1799,7 +1794,7 @@ mvfs_mnnew(
 	 * the hash list.
 	 */
 	MHDRLOCK(mnp);
-	BUMPSTAT(mfs_mnstat.mncreate, s);
+	BUMPSTAT(mfs_mnstat.mncreate);
     }
     return(mnp);
 }
@@ -1886,7 +1881,7 @@ int mnum;
 	break;
       case MFS_VIEWCLAS:
       case MFS_NTVWCLAS:
-	INITLOCK(STAMPLOCK_ADDR(mnp), MAKESNAME(name, "vs", mnum));
+	INITLOCK(STAMPLOCK_ADDR(mnp), MAKESNAME(name, STAMPLOCK_PREFIX, mnum));
 	mnp->mn_view.pvstat =
 	    (struct mvfs_pvstat *)KMEM_ALLOC(
 					sizeof(*mnp->mn_view.pvstat),
@@ -1894,16 +1889,13 @@ int mnum;
 	if (mnp->mn_view.pvstat == (struct mvfs_pvstat *)NULL) {
 	    return (0);
 	}
-	BZERO(mnp->mn_view.pvstat, sizeof(struct mvfs_pvstat));
-	mnp->mn_view.pvstat->clntstat.version = MFS_CLNTSTAT_VERS;
-	mnp->mn_view.pvstat->acstat.version = MFS_ACSTAT_VERS;
-	mnp->mn_view.pvstat->dncstat.version = MFS_DNCSTAT_VERS;
+	MVFS_PVSTATLOCK_INIT(mnp->mn_view.pvstat->mvfs_pvstatlock);
+	mvfs_pview_stat_zero(mnp->mn_view.pvstat);
 	break;
       case MFS_VOBRTCLAS:
 	break;
       case MFS_VOBCLAS:
-
-	INITLOCK(MCILOCK_ADDR(mnp), MAKESNAME(name, "cl", mnum));
+	INITLOCK(MCILOCK_ADDR(mnp), MAKESNAME(name, MCILOCK_PREFIX, mnum));
 	break;
       default:
 	MDKI_PANIC("mfs_mnget: unexpected object class\n");
@@ -1922,16 +1914,14 @@ int mnum;
 /*ARGSUSED*/
 
 void
-mfs_mnrele(mnp, vfsp)
+mfs_mnrele(mnp)
 mfs_mnode_t *mnp;
-VFS_T *vfsp;
 {
     int call_destroy = 0;
     int runfree = 0;
     int hash_val;
     LOCK_T *flplockp;
     mfs_mnode_t *hp;
-    SPL_T s;
     mvfs_mnode_data_t *mndp;
 
     MHDRLOCK(mnp);
@@ -1967,7 +1957,7 @@ VFS_T *vfsp;
 	     */
 	    if (VTOM(mnp->mn_hdr.viewvp)->mn_view.id != MFS_NULLVID) {
 		mnp->mn_hdr.freelist_time = MDKI_CTIME();
-		BUMPSTAT(mfs_mnstat.mnfree, s);
+		BUMPSTAT(mfs_mnstat.mnfree);
 
 		/* Get hash value, lock the proper hash lock, and insert */
 		hash_val = MVFS_VOBFREEHASH(mndp, mnp);
@@ -2060,7 +2050,7 @@ register mfs_mnode_t *mnp;
     mvfs_viewroot_data_t *vrdp = MDKI_VIEWROOT_GET_DATAP();
 
     ASSERT(ISLOCKEDBYME(&(mndp->mvfs_mndestroylock)));
-    BUMPSTAT(mfs_mnstat.mndestroy, s);
+    BUMPSTAT(mfs_mnstat.mndestroy);
 
     /* 
      * Take the mnode off the destroy list and unlock the mvfs_mndestroylock.
@@ -2191,6 +2181,15 @@ register mfs_mnode_t *mnp;
 	    if (mnp->mn_view.viewname) PN_STRFREE(mnp->mn_view.viewname);
 	    FREELOCK(STAMPLOCK_ADDR(mnp)); /* Free lock resources */
 	    if (mnp->mn_view.pvstat != NULL) {
+                /*
+                 * It would be good to have an ASSERT statement here to assert
+                 * that the pvstatlock is not locked before freeing it.  But,
+                 * at this time, there are no macros available to check the
+                 * lock owners on a spin lock in our code.  If such macros are
+                 * added in the future, include an assert statement here on the
+                 * pvstatlock.
+                 */
+                MVFS_PVSTATLOCK_FREE(mnp->mn_view.pvstat->mvfs_pvstatlock);
 		KMEM_FREE(mnp->mn_view.pvstat, sizeof(*mnp->mn_view.pvstat));
 		mnp->mn_view.pvstat = NULL;
 	    }
@@ -2343,6 +2342,7 @@ mvfs_mnfreelist_mgmt(void)
     for (i = 0; i < mndp->mvfs_vobfreehashsize; i++) {
 	for (j = 0; j < vobf_npc; j++) {
 
+
 	    /* Lock the hash chain. */
 	    MNVOBFREEHASH_MVFS_LOCK(mndp, i, &flplockp);
 	    hp = (mfs_mnode_t *)&(mndp->mvfs_vobfreehash[i]);
@@ -2386,7 +2386,6 @@ mvfs_mnfreelist_mgmt(void)
      */
     mvfs_mndestroy_list();
     
-
     /*
      * While we are here freeing stuff, drop the cleartexts back
      * down to the min, even if not over the max yet.  This
@@ -2784,7 +2783,6 @@ mvfs_mnhash(
 )
 {
     int hash_val;
-    SPL_T s;
     LOCK_T *mlplockp;
     mvfs_mnode_data_t *mndp = MDKI_MNODE_GET_DATAP();
 
@@ -2803,21 +2801,21 @@ mvfs_mnhash(
 	    MNVOBHASH_MVFS_LOCK(mndp, hash_val, &mlplockp);
 	    MN_INSHASH((mfs_mnode_t *)&(mndp->mvfs_vobhash[hash_val]), mnp); 
 	    MNVOBHASH_MVFS_UNLOCK(&mlplockp);
-	    BUMPSTAT(mfs_mnstat.mnvobhashcnt, s);
+	    BUMPSTAT(mfs_mnstat.mnvobhashcnt);
 	    break;
 	case MFS_LOOPCLAS:  
 	    hash_val = MFS_CVPHASH(mndp, mnp->mn_hdr.fid); 
 	    MNCVPHASH_MVFS_LOCK(mndp, hash_val, &mlplockp);
 	    MN_INSHASH((mfs_mnode_t *)&(mndp->mvfs_cvphash[hash_val]), mnp); 
 	    MNCVPHASH_MVFS_UNLOCK(&mlplockp);
-	    BUMPSTAT(mfs_mnstat.mncvphashcnt, s);
+	    BUMPSTAT(mfs_mnstat.mncvphashcnt);
 	    break;
 	default:
 	    hash_val = MFS_OTHERHASH(mndp, mnp->mn_hdr.fid); 
 	    MNOTHERHASH_MVFS_LOCK(mndp, hash_val, &mlplockp);
 	    MN_INSHASH((mfs_mnode_t *)&(mndp->mvfs_otherhash[hash_val]), mnp); 
 	    MNOTHERHASH_MVFS_UNLOCK(&mlplockp);
-	    BUMPSTAT(mfs_mnstat.mnotherhashcnt, s);
+	    BUMPSTAT(mfs_mnstat.mnotherhashcnt);
 	    break;
     }
 }
@@ -2831,7 +2829,6 @@ mvfs_mnunhash(mnp)
 register mfs_mnode_t *mnp;
 {
     int hash_val;
-    SPL_T s;
     LOCK_T *mlplockp;
     mvfs_mnode_data_t *mndp = MDKI_MNODE_GET_DATAP();
 
@@ -2844,21 +2841,21 @@ register mfs_mnode_t *mnp;
 	    MNVOBHASH_MVFS_LOCK(mndp, hash_val, &mlplockp);
 	    MN_RMHASH(mnp); 
 	    MNVOBHASH_MVFS_UNLOCK(&mlplockp);
-	    DECSTAT(mfs_mnstat.mnvobhashcnt, s);
+	    DECSTAT(mfs_mnstat.mnvobhashcnt);
 	    break;
 	case MFS_LOOPCLAS:  
 	    hash_val = MFS_CVPHASH(mndp, mnp->mn_hdr.fid); 
 	    MNCVPHASH_MVFS_LOCK(mndp, hash_val, &mlplockp);
 	    MN_RMHASH(mnp); 
 	    MNCVPHASH_MVFS_UNLOCK(&mlplockp);
-	    DECSTAT(mfs_mnstat.mncvphashcnt, s);
+	    DECSTAT(mfs_mnstat.mncvphashcnt);
 	    break;
 	default:
 	    hash_val = MFS_OTHERHASH(mndp, mnp->mn_hdr.fid); 
 	    MNOTHERHASH_MVFS_LOCK(mndp, hash_val, &mlplockp);
 	    MN_RMHASH(mnp); 
 	    MNOTHERHASH_MVFS_UNLOCK(&mlplockp);
-	    DECSTAT(mfs_mnstat.mnotherhashcnt, s);
+	    DECSTAT(mfs_mnstat.mnotherhashcnt);
 	    break;
     }
 }
@@ -3703,7 +3700,10 @@ mvfs_mnreport_leftover_vnodes(
             if (mnp->mn_hdr.vp)
                 MVOP_PRINT(mnp->mn_hdr.vp);
             else
-                MVFS_REAL_PRINTF("vfsp=%p mnp %p on freelist\n", vfsp, mnp);
+                mvfs_log(MFS_LOG_ERR,
+                         "mnreport_leftovers: vfsp=%"KS_FMT_PTR_T" "
+                         "mnp %"KS_FMT_PTR_T" on freelist\n",
+                         vfsp, mnp);
 	    MHDRUNLOCK(mnp);
 	}
     }
@@ -3925,12 +3925,11 @@ VFS_T *vfsp;
     LOCK_T *flplockp;
     mfs_mnode_t *hp;
     register mfs_mnode_t *mnp;
-    SPL_T s;
     mvfs_mnode_data_t *mndp = MDKI_MNODE_GET_DATAP();
 
     MVFS_FLUSH_MAPPINGS(vfsp);		/* toss any pages incore */
 
-    BUMPSTAT(mfs_mnstat.mnflushvfscnt, s);
+    BUMPSTAT(mfs_mnstat.mnflushvfscnt);
 
     /*
      * Go through each vob freelist hash chain and release all the VOB mnodes
@@ -3992,10 +3991,9 @@ VNODE_T *vw;
     LOCK_T *flplockp;
     mfs_mnode_t *hp;
     register mfs_mnode_t *mnp;
-    SPL_T s;
     mvfs_mnode_data_t *mndp = MDKI_MNODE_GET_DATAP();
 
-    BUMPSTAT(mfs_mnstat.mnflushvwcnt, s);
+    BUMPSTAT(mfs_mnstat.mnflushvwcnt);
 
     MVFS_FLUSH_MAPPINGS_VW(vw);
 
@@ -4141,4 +4139,4 @@ mvfs_mnverify_destroy(void)
 
 	return (cnt);
 }
-static const char vnode_verid_mvfs_mnode_c[] = "$Id:  8704c8de.b22411dd.931e.00:01:83:9c:f6:11 $";
+static const char vnode_verid_mvfs_mnode_c[] = "$Id:  d2808706.afb811df.84ca.00:01:84:7a:f2:e4 $";

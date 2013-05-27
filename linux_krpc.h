@@ -1,7 +1,7 @@
 #ifndef __LINUX_KRPC_H
 #define __LINUX_KRPC_H
 /*
- * Copyright (C) 1999, 2006 IBM Corporation.
+ * Copyright (C) 1999, 2007 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -104,6 +104,7 @@ xdr_##type(                                     \
 #define DECL_XDR_OP(type) DECL_XDR_OP_TYPE(type,type *)
 
 DECL_XDR_OP(u_long);
+DECL_XDR_OP(void);
 DECL_XDR_OP(u_int);
 DECL_XDR_OP(u_short);
 DECL_XDR_OP(long);
@@ -111,6 +112,8 @@ DECL_XDR_OP(int);
 DECL_XDR_OP_TYPE(enum,int *);
 DECL_XDR_OP_TYPE(timeval,struct timeval *);
 DECL_XDR_OP_TYPE(bool,bool_t *);
+
+#define NULLPROC 0
 
 extern bool_t
 xdr_string(
@@ -129,14 +132,15 @@ struct mdki_linux_rpc_procinfo {
     size_t res_size;
 };
 
-extern CLIENT *
+extern int
 mdki_linux_clntkudp_create(
-    struct sockaddr_in *addr,
+    struct sockaddr *addr,
     const int version,
     struct rpc_program *prog,
     const int retrans_count,
-    const bool_t intr
+    const bool_t intr,
+    CLIENT **cl_pp
 );
 
 #endif /* __LINUX_KRPC_H */
-/* $Id: 81b6015c.66c511dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: a3477e06.9c9311dd.9a62.00:01:83:29:c0:fc $ */

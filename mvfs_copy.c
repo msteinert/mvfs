@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1998, 2005. */
+/* * (C) Copyright IBM Corporation 1998, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,11 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_copy.c */
+
+
 #include "mvfs_systm.h"
 #include <tbs_base.h>
 #include <tbs_errno.h>
@@ -68,6 +70,57 @@ CopyOutMfs_strbufpn(
 	}
 #endif
 	return (COPYOUT((caddr_t)kargp, uargp, sizeof(struct mfs_strbufpn)));
+}
+
+int
+CopyInMfs_strbufpn_index(
+    caddr_t uargp,
+    struct mfs_strbufpn *kargp,
+    int index,
+    MVFS_CALLER_INFO *callinfo
+)
+{
+    caddr_t data_ptr;
+
+#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
+    int res;
+    struct mfs_strbufpn_32 vbl_32;
+
+    data_ptr = (caddr_t) (uargp + ((sizeof(struct mfs_strbufpn_32)) * index));
+
+    if (MDKI_CALLER_IS_32BIT(callinfo)) {
+        res = COPYIN(data_ptr, (caddr_t)&vbl_32, sizeof(struct mfs_strbufpn_32));
+        if (!res)
+            mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32, kargp);
+        return res;
+     }
+#endif
+     data_ptr = (caddr_t) (uargp + ((sizeof(struct mfs_strbufpn)) * index));
+     return(COPYIN(data_ptr, (caddr_t)kargp, sizeof(struct mfs_strbufpn)));
+}
+
+int
+CopyOutMfs_strbufpn_index(
+    struct mfs_strbufpn *kargp,
+    caddr_t uargp,
+    int index,
+    MVFS_CALLER_INFO *callinfo
+)
+{
+    caddr_t data_ptr;
+
+#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
+    struct mfs_strbufpn_32 vbl_32;
+
+    data_ptr = (caddr_t) (uargp + ((sizeof(struct mfs_strbufpn_32)) * index));
+
+    if (MDKI_CALLER_IS_32BIT(callinfo)) {
+        mfs_strbufpn_to_mfs_strbufpn_32(kargp, &vbl_32);
+        return (COPYOUT((caddr_t)&vbl_32, data_ptr, sizeof(struct mfs_strbufpn_32)));
+    }
+#endif
+    data_ptr = (caddr_t) (uargp + ((sizeof(struct mfs_strbufpn)) * index));
+    return (COPYOUT((caddr_t)kargp, data_ptr, sizeof(struct mfs_strbufpn)));
 }
 
 int
@@ -571,10 +624,21 @@ CopyOutView_vstat(
 )
 {
 #if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
-	struct view_vstat_32 vbl_32;
+        int res;
+	struct view_vstat_32 *vbl_32;
 	if (MDKI_CALLER_IS_32BIT(callinfo)) {
-		view_vstat_to_view_vstat_32(kargp, &vbl_32);
-		return (COPYOUT((caddr_t)&vbl_32, uargp, sizeof(struct view_vstat_32)));
+                /*
+                 * structure is large so let's malloc space
+                 */
+                if ((vbl_32 = KMEM_ALLOC(sizeof(struct view_vstat_32), KM_SLEEP))
+                        == NULL)
+                {
+                        return(ENOMEM);
+                }
+		view_vstat_to_view_vstat_32(kargp, vbl_32);
+		res = (COPYOUT((caddr_t)vbl_32, uargp, sizeof(struct view_vstat_32)));
+                KMEM_FREE(vbl_32, sizeof(struct view_vstat_32));
+                return res;
 	}
 #endif /* ATRIA_LP64 */
 	return (COPYOUT((caddr_t)kargp, uargp, sizeof(struct view_vstat)));
@@ -681,16 +745,11 @@ CopyInMvfs_viewaddr(
     MVFS_CALLER_INFO *callinfo
 )
 {
-#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
-	int res;
-	struct mvfs_viewaddr_32 vbl_32;
-	if (MDKI_CALLER_IS_32BIT(callinfo)) {
-		res = COPYIN(uargp, (caddr_t)&vbl_32, sizeof(struct mvfs_viewaddr_32));
-		if (!res)
-			mvfs_viewaddr_32_to_mvfs_viewaddr(&vbl_32, kargp);
-		return res;
-	}
-#endif /* ATRIA_LP64 */
+	/* A struct mvfs_viewaddr is currently a ks_sockaddr_storage_t (a union
+	** type), each of whose constituents is the same length on all
+	** platforms in both 32-bit and 64-bit environments.  Thus, we don't
+	** need to do anything special for it.
+	*/
 	return(COPYIN(uargp, (caddr_t)kargp, sizeof(struct mvfs_viewaddr)));
 }
 
@@ -701,13 +760,7 @@ CopyOutMvfs_viewaddr(
     MVFS_CALLER_INFO *callinfo
 )
 {
-#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
-	struct mvfs_viewaddr_32 vbl_32;
-	if (MDKI_CALLER_IS_32BIT(callinfo)) {
-		mvfs_viewaddr_to_mvfs_viewaddr_32(kargp, &vbl_32);
-		return (COPYOUT((caddr_t)&vbl_32, uargp, sizeof(struct mvfs_viewaddr_32)));
-	}
-#endif /* ATRIA_LP64 */
+	/* See the comment above. */
 	return (COPYOUT((caddr_t)kargp, uargp, sizeof(struct mvfs_viewaddr)));
 }
 
@@ -742,13 +795,16 @@ CopyInMfs_ioncent(
 	int res;
 	struct mfs_ioncent_32 vbl_32;
 	if (MDKI_CALLER_IS_32BIT(callinfo)) {
-		res = COPYIN(uargp, (caddr_t)&vbl_32, sizeof(struct mfs_ioncent_32));
-		if (!res)
-			mfs_ioncent_32_to_mfs_ioncent(&vbl_32, kargp);
-		return res;
-	}
-#endif /* ATRIA_LP64 */
+            res = COPYIN(uargp, (caddr_t)&vbl_32, sizeof(struct mfs_ioncent_32));
+            if (!res)
+                mfs_ioncent_32_to_mfs_ioncent(&vbl_32, kargp);
+            return res;
+	} else {
+            return(COPYIN(uargp, (caddr_t)kargp, sizeof(struct mfs_ioncent)));
+        }
+#else
 	return(COPYIN(uargp, (caddr_t)kargp, sizeof(struct mfs_ioncent)));
+#endif /* ATRIA_LP64 */
 }
 
 int
@@ -761,11 +817,14 @@ CopyOutMfs_ioncent(
 #if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
 	struct mfs_ioncent_32 vbl_32;
 	if (MDKI_CALLER_IS_32BIT(callinfo)) {
-		mfs_ioncent_to_mfs_ioncent_32(kargp, &vbl_32);
-		return (COPYOUT((caddr_t)&vbl_32, uargp, sizeof(struct mfs_ioncent_32)));
-	}
-#endif /* ATRIA_LP64 */
+            mfs_ioncent_to_mfs_ioncent_32(kargp, &vbl_32);
+            return (COPYOUT((caddr_t)&vbl_32, uargp, sizeof(struct mfs_ioncent_32)));
+	} else {
+            return (COPYOUT((caddr_t)kargp, uargp, sizeof(struct mfs_ioncent)));
+        }
+#else
 	return (COPYOUT((caddr_t)kargp, uargp, sizeof(struct mfs_ioncent)));
+#endif /* ATRIA_LP64 */
 }
 
 int
@@ -982,15 +1041,19 @@ CopyOutMfs_clntstat(
 )
 {
 #if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
-	struct mfs_clntstat_32 vbl_32;
-	if (MDKI_CALLER_IS_32BIT(callinfo)) {
-		mfs_clntstat_to_mfs_clntstat_32(kargp, &vbl_32);
-		return (COPYOUT((caddr_t)&vbl_32, uargp, 
-				KS_MIN(max_len, sizeof(struct mfs_clntstat_32))));
-	}
+        struct mfs_clntstat_32 vbl_32;
+        if (MDKI_CALLER_IS_32BIT(callinfo)) {
+                mfs_clntstat_to_mfs_clntstat_32(kargp, &vbl_32);
+                return (COPYOUT((caddr_t)&vbl_32, uargp,
+                                KS_MIN(max_len, sizeof(struct mfs_clntstat_32))));
+        } else {
+                return (COPYOUT((caddr_t)kargp, uargp,
+                                KS_MIN(max_len, sizeof(struct mfs_clntstat))));
+        }
+#else
+        return (COPYOUT((caddr_t)kargp, uargp,
+                        KS_MIN(max_len, sizeof(struct mfs_clntstat))));
 #endif /* ATRIA_LP64 */
-	return (COPYOUT((caddr_t)kargp, uargp, 
-				KS_MIN(max_len, sizeof(struct mfs_clntstat))));
 }
 
 int
@@ -1007,10 +1070,14 @@ CopyOutMfs_clearstat(
 		mfs_clearstat_to_mfs_clearstat_32(kargp, &vbl_32);
 		return (COPYOUT((caddr_t)&vbl_32, uargp, 
 				KS_MIN(max_len, sizeof(struct mfs_clearstat_32))));
-	}
+	} else {
+                return (COPYOUT((caddr_t)kargp, uargp,
+                                KS_MIN(max_len, sizeof(struct mfs_clearstat))));
+        }
+#else
+        return (COPYOUT((caddr_t)kargp, uargp,
+                        KS_MIN(max_len, sizeof(struct mfs_clearstat))));
 #endif /* ATRIA_LP64 */
-	return (COPYOUT((caddr_t)kargp, uargp, 
-				KS_MIN(max_len, sizeof(struct mfs_clearstat))));
 }
 
 int
@@ -1027,10 +1094,14 @@ CopyOutMfs_austat(
 		mfs_austat_to_mfs_austat_32(kargp, &vbl_32);
 		return (COPYOUT((caddr_t)&vbl_32, uargp, 
 				KS_MIN(max_len, sizeof(struct mfs_austat_32))));
-	}
+	} else {
+                return (COPYOUT((caddr_t)kargp, uargp,
+                                KS_MIN(max_len, sizeof(struct mfs_austat))));
+        }
+#else
+        return (COPYOUT((caddr_t)kargp, uargp,
+                        KS_MIN(max_len, sizeof(struct mfs_austat))));
 #endif /* ATRIA_LP64 */
-	return (COPYOUT((caddr_t)kargp, uargp, 
-				KS_MIN(max_len, sizeof(struct mfs_austat))));
 }
 
 int
@@ -1042,7 +1113,6 @@ CopyOutMfs_rpchist(
 )
 {
 #if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
-
 	if (MDKI_CALLER_IS_32BIT(callinfo)) {
 		struct mfs_rpchist_32 *vbl_32;
 		int res;
@@ -1060,10 +1130,14 @@ CopyOutMfs_rpchist(
 						sizeof(struct mfs_rpchist_32)));
 		KMEM_FREE(vbl_32, sizeof(struct mfs_rpchist_32));
 		return(res);
-	}
+	} else {
+                return (COPYOUT((caddr_t)kargp, uargp, KS_MIN(max_len,
+                                                sizeof(struct mfs_rpchist))));
+        }
+#else
+        return (COPYOUT((caddr_t)kargp, uargp, KS_MIN(max_len,
+                                        sizeof(struct mfs_rpchist))));
 #endif /* ATRIA_LP64 */
-	return (COPYOUT((caddr_t)kargp, uargp, KS_MIN(max_len, 
-						sizeof(struct mfs_rpchist))));
 }
 
 int 
@@ -1097,9 +1171,12 @@ CopyOuttimestruc_array(
 				return (res);
 		}
 		return res;
-	}
-#endif
-		return(COPYOUT((caddr_t)kargp, uargp, KS_MIN(max_len, sizeof(timestruc_t) * no_entries)));
+	} else {
+                return(COPYOUT((caddr_t)kargp, uargp, KS_MIN(max_len, sizeof(timestruc_t) * no_entries)));
+        }
+#else
+        return(COPYOUT((caddr_t)kargp, uargp, KS_MIN(max_len, sizeof(timestruc_t) * no_entries)));
+#endif /* ATRIA_LP64 */
 }
 
 int
@@ -1172,11 +1249,22 @@ CopyInMvfs_viewstats(
 {
 #if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
 	int res;
-	struct mvfs_viewstats_32 vbl_32;
+	struct mvfs_viewstats_32 *vbl_32;
+
 	if (MDKI_CALLER_IS_32BIT(callinfo)) {
-		res = COPYIN(uargp, (caddr_t)&vbl_32, sizeof(struct mvfs_viewstats_32));
+		/*
+		 * structure is large so let's malloc space
+		 */
+		if((vbl_32 = KMEM_ALLOC(sizeof(struct mvfs_viewstats_32), KM_SLEEP))
+			== NULL)
+		{
+			return(ENOMEM);
+		}
+
+		res = COPYIN(uargp, (caddr_t)vbl_32, sizeof(struct mvfs_viewstats_32));
 		if (!res)
-			mvfs_viewstats_32_to_mvfs_viewstats(&vbl_32, kargp);
+			mvfs_viewstats_32_to_mvfs_viewstats(vbl_32, kargp);
+		KMEM_FREE(vbl_32, sizeof(struct mvfs_viewstats_32));
 		return res;
 	}
 #endif /* ATRIA_LP64 */
@@ -1238,4 +1326,42 @@ CopyInMvfs_unmount_info(
 {
 	return(COPYIN(uargp, (caddr_t)kargp, sizeof(struct mvfs_unmount_info)));
 }
-static const char vnode_verid_mvfs_copy_c[] = "$Id:  2db2ae54.637a11da.8655.00:01:83:a6:4c:63 $";
+
+int
+CopyInMvfs_gfsinfo(
+    caddr_t uargp,
+    struct mvfs_gfsinfo *kgfsinfo,
+    MVFS_CALLER_INFO *callinfo
+)
+{
+#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
+	int res;
+	struct mvfs_gfsinfo_32 gfsinfo_32;
+	if (MDKI_CALLER_IS_32BIT(callinfo)) {
+		res = COPYIN(uargp, (caddr_t)&gfsinfo_32, sizeof(struct mvfs_gfsinfo_32));
+		if (!res)
+			mvfs_gfsinfo_32_to_mvfs_gfsinfo(&gfsinfo_32, kgfsinfo);
+		return res;
+	}
+#endif /* ATRIA_LP64 */
+	return(COPYIN(uargp, (caddr_t)kgfsinfo, sizeof(struct mvfs_gfsinfo)));
+}
+int
+CopyOutMvfs_gfsinfo(
+    struct mvfs_gfsinfo *kgfsinfo,
+    caddr_t uargp,
+    MVFS_CALLER_INFO *callinfo
+)
+{
+#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
+	struct mvfs_gfsinfo_32 gfsinfo_32;
+	if (MDKI_CALLER_IS_32BIT(callinfo)) {
+		mvfs_gfsinfo_to_mvfs_gfsinfo_32(kgfsinfo, &gfsinfo_32);
+		return (COPYOUT((caddr_t)&gfsinfo_32, uargp, 
+                                sizeof(struct mvfs_gfsinfo_32)));
+	}
+#endif /* ATRIA_LP64 */
+	return (COPYOUT((caddr_t)kgfsinfo, uargp, 
+                        sizeof(struct mvfs_gfsinfo)));
+}
+static const char vnode_verid_mvfs_copy_c[] = "$Id:  3033a857.a23a11df.8bc7.00:01:84:7a:f2:e4 $";

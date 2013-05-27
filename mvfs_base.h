@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 2006, 2008. */
+/* * (C) Copyright IBM Corporation 2006, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,10 +19,11 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_BASE_H_
 #define MVFS_BASE_H_
+
 
 #include "view_rpc_kernel.h"
 #include "mfs_stats.h"
@@ -32,6 +33,7 @@
 
 #define MFS_MAXRPCDATA	8192	/* Max data in clnt calls */
 #define MFS_BLOCKSIZE	8192	/* FS block size */
+
 
 typedef char mfs_pn_char_t;		/* Pathname character type */
 typedef char mfs_hn_char_t;		/* Hostname character type */
@@ -135,24 +137,6 @@ typedef char mfs_hn_char_t;		/* Hostname character type */
 #define MVFS_CLEARFLAG(flags, flagvalue) { \
     (flags) &= ~(flagvalue); \
     }
-    
-/*
- * Convert a timestruc to a timeval and vice-versa
- * Notes: 
- *	- avoid timestruc_to_timeval where performance counts
- * 	  divide is very slow on many RISC machines.
- *	- timestruc->timeval->timestruc will not equal the
- *	  original timestruc due to precision loss - watch out!
- * 	- leave flag values of -1 unconverted (for setattr calls!)
- */
-#define MFS_TIMEVAL_TO_TIMESTRUC(tvp, tsp) { \
-	(tsp)->tv_sec = (tvp)->tv_sec; \
-	(tsp)->tv_nsec = ((tvp)->tv_usec == -1 ? -1 : (tvp)->tv_usec * 1000); \
-    }
-#define MFS_TIMESTRUC_TO_TIMEVAL(tsp, tvp) { \
-	(tvp)->tv_sec = (tsp)->tv_sec; \
-	(tvp)->tv_usec = ((tsp)->tv_nsec == -1 ? -1 : (tsp)->tv_nsec / 1000); \
-    }
 
 /*
  * MFS structures for mfscall().
@@ -186,10 +170,11 @@ struct mfs_svr {
 	u_int	uprinted : 1;		/* Server down msg printed to user */
 	u_int	svrbound : 1;		/* Server addr valid (else find) */
 	u_int	mbz : 28;
-	struct sockaddr_in addr;	/* Server address */
+	ks_sockaddr_storage_t addr;	/* Server address */
 	mfs_strbufpn_pair_t	lpn;	/* Local pathname (to server dir) */
 	mfs_hn_char_t   *host;		/* Server host name */
 	mfs_pn_char_t	*rpn;		/* Remote pathname (for svr to use) */
+	mfs_pn_char_t	*net_pn;	/* Remote pathname (to server dir) */
 	tbs_uuid_t uuid;		/* UID for albd (location daemon) */
 };
 
@@ -227,6 +212,7 @@ typedef struct client_cache {
 
 typedef struct mvfs_rpc_data {
     LOCK_T mfs_client_lock;
+    sa_family_t mvfs_client_cache_family;
     client_cache_t *mvfs_client_cache;
 } mvfs_rpc_data_t; 
 
@@ -477,6 +463,7 @@ extern VFSOPS_T *mfs_vfsopp; 	/* vfs ops ptr */
          (VTOM(MFS_VIEW(vp))->mn_view.hm && \
           VTOM(vp)->mn_vob.vfh.elem_dbid == (rootdbid) && \
           VTOM(vp)->mn_vob.vfh.ver_dbid == (rootdbid))) 
+
 
 struct mfs_rebindent {		/* Dir version cache entry */
 	u_int	       valid : 1; 	/* Entry valid */
@@ -795,39 +782,54 @@ struct mvfs_vobstamp {
 };
 #define	MVFS_NUM_VOB_STAMPS	20	/* FIXME: select a size? */
 
-/* Consolidated structure for MVFS statistics.  This is allocated and
- * initialized in mvfs_misc_init() when the viewroot is mounted. 
- * Macros for manipulating the values are defined in mvfs_systm.h or 
- * individual platform mdep files. When atomic increment/decrement instructions 
- * are available on a given platform, they will be used; otherwise the 
- * spinlock mfs_statlock is used to assure an atomic operation.
- * MVFS makes RPC calls to various view_servers and to the aldbd server.
- * We keep stats only on the view RPCs for performance evaluation. The
- * ALBD RPCs are not considered an area of concern for performance. 
- */ 
+/* Structure for MVFS statistics.  The statistics are maintained on a per-CPU
+ * basis.  They are allocated and initialized in mvfs_misc_init when the
+ * viewroot is mounted.  Macros for initializing and manipulating the values
+ * are also defined in this header file.  Preemption disabling is used to ensure
+ * data integrity.  MVFS makes RPC calls to various view_servers and to the
+ * albd server.  We keep stats only on the view RPCs for performance evaluation.
+ * The ALBD RPCs are not considered an area of concern for performance.
+ */
 typedef struct mvfs_statistics_data {
-        SPLOCK_T mfs_statlock;
-        struct mfs_mnstat mfs_mnstat;          /* mnode statistics */
-        struct mfs_dncstat mfs_dncstat;        /* name cache stats */
-        struct mfs_rvcstat mfs_rvcstat;        /* RVC stats separate from DNLC */
-        struct mfs_clntstat     mfs_clntstat;  /* RPC stats */
-        struct mfs_acstat       mfs_acstat;    /* Attr cache */
-        struct mfs_rlstat       mfs_rlstat;    /* Readlink cache */
-        struct mfs_clearstat    mfs_clearstat; /* Cleartext operations */
-        struct mfs_austat       mfs_austat;    /* Audit operations */
+        tbs_boolean_t zero_me;               /* set if stats should  be zerod */
+        struct mfs_mnstat mfs_mnstat;        /* mnode statistics */
+        struct mfs_dncstat mfs_dncstat;      /* name cache stats */
+        struct mfs_rvcstat mfs_rvcstat;      /* RVC stats separate from DNLC */
+        struct mfs_clntstat mfs_clntstat;    /* RPC stats */
+        struct mfs_acstat mfs_acstat;        /* Attr cache */
+        struct mfs_rlstat mfs_rlstat;        /* Readlink cache */
+        struct mfs_clearstat mfs_clearstat;  /* Cleartext operations */
+        struct mfs_austat mfs_austat;        /* Audit operations */
 
-        MVFS_ATOMIC_T mfs_vnopcnt[MFS_VNOPCNT]; /* Vnode op calls counted */
-        MVFS_ATOMIC_T mfs_vfsopcnt[MFS_VFSOPCNT];  /* VFS op calls counted */
-        MVFS_ATOMIC_T mfs_viewopcnt[VIEW_NUM_PROCS]; /* RPC ops to viewserver */
-        timestruc_t mfs_viewoptime[VIEW_NUM_PROCS]; /* time for the RPCs */ 
-        struct mfs_rpchist mfs_viewophist;      /* Histogram of the RPC times */
+        MVFS_STAT_CNT_T mfs_vnopcnt[MFS_VNOPCNT];  /* Vnode op calls counted */
+        MVFS_STAT_CNT_T mfs_vfsopcnt[MFS_VFSOPCNT];/* VFS op calls counted */
+        MVFS_STAT_CNT_T mfs_viewopcnt[VIEW_NUM_PROCS]; /* RPC ops to viewserver */
+        timestruc_t mfs_viewoptime[VIEW_NUM_PROCS];/* time for the RPCs */ 
+        struct mfs_rpchist mfs_viewophist;    /* Histogram of the RPC times */
 } mvfs_stats_data_t; 
 
+/*
+ * Per-view statistics structure.  These are maintained on a per-view basis and
+ * not on a per-CPU basis.  So, we need a lock to protect these.  The mnode,
+ * vnode structs could be allocated pageable memory.  Taking this pvstatlock
+ * which is a spin lock and then accessing the paged memory could lead to
+ * problems.  So, wherever this lock is used, care should be taken not to
+ * touch any paged memory after taking this lock.  In some of the macros below
+ * where this lock is used, the per-view stat pointer was read into a local
+ * variable before taking the lock and that is used to access the stats after
+ * the lock is taken.
+ */
 struct mvfs_pvstat {
+	SPLOCK_T mvfs_pvstatlock;
 	struct mfs_clntstat	clntstat;	/* Client Statistics */
 	struct mfs_acstat	acstat;		/* Attribute Cache stats */
 	struct mfs_dncstat      dncstat;	/* DNC stats */
 };
+
+/* Histogram of RPC delays.  This is used to initiliaze the corresponding
+ * structure in mvfs_statistics_data.
+ */
+extern struct mfs_rpchist mvfs_init_viewophist;
 
 /* View objects - vnodes that describe a view itself */
 
@@ -841,7 +843,8 @@ struct mfs_viewnode {
 	u_int		zombie_view : 1; 	/* View stg error printed */
         u_int           windows_view : 1;   /* View on Windows NT or 2k */
         u_int           lfs_view : 1;       /* LFS view                */
-	u_int	        pad : 24;
+        u_int           downrev_view : 1;       /* view at prev release */
+	u_int	        pad : 23;
 	mfs_pn_char_t   *viewname;	/* View tag name */
 	struct mfs_svr	svr;	/* View server info */
 	u_int		id;	/* View index in /view (for making inums, etc) */
@@ -859,6 +862,7 @@ struct mfs_viewnode {
 	struct mvfs_pvstat
 			*pvstat;	/* Per-view statistics */
 };
+
 
 struct mfs_ramdirent {
 	mfs_pn_char_t 	*nm;	/* Ptr to name */
@@ -997,6 +1001,7 @@ struct mfs_auditfile {
 	VATTR_T		 va;		/* Vattr buf space */
 };
 typedef struct mfs_auditfile mfs_auditfile_t;
+
 
 struct mvfs_proc_inherited {
     u_int	      mpi_spare1  :14;	/* Spare "system flags" */
@@ -1193,9 +1198,14 @@ typedef struct mvfs_proc_thread_data {
 #define MFS_MNATTRGEN(_mndp)	(_mndp)->mfs_attrgen
 extern u_long mfs_mn_newattrgen(P_NONE);
 
+
 /*
  * Mnode locking macros
  */
+#define MHDRLOCK_PREFIX  "mh"
+#define MLOCK_PREFIX     "mn"
+#define STAMPLOCK_PREFIX "vs"
+
 #define MLOCK_ADDR(mnp)		&(mnp)->mn_hdr.lock
 #define STAMPLOCK_ADDR(mnp)	&(mnp)->mn_view.stamplock
 #define MHDRLOCK_ADDR(mnp)	&(mnp)->mn_hdr.hdr_lock
@@ -1220,7 +1230,7 @@ extern u_long mfs_mn_newattrgen(P_NONE);
  */
 
 #define MFS_VFH(vp)	(VTOM(vp)->mn_vob.vfh)
-#define MFS_BH()	mfs_getbh()
+#define MFS_BH(cd)	mfs_getbh(cd)
 
 /* Test VFH for history mode bit */
 
@@ -1254,6 +1264,8 @@ extern u_long mfs_mn_newattrgen(P_NONE);
 	}
 
 /* Clearinfo lock macros.  Lock is used when manipulating the cred cache. */
+
+#define MCILOCK_PREFIX "cl"
 
 #define MCILOCK_ADDR(mnp)	&(mnp)->mn_vob.cleartext.cl_info_lock
 
@@ -1295,19 +1307,19 @@ extern u_long mfs_mn_newattrgen(P_NONE);
  *
  */
 
-#define MFS_AUDIT_EXT(k,dvp,nm,dvp2,nm2,vp,flags,c) {		\
+#define MFS_AUDIT_EXT(k,dvp,nm,dvp2,nm2,vp,flags,cd) {		\
 	ASSERT(MVFS_MDEP_ENTER_FS()->thr_activecount > 0); \
-	while (mfs_audit(k,dvp,nm,dvp2,nm2,vp,flags,c)) {	\
-	    mvfs_auditwrite(mvfs_mythread());		\
+	while (mfs_audit(k,dvp,nm,dvp2,nm2,vp,flags,cd)) {	\
+	    mvfs_auditwrite(MVFS_MYTHREAD(cd));		\
 	} \
 	if (k == MFS_AR_READ || k == MFS_AR_WRITE || \
 		k == MFS_AR_TRUNCATE || k == MFS_AR_CHOID) { \
-	    mfs_set_audited(vp, c); \
+	    mfs_set_audited(vp, cd); \
 	} \
     }
 
-#define MFS_AUDIT(k,dvp,nm,dvp2,nm2,vp,c) \
-	MFS_AUDIT_EXT(k,dvp,nm,dvp2,nm2,vp,0,c)
+#define MFS_AUDIT(k,dvp,nm,dvp2,nm2,vp,cd) \
+	MFS_AUDIT_EXT(k,dvp,nm,dvp2,nm2,vp,0,cd)
 
 /* 
  * Definition of lookup options.  The "NF_SYMLINK" (no-follow symlink)
@@ -1339,7 +1351,10 @@ extern u_long mfs_mn_newattrgen(P_NONE);
  *              MVFS_NB_LOOKUP - Don't call bindroot (Linux only)
  * OUT dvpp	(Optional) Ptr to "dir vnode ptr" to return.
  * OUT vpp	Ptr to "vnode ptr" to return for the object looked up.
- * IN cred	Ptr to a credentials struct to perform the lookup as
+ * IN cd	Ptr to a call_data structure that contains the credentials
+ *              to use for looking up the object.
+ *              For platforms that have not converted to using call_data
+ *              this will be a pointer to a cred structure.
  * RESULT:      Unix filesystem error code
  *
  * This call is used to lookup objects from the MVFS extended 
@@ -1485,7 +1500,6 @@ struct mfs_mntinfo {
         int              mmi_zoneid;    /* zone id of the mount */
 	mfs_pn_char_t   *mmi_mntpath;	/* Mount point pathname */
 	mfs_pn_char_t	*mmi_vobtag;	/* Vob-tag (for nt-viewtag support) */
-	mfs_pn_char_t	*mmi_vobdir;	/* Subdir name inside VOB */
 	tbs_oid_t	 mmi_voboid;	/* VOB family OID */
 	tbs_uuid_t	 mmi_vobuuid;	/* VOB instance uuid */
 	tbs_dbid_t	 mmi_root_edbid; /* Root element dbid */
@@ -1618,7 +1632,7 @@ mvfs_ioctl_lookup(
     mvfscmd_block_t *iocbuf,
     VNODE_T **vpp,
     CLR_VNODE_T **cvpp,                 /* may be null if MFS_VPISMFS(*vpp) */
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 );
 
@@ -1636,7 +1650,7 @@ mvfs_mioctl(
     CLR_VNODE_T *cvp,
     mvfscmd_block_t *data,
     int flag,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 );
 
@@ -1664,13 +1678,15 @@ mvfs_sync_attr(
     mfs_mnode_t *mnp,
     VATTR_T *vap,
     int bhflag,
-    u_int saflag
+    u_int saflag,
+    CALL_DATA_T *cd
 );
 
 EXTERN int
 mfs_ac_timedout(
-    struct mfs_mnode *,
-    tbs_boolean_t evmiss_flag
+    struct mfs_mnode *mnp,
+    tbs_boolean_t evmiss_flag,
+    CALL_DATA_T *cd
 );
 
 EXTERN void
@@ -1691,15 +1707,12 @@ mvfs_ac_set_stat(
 );
 
 EXTERN void
-mfs_ac_modevents(P1(VNODE_T *vp)
-		 PN(int flags)
-		 PN(CRED_T *cred));
-
-EXTERN void
-mfs_attrcache(P1(VNODE_T *)
-	      PN(view_vstat_t *)
-	      PN(int)
-	      PN(CRED_T *));
+mfs_attrcache(
+    VNODE_T *vp,
+    view_vstat_t *vstat,
+    int expmod,     /* Indicates caller expects this modification */
+    CRED_T *cred
+);
 
 EXTERN int
 mfs_chkaccess(P1(VNODE_T *vp)
@@ -1710,19 +1723,25 @@ mfs_chkaccess(P1(VNODE_T *vp)
 	      PN(CRED_T *cred));
 
 EXTERN int
-mfs_evtime_valid(P1(VNODE_T *)
-		 PN(struct timeval *)
-		 PN(CRED_T *cred));
+mfs_evtime_valid(
+    VNODE_T *vp,
+    struct timeval *tvp,
+    CALL_DATA_T *cd
+);
 
 EXTERN void
-mfs_set_audited(P1(VNODE_T *vp)
-		PN(CRED_T *cred));
+mfs_set_audited(
+    VNODE_T *vp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int
-mfs_change_oid(P1(VNODE_T *vp)
-	       PN(int choidflag)
-	       PN(int sleepflag)
-	       PN(CRED_T *cred));
+mfs_change_oid(
+    VNODE_T *vp,
+    int choidflag,
+    int sleepflag,
+    CALL_DATA_T *cd
+);
 
 EXTERN int
 mfs_changeattr_eval_choid(P1(VNODE_T *vp)
@@ -1740,35 +1759,40 @@ mvfs_mmap_getcvp(
     CLR_VNODE_T **cvpp,
     u_int mflags,
     u_int prot,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 
 EXTERN void
-mvfs_mmap_no_audit(P1(VNODE_T *vp)
-		   PN(u_int mflags)
-		   PN(u_int prot)
-		   PN(CRED_T *cred));
+mvfs_mmap_no_audit(
+    VNODE_T *vp,
+    u_int mflags,
+    u_int prot,
+    CALL_DATA_T *cd
+);
 #endif
 
 EXTERN int
-mfs_inactive_common(P1(VNODE_T *vp)
-		    PN(int sleep_flag)
-		    PN(CRED_T *cred));
-
+mfs_inactive_common(
+    VNODE_T *vp,
+    int sleep_flag,
+    CALL_DATA_T *cd
+);
 EXTERN int
-mfs_std_inactive(P1(VNODE_T *vp)
-		 PN(CRED_T *cred));
-
+mfs_std_inactive(
+    VNODE_T *vp,
+    CALL_DATA_T *cd
+);
 EXTERN VNODE_T *
 mfs_getview(P1(VNODE_T *) 
 	    PN(CRED_T *)
 	    PN(int));
 
 EXTERN VNODE_T *
-mfs_bindroot(P1(VNODE_T *) 
-  	     PN(CRED_T *) 
-	     PN(int *));
-
+mfs_bindroot(
+    VNODE_T *vp,
+    CALL_DATA_T *cd,
+    int *errp
+);
 /*
  * Used in vnget routines to init vnode to disallow
  * mapping by default if flag reset (by hand) to 0
@@ -1782,13 +1806,15 @@ mfs_makevobrtnode(P1(VNODE_T *)
 		  PN(VNODE_T **));
 
 EXTERN int 
-mfs_makevobnode(P1(view_vstat_t *) 
-		PN(struct timeval *) 
-		PN(VNODE_T *) 
-		PN(view_fhandle_t *) 
-		PN(VFS_T *) 
-		PN(CRED_T *)
-		PN(VNODE_T **));
+mfs_makevobnode(
+    view_vstat_t *vstatp,
+    struct timeval *lvut,
+    VNODE_T *vw,
+    view_fhandle_t *vfhp,
+    VFS_T *vfsp,
+    CRED_T *cred,
+    VNODE_T **vpp
+);
 
 EXTERN int 
 mfs_makeloopnode(
@@ -1806,12 +1832,17 @@ mfs_makespecnode(P1(mfs_class_t)
 		 PN(VNODE_T **));
 
 EXTERN void
-mfs_rebind_self(P1(VNODE_T *));
+mfs_rebind_self(
+    VNODE_T *vp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int
-mfs_rebind_vpp(P1(int)
-	       PN(VNODE_T **)
-	       PN(CRED_T *));
+mfs_rebind_vpp(
+    int release,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+);
 
 EXTERN dev_t
 mvfs_devadjust(P1(dev_t dev)
@@ -1830,19 +1861,23 @@ mfs_unload(P1(VFSSW_T *vswp)
 	   PN(int fsnum));
 
 EXTERN int
-mfs_getmnode(P1(VFS_T *)
-	     PN(VNODE_T *)
-	     PN(mfs_fid_t *)
-	     PN(mfs_mnode_t **)
-	     PN(int *)
-             PN(CRED_T *));
+mfs_getmnode(
+    VFS_T *vfsp,
+    VNODE_T *vw,
+    mfs_fid_t *fidp,
+    mfs_mnode_t **mnpp,
+    int *nnp,           /* Newnode flag ptr */
+    CALL_DATA_T *cd     /* May be NULL */
+);
 
 EXTERN int
-mfs_getvnode(P1(VFS_T *)
-	     PN(VNODE_T *)
-	     PN(mfs_fid_t *)
-	     PN(VNODE_T **)
-	     PN(CRED_T *));
+mfs_getvnode(
+    VFS_T *vfsp,
+    VNODE_T *vw,
+    mfs_fid_t *fidp,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int
 mvfs_vfsgetnum(P1(MVFS_MINMAP_T *map)
@@ -1866,15 +1901,19 @@ mvfs_compute_largeinit(u_long kbytes_available);
 
 EXTERN int
 mvfs_clnt_init(mvfs_cache_sizes_t *mma_sizes);
-EXTERN void mvfs_clnt_free(P_NONE);
+EXTERN void mvfs_clnt_destroy(void);
 
 EXTERN int
-mfs_clnt_getattr_mnp(P1(mfs_mnode_t *)
-		     PN(VFS_T *)
-	             PN(CRED_T *));
+mfs_clnt_getattr_mnp(
+    mfs_mnode_t *mnp,
+    VFS_T *vfsp,
+    CALL_DATA_T *cd
+);
 EXTERN int 
-mfs_clnt_getattr(P1(VNODE_T *) 
-		 PN(CRED_T *));
+mfs_clnt_getattr(
+    VNODE_T *vp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
 mvfs_clnt_setattr_locked(
@@ -1883,133 +1922,175 @@ mvfs_clnt_setattr_locked(
     u_long xmode,
     int bhflag,
     int wcred, 
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     u_int saflag
 );
 
 #define MVFS_SATTR_ATIME_EROFS_OK 0x1 /* suppress EROFS when set atime only */
 
 EXTERN int 
-mfs_clnt_readlink(P1(VNODE_T *) 
-		  PN(mfs_pn_char_t *) 
-		  PN(int *) 
-		  PN(CRED_T *));
+mfs_clnt_readlink(
+    register VNODE_T *vp,
+    mfs_pn_char_t *lnkbuf, 
+    int *lnklenp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_remove(P1(VNODE_T *)
-		PN(mfs_pn_char_t *) 
-		PN(int)
-		PN(int)
-		PN(CRED_T *));
+mfs_clnt_remove(
+    register VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    int bhflag,
+    int sleep,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_lookup(P1(VNODE_T *) 
-		PN(mfs_pn_char_t *)
-		PN(VNODE_T **)
-		PN(CRED_T *));
+mfs_clnt_lookup(
+    VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_create(P1(VNODE_T *) 
-		PN(mfs_pn_char_t *) 
-		PN(VATTR_T *)
-		PN(VNODE_T **)
-		PN(CRED_T *));
+mfs_clnt_create(
+    VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    VATTR_T *va,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_link(P1(VNODE_T *)
-	      PN(VNODE_T *)
-	      PN(mfs_pn_char_t *)
-	      PN(CRED_T *));
+mfs_clnt_link(
+    register VNODE_T *vp,
+    VNODE_T *tdvp,
+    mfs_pn_char_t *tnm,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_rename(P1(VNODE_T *)
-		PN(mfs_pn_char_t *)
-		PN(VNODE_T *)
-		PN(mfs_pn_char_t *)
-		PN(CRED_T *));
+mfs_clnt_rename(
+    VNODE_T *odvp,
+    mfs_pn_char_t *onm,
+    VNODE_T *tdvp,
+    mfs_pn_char_t *tnm,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_mkdir(P1(VNODE_T *)
-	       PN(mfs_pn_char_t *)
-	       PN(VATTR_T *)
-	       PN(VNODE_T **)
-	       PN(CRED_T *));
+mfs_clnt_mkdir(
+    VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    VATTR_T *va,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_rmdir(P1(VNODE_T *) 
-	       PN(mfs_pn_char_t *)
-	       PN(CRED_T *));
+mfs_clnt_rmdir(
+    VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_symlink(P1(VNODE_T *dvp) 
-		 PN(mfs_pn_char_t *lnm)
-		 PN(VATTR_T *tva)
-		 PN(mfs_pn_char_t *tnm)
-		 PN(VNODE_T **vpp)
-		 PN(CRED_T *cred));
+mfs_clnt_symlink(
+    VNODE_T *dvp,
+    mfs_pn_char_t *lnm,
+    VATTR_T *tva,
+    mfs_pn_char_t *tnm,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_readdir(P1(VNODE_T *)
-		 PN(struct uio *)
-	         PN(CRED_T *)
-	         PN(int *eofp));
+mfs_clnt_readdir(
+    VNODE_T *dvp,
+    struct uio *uiop,
+    CALL_DATA_T *cd,
+    int *eofp
+);
 
 EXTERN int 
-mfs_clnt_readdirx(P1(VNODE_T *)
-		 PN(struct uio *)
-	         PN(CRED_T *)
-		 PN(view_readdir_flag_t flags)
-		 PN(int *eofp));
+mfs_clnt_readdirx(
+    VNODE_T *dvp,
+    struct uio *uiop,
+    CALL_DATA_T *cd,
+    view_readdir_flag_t flags,
+    int *eofp
+);
 
 EXTERN int 
-mfs_clnt_inval(P1(VNODE_T *) 
-	       PN(view_invalidate_type_t)
-	       PN(A_CONST tbs_oid_t *)
-	       PN(A_CONST tbs_oid_t *)
-	       PN(mfs_pn_char_t *)
-	       PN(CRED_T *));
+mfs_clnt_inval(
+    VNODE_T *vw,
+    view_invalidate_type_t itype,
+    A_CONST tbs_oid_t *voboidp,
+    A_CONST tbs_oid_t *oidp,
+    mfs_pn_char_t *nm,
+    CALL_DATA_T *cd
+);
 
 #define MFS_CHOID_SETAUDIT	1
 #define MFS_CHOID_CLRAUDIT   	0
 EXTERN int
-mfs_clnt_choid(P1(VNODE_T *)
-	       PN(view_change_oid_option_t)
-	       PN(tbs_oid_t *)
-	       PN(CRED_T *));
+mfs_clnt_choid(
+    VNODE_T *vp,
+    view_change_oid_option_t opts,
+    tbs_oid_t *prevoidp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int
-mfs_clnt_choid_locked(P1(VNODE_T *)
-		      PN(view_change_oid_option_t)
-		      PN(tbs_oid_t *)
-		      PN(CRED_T *));
+mfs_clnt_choid_locked(
+    register VNODE_T *vp,
+    view_change_oid_option_t opts,
+    tbs_oid_t *prevoidp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int
-mfs_clnt_bindroot(P1(int)
-		  PN(VNODE_T *)
-		  PN(VFS_T *)
-		  PN(mfs_pn_char_t *)
-		  PN(VNODE_T **)
-		  PN(CRED_T *));
+mfs_clnt_bindroot(
+    int root,
+    VNODE_T *vw,
+    VFS_T *vfsp,
+    mfs_pn_char_t *nm,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+);
+EXTERN int
+mfs_clnt_rebind_dir(
+    VNODE_T *dvp,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int
-mfs_clnt_rebind_dir(P1(VNODE_T *)
-		    PN(VNODE_T **)
-		    PN(CRED_T *));
-
-EXTERN int
-mfs_clnt_gpath_elem(P1(VNODE_T *)
-	            PN(mfs_pn_char_t **)
-	            PN(CRED_T *));
+mfs_clnt_gpath_elem(
+    VNODE_T *vp,
+    mfs_pn_char_t **nmp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clnt_cltxt_locked(P1(VNODE_T *) 
-		      PN(CRED_T *));
+mfs_clnt_cltxt_locked(
+    VNODE_T *vp,
+    CALL_DATA_T *cd
+);
+EXTERN int
+mfs_clnt_change_mtype(
+    register VNODE_T *vp,
+    vob_mtype_t mtype,
+    tbs_status_t *statusp,      /* Returned tbs_status */
+    CALL_DATA_T *cd
+);
 
 EXTERN int
-mfs_clnt_change_mtype(P1(VNODE_T *vp)
-		      PN(vob_mtype_t mtype)
-		      PN(tbs_status_t *statusp)
-		      PN(CRED_T *cred));
+mvfs_clnt_ping_server(
+    struct mfs_svr *svr,
+    CRED_T * cred
+);
 
 /* In mfs_clearops.c -- require mnode locked */
 
@@ -2041,8 +2122,10 @@ EXTERN void
 mfs_clear_mark_rwerr(P1(VNODE_T *));
 
 EXTERN void 
-mfs_clear_rele(P1(VNODE_T *)
-	       PN(CRED_T *));
+mfs_clear_rele(
+    VNODE_T *vp,
+    CRED_T *cred
+);
 
 EXTERN int
 mfs_clear_writable(P1(VNODE_T *vp));
@@ -2055,9 +2138,11 @@ mvfs_clearattr(
 );
 
 EXTERN int
-mfs_clearowner(P1(VNODE_T *vp)
-	       PN(u_long mask)
-	       PN(CRED_T *cred));
+mfs_clearowner(
+    VNODE_T *vp,
+    u_long mask,
+    CALL_DATA_T *cd
+);
 EXTERN void
 mvfs_new_cltxt(
     VNODE_T *vp,
@@ -2114,20 +2199,26 @@ mvfs_ansi_trailing_seps(P1(char *pn) PN(size_t pn_len));
 #define MVFS_TRAILING_SEPS(pn, pn_len)  mvfs_ansi_trailing_seps(pn, pn_len)
 
 int
-mfs_getcleartext_nm(P1(VNODE_T *vp)
-		    PN(CRED_T *cred));
+mfs_getcleartext_nm(
+    VNODE_T *vp,
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_getcleartext(P1(VNODE_T *) 
-		 PN(CLR_VNODE_T **)     /* return */
-		 PN(CRED_T *));
+mfs_getcleartext(
+    VNODE_T *vp,
+    CLR_VNODE_T **cvpp,                 /* return */
+    CALL_DATA_T *cd
+);
 
 EXTERN int 
-mfs_clear_create(P1(VNODE_T *)
-		 PN(VATTR_T *)
-		 PN(CLR_VNODE_T **)
-		 PN(CRED_T *)
-		 PN(int));
+mfs_clear_create(
+    VNODE_T *vp,
+    VATTR_T *vap,
+    CLR_VNODE_T **cvpp,
+    CALL_DATA_T  *cd,
+    int flag
+);
 
 EXTERN int
 mfs_copyvp(P1(CLR_VNODE_T *ocvp)
@@ -2377,8 +2468,7 @@ mvfs_mnreport_leftover_vnodes(
 #endif
 
 EXTERN void 
-mfs_mnrele(P1(mfs_mnode_t *)
-	   PN(VFS_T *));
+mfs_mnrele(P1(mfs_mnode_t *));
 
 EXTERN void
 mfs_mninvaloid(P1(tbs_oid_t *)
@@ -2427,26 +2517,31 @@ mvfs_mnclear_logbits(void);
 
 EXTERN int
 mvfs_auditinit(mvfs_cache_sizes_t *mma_sizes);
-EXTERN view_bhandle_t mfs_getbh(P_NONE);
+EXTERN view_bhandle_t
+mfs_getbh(CALL_DATA_T *cd);
 
 EXTERN int 
-mfs_auditioctl(P1(mvfscmd_block_t *)
-               PN(CRED_T *)
-	       PN(MVFS_CALLER_INFO *));
+mfs_auditioctl(
+    mvfscmd_block_t *kdata,
+    CALL_DATA_T *cd,
+    MVFS_CALLER_INFO *callinfo
+);
 
 EXTERN void
 mfs_init_rmstat(P1(VNODE_T *vp)
 		PN(struct mfs_auditrmstat *rmstatp));
 
 EXTERN int 
-mfs_audit(P1(int)
-	  PN(VNODE_T *)
-	  PN(mfs_pn_char_t *)
-	  PN(VNODE_T *)
-	  PN(mfs_pn_char_t *)
-	  PN(VNODE_T *)
-	  PN(u_long)
-	  PN(CRED_T *));
+mfs_audit(
+    int kind,
+    VNODE_T *dvp,
+    mfs_pn_char_t *nm1,
+    VNODE_T *dvp2,
+    mfs_pn_char_t *nm2,
+    VNODE_T *vp,
+    u_long flags,
+    CALL_DATA_T *cd
+);
 
 EXTERN void 
 mfs_afphold(P1(mfs_auditfile_t *));
@@ -2503,9 +2598,10 @@ mfscall(P1(struct mfs_callinfo *)
 	PN(VNODE_T *));
 
 EXTERN void
-mfs_bumptime(P1(timestruc_t *)
-	     PN(timestruc_t *)
-             PN(timestruc_t *));
+mvfs_bumptime(timestruc_t *,
+              timestruc_t *,
+              timestruc_t *
+);
 
 EXTERN int
 mvfs_rpc_setcaches(P1(mvfs_cache_sizes_t *szp));
@@ -2519,6 +2615,24 @@ mvfs_rpc_compute_caches(
 
 EXTERN int
 mvfs_rpc_count(P1(mvfs_cache_usage_t *));
+
+EXTERN int
+mvfs_clnt_get(
+    struct mfs_callinfo *trait,
+    struct mfs_svr *svr,
+    struct mfs_retryinfo *rinfo,
+    CRED_T *cred,
+    VNODE_T *view,
+    CLIENT **client_p,
+    ks_uint32_t *boottime_p
+);
+
+EXTERN void
+mvfs_clnt_free(
+    CLIENT *client,
+    int error,
+    VNODE_T *view
+);
 
 /* In mfs_utils.c */
 
@@ -2628,9 +2742,10 @@ EXTERN LOCK_T mvfs_printf_lock;		/* lock for printing routines */
 EXTERN LOCK_T mvfs_printstr_lock;       /* lock for temporary print string */
 
 EXTERN int
-mvfs_logfile_set(P1(char *logfile)
-		 PN(CRED_T *cred));
-
+mvfs_logfile_set(
+    char *logfile,
+    CALL_DATA_T *cd
+);
 EXTERN void
 mvfs_logfile_close(P_NONE);
 
@@ -2800,6 +2915,7 @@ mfs_uioset(P1(struct uio *uiop)
 	   PN(MOFFSET_T offset)
 	   PN(int segflg));
 
+
 EXTERN int 
 mfs_lookupvp(P1(VNODE_T *)
 	     PN(mfs_pn_char_t *)
@@ -2812,8 +2928,10 @@ mfs_lookupvp(P1(VNODE_T *)
  */
 
 EXTERN int 
-mfs_owner(P1(VNODE_T *vp)
-          PN(CRED_T *cred));
+mfs_owner(
+    VNODE_T *vp,
+    CALL_DATA_T *cd
+);
 
 EXTERN VTYPE_T
 mfs_mn_vtype(P1(mfs_mnode_t *mnp));
@@ -2821,20 +2939,24 @@ mfs_mn_vtype(P1(mfs_mnode_t *mnp));
 /* Vop open */
 
 EXTERN int
-mfs_openv(P1(VNODE_T **vpp)
-	  PN(int mode)
-	  PN(CRED_T *cred));
+mfs_openv(
+    VNODE_T **vpp,
+    int mode,
+    CALL_DATA_T *cd
+);
 
 EXTERN int
-mfs_openv_subr(P1(VNODE_T **vpp)
-	  PN(int mode)
-	  PN(CRED_T *cred)
-	  PN(int do_vop));
+mfs_openv_subr(
+    VNODE_T **vpp,
+    int mode,
+    CALL_DATA_T *cd,
+    int do_vop
+);
 EXTERN int
 mvfs_openv_ctx(
     VNODE_T **vpp,
     int mode,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     int do_vop,
     MVFS_OPEN_CTX_T *ctxp
 );
@@ -2844,8 +2966,8 @@ mvfs_closev_ctx(
     VNODE_T *avp,
     int flag,
     MVFS_LASTCLOSE_T count,
-    MOFFSET_T o,
-    CRED_T *cred,
+    MOFFSET_T o,                   /* SVR4 only -- currently unused */
+    CALL_DATA_T *cd,
     MVFS_CLOSE_CTX_T *ctxp
 );
 EXTERN int
@@ -2856,7 +2978,7 @@ mfs_create(
     VCEXCL_T excl,
     int mode,
     VNODE_T **vpp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mvfs_create_subr(
@@ -2866,7 +2988,7 @@ mvfs_create_subr(
     VCEXCL_T excl,
     int mode,
     VNODE_T **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     int flag
 );
 EXTERN int
@@ -2877,7 +2999,7 @@ mvfs_create_subr_ctx(
     VCEXCL_T excl,
     int mode,
     VNODE_T **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CREATE_CTX_T *ctxp
 );
 EXTERN int
@@ -2888,36 +3010,40 @@ mvfs_create_subr_with_cvp(
     VCEXCL_T excl,
     int mode,
     VNODE_T **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     int flag,
     CLR_VNODE_T **cvpp,
     MVFS_CREATE_CTX_T *ctxp
 );
 EXTERN int
-mfs_pre_closev(P1(VNODE_T *vp)
-	       PN(int flag)
-	       PN(VNODE_T **bvpp)
-	       PN(CRED_T *cred));
-
+mfs_pre_closev(
+    VNODE_T *vp,
+    int flag,
+    VNODE_T **bvpp,
+    CALL_DATA_T *cd
+);
 EXTERN int
-mfs_post_closev(P1(VNODE_T *vp)
-		PN(int flag)
-		PN(MVFS_LASTCLOSE_T count)
-		PN(int ct_stat));
-
+mfs_post_closev(
+    VNODE_T *vp,
+    int flag,
+    MVFS_LASTCLOSE_T count,
+    int ct_stat,
+    CALL_DATA_T *cd
+);
 EXTERN int
-mfs_closev(P1(VNODE_T *avp)
-	   PN(int flag)
-	   PN(MVFS_LASTCLOSE_T count) 
-	   PN(MOFFSET_T o)
-	   PN(CRED_T *cred));
-
+mfs_closev(
+    VNODE_T *avp,
+    int flag,
+    MVFS_LASTCLOSE_T count,
+    MOFFSET_T o,                   /* SVR4 only -- currently unused */
+    CALL_DATA_T *cd
+);
 EXTERN int
 mvfs_pre_rdwr(
     VNODE_T *vp,
     struct uio *uiop,
     UIO_RW_T rw,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     CLR_VNODE_T **cvpp,
     ssize_t *ucp,
     MVFS_RDWR_CTX_T *ctxp
@@ -2928,7 +3054,7 @@ mvfs_post_rdwr(
     VNODE_T *vp,
     struct uio *uiop,
     UIO_RW_T rw,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     CLR_VNODE_T *cvp,
     ssize_t uc,
     int error,
@@ -2940,14 +3066,14 @@ mfs_read(
     VNODE_T *vp,
     struct uio *uiop,
     int ioflag, 
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int 
 mfs_write(
     VNODE_T *vp,
     struct uio *uiop,
     int ioflag, 
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mfs_rdwr(
@@ -2955,7 +3081,7 @@ mfs_rdwr(
     struct uio *uiop,
     UIO_RW_T rw,
     int ioflag,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mfs_rdwr_subr(
@@ -2964,7 +3090,7 @@ mfs_rdwr_subr(
     UIO_RW_T rw,
     int ioflag,
     VATTR_T *vap,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mvfs_rdwr_ctx(
@@ -2973,19 +3099,29 @@ mvfs_rdwr_ctx(
     UIO_RW_T rw,
     int ioflag,
     VATTR_T *vap,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_RDWR_CTX_T *ctxp
 );
-EXTERN int mfs_ioctlv(P1(VNODE_T *avp) PN(int com) PN(caddr_t data)
-		      PN(int flag) PN(CRED_T *cred) PN(MVFS_IOCTL_RVALP_T rvalp));
-EXTERN int mvfs_ioctlv_subr(P1(VNODE_T *avp) 
-                           PN(int com) 
-                           PN(caddr_t data)
-		           PN(int flag) 
-                           PN(CRED_T *cred) 
-                           PN(MVFS_IOCTL_RVALP_T rvalp) 
-                           PN(VOPBD_T *vopbd)
-                           PN(MVFS_CALLER_INFO *callinfo));
+EXTERN int
+mfs_ioctlv(
+    VNODE_T *avp,
+    int com,
+    caddr_t data,
+    int flag,
+    CALL_DATA_T *cd,
+    MVFS_IOCTL_RVALP_T rvalp                    /* NYI; currently unused */
+);
+EXTERN int
+mvfs_ioctlv_subr(
+    VNODE_T *avp,
+    int com,
+    caddr_t data,
+    int flag,
+    CALL_DATA_T *cd,
+    MVFS_IOCTL_RVALP_T rvalp,                   /* NYI; currently unused */
+    VOPBD_T *vopbdp,
+    MVFS_CALLER_INFO *callinfo
+);
 EXTERN int
 mvfs_ioctl_validate(mvfscmd_block_t *mcbp);
 
@@ -2994,14 +3130,14 @@ mfs_getattr(
     VNODE_T *avp,
     VATTR_T *vap,
     int flag, 
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mvfs_changeattr(
     VNODE_T *avp,
     VATTR_T *vap,
     int flag,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_CONTEXT_T *ctxp
 );
 EXTERN int
@@ -3009,14 +3145,14 @@ mfs_accessv(
     VNODE_T *vp,
     int mode,
     int flag,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mvfs_accessv_ctx(
     VNODE_T *vp,
     int mode,
     int flag,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_ACCESS_CTX_T *ctxp
 );
 EXTERN int
@@ -3027,7 +3163,7 @@ mfs_lookup(
     struct pathname *pnp,
     int flags,
     ROOTDIR_T *rdir,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mvfs_lookup_ctx(
@@ -3037,7 +3173,7 @@ mvfs_lookup_ctx(
     struct pathname *pnp,
     int flags,
     ROOTDIR_T *rdir,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_LOOKUP_CTX_T *ctxp
 );
 EXTERN int 
@@ -3045,14 +3181,14 @@ mfs_link(
     VNODE_T *atdvp,
     VNODE_T *vp,
     char *tnm,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mvfs_link_ctx(
     VNODE_T *atdvp,
     VNODE_T *vp,
     char *tnm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_LINK_CTX_T *ctxp
 );
 EXTERN int 
@@ -3061,7 +3197,7 @@ mfs_rename(
     char *onm,
     VNODE_T *atdvp,
     char *tnm,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int 
 mvfs_rename_ctx(
@@ -3069,7 +3205,7 @@ mvfs_rename_ctx(
     char *onm,
     VNODE_T *atdvp,
     char *tnm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_RENAME_CTX_T *ctxp
 );
 EXTERN int 
@@ -3078,7 +3214,7 @@ mvfs_mkdir(
     char *nm,
     VATTR_T *va,
     VNODE_T **vpp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int 
 mvfs_mkdir_ctx(
@@ -3086,7 +3222,7 @@ mvfs_mkdir_ctx(
     char *nm,
     VATTR_T *va,
     VNODE_T **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_MKDIR_CTX_T *ctxp
 );
 EXTERN int
@@ -3094,28 +3230,28 @@ mfs_rmdir(
     VNODE_T *advp,
     char *nm,
     VNODE_T *cdir,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mvfs_rmdir_ctx(
     VNODE_T *advp,
     char *nm,
     VNODE_T *cdir,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_RMDIR_CTX_T *ctxp
 );
 EXTERN int 
 mfs_readdir(
     VNODE_T *advp,
     struct uio *uiop,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     int *eofp
 );
 EXTERN int 
 mvfs_readdir_ctx(
     VNODE_T *advp,
     struct uio *uiop,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     int *eofp,
     MVFS_READDIR_CTX_T *ctxp
 );
@@ -3123,7 +3259,7 @@ EXTERN int
 mfs_readdirx(
     VNODE_T *advp,
     struct uio *uiop,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     view_readdir_flag_t flags,
     int *eofp
 );
@@ -3131,24 +3267,26 @@ mfs_readdirx(
 #define MVOP_READDIRX(a, u, c, f, e) mfs_readdirx(a, u, c, f, e)
 
 EXTERN int 
-mfs_remove(VNODE_T *advp,
+mfs_remove(
+    VNODE_T *advp,
     char *nm,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int 
 mvfs_remove_ctx(
     VNODE_T *advp,
     VNODE_T *avp,
     char *nm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_REMOVE_CTX_T *ctxp
 );
 EXTERN int 
-mfs_symlink(VNODE_T *advp,
+mfs_symlink(
+    VNODE_T *advp,
     char *lnm,
     VATTR_T *tva,
     char *tnm,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int 
 mvfs_symlink_ctx(
@@ -3157,39 +3295,42 @@ mvfs_symlink_ctx(
     VATTR_T *tva,
     char *tnm,
     VNODE_T **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_SYMLINK_CTX_T *ctxp
 );
 EXTERN int 
 mfs_readlink(
     VNODE_T *avp,
     struct uio *uiop,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int 
 mfs_fsync(
     VNODE_T *vp,
     int flag,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 EXTERN int
 mvfs_fsync_ctx(
     VNODE_T *vp,
     int flag,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_FSYNC_CTX_T *ctxp
 );
-EXTERN int mfs_lockctl(P1(VNODE_T *vp)
-		       PN(struct flock *ld)
-		       PN(int cmd)
-		       PN(CRED_T *cred)
-		       PN(int clid));
+EXTERN int
+mfs_lockctl(
+    VNODE_T *vp,
+    struct flock *ld,
+    int cmd,
+    CALL_DATA_T *cd,
+    int clid
+);
 EXTERN int
 mvfs_lockctl_ctx(
     VNODE_T *vp,
     void *ld,
     int cmd,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_LOCKCTL_CTX_T *ctxp
 );
 EXTERN int mfs_pathconf(P1(VNODE_T *)
@@ -3215,14 +3356,6 @@ mfs_realvp(
     VNODE_T **vpp
 );
 
-EXTERN int mfs_read(P1(VNODE_T *vp)
-		    PN(struct uio *uiop)
-		    PN(int ioflag)
-		    PN(CRED_T *));
-EXTERN int mfs_write(P1(VNODE_T *vp)
-		    PN(struct uio *uiop)
-		    PN(int ioflag)
-		    PN(CRED_T *));
 EXTERN void mfs_rwlock(P1(VNODE_T *vp)
 		       PN(int w));
 EXTERN void mfs_rwunlock(P1(VNODE_T *vp)
@@ -3243,9 +3376,12 @@ EXTERN void
 mfs_noval(VNODE_T *vp);
 
 EXTERN VTYPE_T mfs_mn_vtype(P1(mfs_mnode_t *));
-EXTERN void mfs_ac_modevents(P1(VNODE_T *vp)
-			     PN(int flags)
-			     PN(CRED_T *cred));
+EXTERN void
+mfs_ac_modevents(
+    register VNODE_T *vp,
+    int flags,
+    CRED_T *cred
+);
 EXTERN int mfs_noview_readdir(P1(VNODE_T *dvp)
 			      PN(struct uio *uiop)
 			      PN(CRED_T *cred));
@@ -3274,6 +3410,7 @@ mvfs_noview_vobrt_getattr(
 EXTERN int mfs_syncvp(P1(VNODE_T *vp) PN (int flag) PN(CRED_T *cred));
 
 extern V_OP_T mvfs_vnodeops;
+
 
 /*
  * MFS vfs operations.  Must modify the names to not conflict
@@ -3366,10 +3503,20 @@ EXTERN int mfs_vsync(P1(VFS_T *)
     		     PN(short)
     		     PN(CRED_T *));
 
-EXTERN int mfs_vget(P1(VFS_T *)
-    		    PN(VNODE_T **)
-    		    PN(struct fid *));
+EXTERN int
+mfs_vget(
+    VFS_T *vfsp,
+    VNODE_T **vpp,
+    struct fid *xfidp
+);
 
+EXTERN int
+mvfs_vget_cd(
+    VFS_T *vfsp,
+    VNODE_T **vpp,
+    struct fid *xfidp,
+    CALL_DATA_T *cd
+);
 /* these are not prototyped so that they can be used as stand-in VOP functions
    without causing type errors. */
 #ifdef __GNUC__ /* but we prototype to VOID to shut up GCC */
@@ -3420,11 +3567,435 @@ mvfs_clnt_support_lfs(
     CRED_T *cred
 );
 
+extern int
+mvfs_stats_data_zero(mvfs_stats_data_t *sdp);
+
+extern void
+mvfs_pview_stat_zero(struct mvfs_pvstat *pvp);
+
+extern mvfs_stats_data_t *
+mvfs_stats_data_per_cpu_init(void);
+
+/*
+ * Macro to zero out the statistics structure.  To avoid duplication of the zero
+ * out code in different places, another macro - MVFS_STAT_ZERO is used for the common
+ * code.  For cases where we need to set the viewophist back to the initial viewop
+ * histogram values we started with, we call this macro.  For the rest, MVFS_STAT_ZERO
+ * macro is called directly.  MVFS_STAT_ZERO macro is defined in the mdep header files
+ * where needed and for the rest of the platforms, it is defined in mvfs_systm.h
+ */
+#define MVFS_PERCPU_STAT_ZERO(sdp) \
+        MVFS_STAT_ZERO(sdp) \
+        sdp->mfs_viewophist = mvfs_init_viewophist; \
+        mvfs_cpu_beyond_limit = FALSE;
+
+/*
+ * Macro to zero out the per-view statistics.  The per-view stat lock is taken
+ * before zeroing out the structure.  The pointer to the per-view stat struct is
+ * read into a local variable to avoid having to dereference the pointer after
+ * taking the spin lock.
+ */
+#define MVFS_PVSTAT_ZERO(vw) { \
+        SPL_T s; \
+        struct mvfs_pvstat *pvp = VTOM(vw)->mn_view.pvstat; \
+        MVFS_PVSTATLOCK_LOCK(s, pvp); \
+        mvfs_pview_stat_zero(pvp); \
+        MVFS_PVSTATLOCK_UNLOCK(s, pvp); \
+}
+
+/*
+ * How We Keep Statistics
+ * ----------------------
+ * Warning: these two macros, MVFS_STAT_MEMALLOC1 and MVFS_STAT_MEMALLOC2, are
+ * a matched pair and must only be used together, in that order.  Further, they
+ * are only used below in the macros that keep statistics and shouldn't be used
+ * anywhere else.  What follows is the background for understanding the macros.
+ *
+ * Data Structures
+ * ---------------
+ * To avoid locking, or possibly expensive atomic operations, on multi-cpu
+ * machines, we are keeping statistics in per-cpu data structures.  The general
+ * data structure assumed by these macros is an array of pointers to
+ * mvfs_stats_data_t structures, indexed by a cpu identifier.  We assume that
+ * we can find the maximum number of cpus for a platform at boot time (either
+ * from an OS query or from a constant built into our code).  We store that
+ * value in mvfs_max_cpus and allocate the array of pointers to be that size at
+ * MVFS initialization time.  We further assume that we can get a cpu
+ * identifier for the cpu we are currently running on and that:
+ *
+ *   0 < cpuid < mvfs_max_cpus - 1
+ *
+ * so it can serve as the array index.
+ *
+ * Saving Space
+ * ------------
+ * In order not to waste space by allocating a stat structure for all
+ * mvfs_max_cpus (e.g. some platform may support more, possibly many more, cpus
+ * than are actually available or could be added during this boot), we allocate
+ * the stat structure for a cpu the first time we are running on that cpu and
+ * need to keep statistics.  Note, analysis has shown that most of the stats
+ * structure space is taken up by the view op counts, timings, and histogram
+ * (i.e. roughly 15KB out of 17KB total in a 64-bit kernel).  Thus, if space
+ * becomes a problem, it might make sense to split those out of the per-cpu
+ * stats structure and keep them separately under a global lock.
+ *
+ * Data Integrity
+ * --------------
+ * To preserve the data integrity of the statistics, we still need to guarantee
+ * that the actual statistics arithmetic (e.g. increment) happens "atomically".
+ * We do this by disabling pre-emption (or all interrupts, if the platform
+ * requires it) while managing the statistics for the cpu we are running on.
+ * The idea is that disabling pre-emption on a cpu is "cheaper" than aquiring a
+ * global statistics lock, or even than using atomic instructions (since those
+ * may cause bus stalls and cache flushes).  We assume that the platform
+ * provides a way to guarantee that we can run uninterruptibly on our current
+ * cpu by using the MVFS_INTR_DISABLE() and MVFS_INTR_ENABLE() macros.
+ *
+ * Returning and Resetting Statistics
+ * ----------------------------------
+ * To return statistics, we now have to add up the counters from each per-cpu
+ * stats structure.  This is done in mvfs_ioctl.c.  Note, this code only reads
+ * the per-cpu stats structure pointers from the global array (to get the stats
+ * for each cpu to add into its running total), it never sets them.  The
+ * pointer for a particular cpu is only set by code running on that cpu while
+ * pre-emption is disabled, and we never set the pointer for a particular CPU
+ * to NULL, thus avoiding any races (the structures are all freed when the MVFS
+ * is unloaded).
+ *
+ * To reset the statistics to zero, we have a problem since we have to be
+ * running on a particular cpu in order to operate on its stats structure, and
+ * the OS doesn't generally provide a way to run a particular routine (to zero
+ * out the stats structure) on a particular cpu.  We solve this by using the
+ * zero_me flag in the stats structure, which is only set (for all cpus) by the
+ * routine that zeroes stats (running on any cpu), and is only reset by the
+ * macro code while running disabled on a particular cpu (after zeroing the
+ * stats for that cpu).  We're assuming that setting, resetting, or testing the
+ * flag is "atomic" since it is just an int.  Further, when the statistics are
+ * being added up, if the zero_me flag is set, we just ignore the statistics
+ * for that cpu.  Then, the next time we run on that cpu we will actually zero
+ * the stats and reset the zero_me flag so its stats will again be added to the
+ * total.
+ *
+ * Little Details
+ * --------------
+ * We enclose the guts of the macro in a while statement so we can avoid goto
+ * statements (which don't work too well in a macro) by using break and
+ * continue statements.
+ *
+ * The variables used by the macro are not needed anywhere else, and they must
+ * be initialized very carefully, so we enclose the macro in its own block so
+ * we can declare and initialize the variables in one place.
+ *
+ * The MDKI_STAT_GET_DATAP macro is expected to be usable as a left-hand side
+ * or right-hand side expression since we need to read it and write to it.  It
+ * could be platform dependent, but generally just uses the cpu id as an index
+ * into the array of pointers described above to get a pointer to the per-cpu
+ * stats structure (that can be read from or stored through).
+ *
+ * Operating on the Per-Cpu Statistics
+ * -----------------------------------
+ * After the code in the first macro (which ends in the middle of an if
+ * statement in the middle of a while statement), we have guaranteed that sdp
+ * is not NULL and is pointing to the stats structure for this cpu and that
+ * pre-emption is disabled so we are still running on this cpu.  Thus, at that
+ * point we can insert code that uses sdp to manipulate the statistics in
+ * "arbitrary" ways, as long as it doesn't take "too long" (since we're running
+ * with pre-emption disabled).  For instance, at this point we have already run
+ * code to zero all the statistics for this cpu if that was necessary.  The
+ * second macro just finishes things up.
+ *
+ * "Fast Path" Analysis
+ * --------------------
+ * The normal case is that the per-cpu stat structure has already been
+ * allocated, we're running on a cpu whose cpuid is less than mvfs_max_cpus,
+ * and the zero_me flag is not set.  In this case we do the following:
+ *
+ *  - enter the block (we hope the compiler optimizes this away)
+ *  - set new_sdp to NULL
+ *  - enter the while loop (should be a no-op)
+ *  - disable pre-emption (platform dependent, keeps us on this cpu)
+ *  - get our current cpu id (platform dependent)
+ *  - test that the cpuid is less than mvfs_max_cpus
+ *  - get the current cpu's stats pointer (some pointer arithmetic)
+ *  - test pointer for NULL
+ *  - test the zero_me flag for this cpu
+ *  - perform the per-cpu stat operation (e.g. increment/decrement a counter)
+ *  - enable pre-emption (we can lose the cpu after this)
+ *  - test new_sdp for NULL
+ *  - break out of the while loop
+ *  - exit the block (we hope this is a no-op)
+ *
+ * This is roughly 3 assignments (some with pointer arithmetic), 4 tests, the
+ * disable/enable overhead, and the actual statistics operation (mostly an
+ * increment or decrement).  The disable and enable could be subroutine calls,
+ * depending on the platform, as could getting the current cpu id.
+ *
+ * Other Paths: Structure Allocation, Errors, Etc.
+ * -----------------------------------------------
+ * The first time we're running on a cpu and want to operate on its stats
+ * structure, we have to allocate the structure and add it to the array of
+ * pointers at the index for this cpu.  We recognize this case when we test the
+ * current cpu's stats pointer and find it to be NULL.  The first time through
+ * we will also find new_sdp to be NULL, meaning we haven't allocated any space
+ * yet.  At this point, in order to allocate space, we have to enable
+ * pre-emption because the OS may need to do extensive work to allocate the
+ * space we've requested.  We then call a subroutine to allocate and initialize
+ * a per-cpu stats structure (remember, we're no longer in the fast path, so we
+ * can take our time).  If we can't get the space (new_sdp == NULL) we can't
+ * keep any statistics at this time, so we just break out of the while loop
+ * (which ends in the second macro).  We're already enabled and have nothing
+ * allocated so we can just continue on and hope we'll be able to allocate some
+ * space the next time.  If we allocated the structure (the normal case), we
+ * continue in the while loop, which starts back at the beginning.  This time,
+ * we proceed into the body of the while loop, disable pre-emption, and try to
+ * get the per-cpu stats structure pointer again.  Since we have been enabled
+ * since the last time we checked, some other process may have run on this cpu,
+ * or we may be running on a different cpu, so the pointer might now be filled
+ * in.  If it is, we proceed as if it had been filled in the first time, but
+ * now we have new_sdp pointing to some allocated storage that we're not going
+ * to use.  This is cleaned up in the second macro after we have enabled again.
+ * If the per-cpu stats structure pointer is still NULL, we check new_sdp and
+ * this time we find it is non-NULL.  We are still disabled, so we set the
+ * pointer for our cpu id in the global array (and set sdp), and NULL new_sdp
+ * because we've used the allocated storage it pointed to.  We then continue on
+ * as before with sdp set and pre-emption disabled.
+ *
+ * Another "slow case" occurs if the zero_me flag is set.  In that case, while
+ * still disabled, we zero out the stats for this cpu and reset the zero_me
+ * flag, which will cause the code that returns stats to start adding in the
+ * statistics for this cpu again.  We assume the zeroing is "fast enough" so
+ * that it is all right to do while we are disabled.  This is another case
+ * where the view op statistics will take most of the time to zero, so this
+ * could be another argument for separating them out (as mentioned in "Saving
+ * Space" above).
+ *
+ * The final error case occurs when the cpu id for the current cpu is larger
+ * than mvfs_max_cpus.  This indicates some error in the code, e.g. we built in
+ * a constant that was too small, or the OS returned us a number that was too
+ * small.  It won't be fixed without a patch (if we picked a too small
+ * constant), or maybe by rebooting the machine or reloading the MVFS (in case
+ * the OS would give us a better number).  This error is in the else clause so
+ * it has "skipped around" the stats operation code, but we are still disabled.
+ * We will log a message at this point.  We keep a global variable so we only
+ * log the message once.  We also use this global variable in the code that
+ * returns statistics to return/print an error so that the caller is aware that
+ * there is a problem (in case the log message is missed).
+ *
+ * As noted above, the final job of the second macro is to enable pre-emption
+ * and then check new_sdp to see if we need to free space we allocated but
+ * didn't use.
+ */
+#define MVFS_STAT_MEMALLOC1 { \
+    MVFS_SAVE_PRIORITY_T orig_intr_level; \
+    int cur_cpuid; \
+    mvfs_stats_data_t *sdp; \
+    mvfs_stats_data_t *new_sdp = NULL; \
+    while (TRUE) { \
+        MVFS_INTR_DISABLE(orig_intr_level); \
+        cur_cpuid = MVFS_GET_CUR_CPUID; \
+        if (cur_cpuid < mvfs_max_cpus) { \
+            sdp = MDKI_STATS_GET_DATAP(cur_cpuid); \
+            if (sdp == NULL) { \
+                if (new_sdp == NULL) { \
+                    MVFS_INTR_ENABLE(orig_intr_level); \
+                    new_sdp = mvfs_stats_data_per_cpu_init(); \
+                    if (new_sdp == NULL) { \
+                        break; \
+                    } \
+                    continue; \
+                } else { \
+                    sdp =  MDKI_STATS_GET_DATAP(cur_cpuid) = new_sdp; \
+                    new_sdp = NULL; \
+                } \
+            } \
+            if (sdp->zero_me) { \
+                MVFS_PERCPU_STAT_ZERO(sdp); \
+                sdp->zero_me = FALSE; \
+            }
+
+#define MVFS_STAT_MEMALLOC2 \
+        } else { \
+            MVFS_INTR_ENABLE(orig_intr_level); \
+            if (new_sdp != NULL) { \
+                KMEM_FREE(new_sdp, (sizeof(mvfs_stats_data_t))); \
+            } \
+            if (!mvfs_cpu_beyond_limit) { \
+                mvfs_log(MFS_LOG_ERR, \
+                 "MVFS_STAT_MEMALLOC2: current cpuid=%d > mvfs_max_cpus-1=%d\n", \
+                  cur_cpuid, mvfs_max_cpus - 1); \
+                mvfs_cpu_beyond_limit = TRUE; /* Only log once */ \
+            } \
+            break; \
+        } \
+        MVFS_INTR_ENABLE(orig_intr_level); \
+        if (new_sdp != NULL) { \
+            KMEM_FREE(new_sdp, (sizeof(mvfs_stats_data_t))); \
+        } \
+        break; \
+    } \
+}
+
+/*
+ * The following macros, SETSTAT_MAX_DELAY, SETPVSTAT_MAX_DELAY and SET_MAXDELAY
+ * are used in mvfs_rpcutl.c
+ */ 
+/* Macro to update the max delay stats. */
+#define SETSTAT_MAX_DELAY(secs) \
+        MVFS_STAT_MEMALLOC1 \
+        sdp->mfs_clntstat.mfsmaxdelay++; \
+        if ((secs) > sdp->mfs_clntstat.mfsmaxdelaytime) { \
+            sdp->mfs_clntstat.mfsmaxdelaytime = (secs); \
+        } \
+        MVFS_STAT_MEMALLOC2
+
+/* Macro to increment the perview maxdelay counts.  */
+#define SETPVSTAT_MAX_DELAY(view, secs) { \
+        MVFS_SAVE_PRIORITY_T spl; \
+        struct mvfs_pvstat *pvp = VTOM(view)->mn_view.pvstat; \
+        MVFS_PVSTATLOCK_LOCK(spl, pvp); \
+        (pvp->clntstat.mfsmaxdelay)++; \
+        if ((secs) > (pvp->clntstat.mfsmaxdelaytime)) { \
+            (pvp->clntstat.mfsmaxdelaytime) = (secs); \
+        } \
+        MVFS_PVSTATLOCK_UNLOCK(spl, pvp); \
+}
+
+/* Macro to update the cleartext or rpc max delay counts. */
+#define SET_MAXDELAY(secs, nsecs, field) \
+    MVFS_STAT_MEMALLOC1 \
+    { \
+	int i; \
+        for (i = 0; i < MFS_NUM_HISTX; i++) { \
+	    if (((secs) <= sdp->mfs_viewophist.histval[i].tv_sec) && \
+                ((nsecs) <= sdp->mfs_viewophist.histval[i].tv_nsec)) \
+            { \
+                (sdp->mfs_viewophist.field[i])++; \
+                (sdp->mfs_viewophist.histperop[op][i])++; \
+                break; \
+            } \
+        } \
+    } \
+    MVFS_STAT_MEMALLOC2
+
+/*
+ * For per-view statistics gathering, we lock the mvfs_pvstatlock.  Each view has
+ * it's own statlock which is initiliazed during the initiliazation of the view
+ * stats in the init code for viewclas and ntviewclas mnodes.  The lock is freed
+ * when those mnodes are destroyed.  For proper usage of this lock, check the
+ * comment above the pvstat structure declaration.
+ */
+#define MVFS_PVSTATLOCK_INIT(lock)      \
+        INITSPLOCK(lock, "mvfs_pvstat_spl")
+
+#define MVFS_PVSTATLOCK_FREE(lock)      \
+        FREESPLOCK(lock)
+
+#define MVFS_PVSTATLOCK_LOCK(spl, pvp) \
+        SPLOCK(pvp->mvfs_pvstatlock, spl);
+
+#define MVFS_PVSTATLOCK_UNLOCK(spl, pvp) \
+        SPUNLOCK(pvp->mvfs_pvstatlock, spl);
+
+/* Macros increment/decrement statistics.  */
+
+/* 
+ * BUMPSTAT and BUMPSTAT_VAL macros almost do the same thing except that
+ * BUMPSTAT increments the stat value by 1 and BUMPSTAT_VAL increments
+ * the value by a number passed in as the second arg.  To avoid having
+ * identical macros, we define this _BUMPSTAT_VAL and use it from both
+ * the increment macros to do the appropriate thing.
+ */
+
+#define _BUMPSTAT_VAL(nm, inc) \
+        MVFS_STAT_MEMALLOC1 \
+        (sdp->nm) += inc;   \
+        MVFS_STAT_MEMALLOC2
+
+#define BUMPSTAT(nm) _BUMPSTAT_VAL(nm, 1)
+
+#define BUMPSTAT_VAL(nm, inc) _BUMPSTAT_VAL(nm, inc)
+
+#define UPDATE_STAT_MAX(target, value) (target = value)
+
+#define DECSTAT(nm) _BUMPSTAT_VAL(nm, -1)
+
+/*
+ * Macros to bump per view statistics.  Takes particular stat offset in view
+ * mnode.  Covers per view stats with the mvfs_pvstatlock.  About using the
+ * per-view stat lock appropriately, check out the comment above the pvstat
+ * structure declaration.
+ */
+#define _BUMP_PVSTAT_VAL(view, nm, val) { \
+        SPL_T _s; \
+        struct  mvfs_pvstat *pvp = VTOM(view)->mn_view.pvstat; \
+        MVFS_PVSTATLOCK_LOCK(_s, pvp); \
+        (pvp->nm) += val; \
+        MVFS_PVSTATLOCK_UNLOCK(_s, pvp); \
+    }
+
+#define BUMP_PVSTAT(view, nm) _BUMP_PVSTAT_VAL(view, nm, 1)
+
+#define BUMP_PVSTAT_VAL(view, nm, val) _BUMP_PVSTAT_VAL(view, nm, val)
+
+#define BUMP_PVSTAT_LOCKED(pvp, nm) { \
+        (pvp->nm)++; \
+    }
+
+/*
+ * Also for per view stats, but takes vnode.
+ */
+
+#define BUMPVSTAT(vnode, stat) \
+    if (MFS_VIEW(vnode)) { \
+       BUMP_PVSTAT(MFS_VIEW(vnode), stat); \
+    }
+
+/*
+ * Macro as above to bump per view statistics except that it takes an mnode
+ * pointer as an argument.  It will follow the viewvp pointer if it is set
+ * and bump the statistics there without validating that it points to a view.
+ */
+#define BUMPVSTATM(mnode, stat) \
+    if (mnode->mn_hdr.viewvp) { \
+        BUMP_PVSTAT(mnode->mn_hdr.viewvp, stat);  \
+    }
+
+/*
+ * Yet another variation on bumping view statistics.  Here we know that we
+ * have a pointer to a view vnode.  We just go ahead and bump the counter.
+ * This just saves some typing.
+ */
+#define BUMPVSTATV(vnode, stat) \
+        BUMP_PVSTAT(vnode, stat); \
+/*
+ * Macro to accumulate real-time used statistics
+ */
+#define MVFS_BUMPTIME(stime, dtime, nm) \
+        MVFS_STAT_MEMALLOC1 \
+        mvfs_bumptime(&(stime), &(dtime), (&(sdp->nm))); \
+        MVFS_STAT_MEMALLOC2
+
+/*
+ * Macro to calculate elapsed time, but without adding to cumulative stats
+ */
+#define MVFS_TIME_DELTA(stime, dtime, ztime) \
+        (ztime).tv_sec = (ztime).tv_nsec = 0; \
+        mvfs_bumptime(&(stime), &(dtime), &(ztime));
+
 /*
  * Macro to get the maximum offset for a vnode
  */
 
-#define MVFS_GET_MAXOFF(vp) (MVFS_MAXOFF_T)
+/*
+ * RATLC01031475: downrev view support - when 7.1 clients talk to 6.0
+ * views, need to be restrict client to behaving as if largefiles not supported.
+ * RATLC01069062: only need to check for objects with specific view vp, does   
+ * not apply for specdev, loopback. viewroot, vob root directories
+ */
+#define MVFS_GET_MAXOFF(vp) (MFS_ISVOB(VTOM(vp)) ? \
+  ((VTOM(MFS_VIEW(vp)))->mn_view.downrev_view ? \
+      (MVFS_MAXOFF_32_T) : (MVFS_MAXOFF_T)) \
+  : (MVFS_MAXOFF_T))
 
 /*
  * Timeout Values for View Server GETPROP Call
@@ -3438,6 +4009,17 @@ mvfs_clnt_support_lfs(
 #define MVFS_INIT_COMPLETE      10
 
 EXTERN int mvfs_init_state;
+EXTERN int mvfs_max_cpus;
+
+/* Flag to indicate if we encounter a cpuid greater than mvfs_max_cpus */
+EXTERN tbs_boolean_t mvfs_cpu_beyond_limit;
+
+#ifdef MVFS_NEEDS_UNLOAD_SYNC
+extern LOCK_T mfs_unload_lock;
+extern LOCK_T mvfs_unloading_lock; /* lock to protect unload_in_progress flag */
+/* Flag to indicate that unload is in progress */
+EXTERN tbs_boolean_t mvfs_unload_in_progress;
+#endif
 
 #endif /* MVFS_BASE_H_ */
-/* $Id: a6660538.b25211dd.9387.00:01:83:9c:f6:11 $ */
+/* $Id: 6a6be74b.dc5411df.9210.00:01:83:0a:3b:75 $ */

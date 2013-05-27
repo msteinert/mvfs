@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 2002, 2005. */
+/* * (C) Copyright IBM Corporation 2002, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,10 +19,14 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_VOB_MTYPE_H_)
 #define _VOB_MTYPE_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*---------------------------------------------------------------------------
  * meta-types
@@ -130,6 +134,7 @@ typedef enum vob_mtype_t {
 
     VOB_NUM_MTYPES		= 35
 } vob_mtype_t;
+
 
 /****************************************************************************
  * VOB_MTYPE_IS_ELEM
@@ -513,6 +518,17 @@ typedef enum vob_mtype_t {
      (mtype) == VOB_MTYPE_STATE_TYPE)
 
 /****************************************************************************
+ * VOB_MTYPE_HAS_MOD_MASTER
+ * Decide whether a meta-type represents an object that can be marked 
+ * as 'modifiable at master replica only'
+ * IN	mtype		meta-type
+ * RESULT:		TRUE if yes; FALSE if no
+ */
+
+#define VOB_MTYPE_HAS_MOD_MASTER(mtype) \
+    ((mtype) == VOB_MTYPE_LABEL_TYPE)
+
+/****************************************************************************
  * VOB_MTYPE_HAS_GLOBALNESS
  * Decide whether a meta-type represents an object with a global definitions.
  * IN	mtype		meta-type
@@ -548,6 +564,21 @@ typedef enum vob_mtype_t {
       (mtype) == VOB_MTYPE_DOMAIN)
 
 /****************************************************************************
+ * VOB_MTYPE_SVR_REQMASTER
+ * Decide whether a meta-type represents an object that can be reqmastered
+ * at the server site. This macro can only be used in the server code
+ * IN	mtype		meta-type
+ * RESULT:		TRUE if yes; FALSE if no
+ */
+
+#define VOB_MTYPE_SVR_REQMASTER(mtype) \
+      ((mtype) == VOB_MTYPE_BRANCH || \
+      (mtype) == VOB_MTYPE_BRANCH_TYPE || \
+      (mtype) == VOB_MTYPE_VERSION || \
+      (mtype) == VOB_MTYPE_DO_VERSION || \
+      (mtype) == VOB_MTYPE_NSDIR_VERSION)
+
+/****************************************************************************
  * VOB_MTYPE_CAN_REQMASTER
  * Decide whether a meta-type represents an object that can be reqmastered.
  * IN	mtype		meta-type
@@ -558,5 +589,9 @@ typedef enum vob_mtype_t {
       ((mtype) == VOB_MTYPE_BRANCH || \
       (mtype) == VOB_MTYPE_BRANCH_TYPE)
 
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
 #endif /* _VOB_MTYPE_H_ */
-/* $Id: eb42bb44.637a11da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: 2033f920.094d11e0.932c.00:01:84:16:9b:a1 $ */

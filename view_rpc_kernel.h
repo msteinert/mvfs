@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(VIEW_RPC_KERNEL_H)
 #define VIEW_RPC_KERNEL_H
 
@@ -593,18 +593,10 @@ typedef enum view_server_proc {
     VIEW_CHANGE_MTYPE,		/* 018: MVFS */
     VIEW_INVALIDATE_UUID,	/* 019: MVFS */
     VIEW_LINK,			/* 020: MVFS */
-#if defined(XREV_SERVERS_SUPPORT_V6_CLIENTS)
     VIEW_LOOKUP_V6,		/* 021: MVFS */
-#else
-    VIEW_UNUSED_21,		/* 021: MVFS */
-#endif
     VIEW_GETATTR,		/* 022: MVFS */
     VIEW_REPLICA_ROOT,		/* 023: MVFS */
-#if defined(XREV_SERVERS_SUPPORT_V6_CLIENTS)
     VIEW_LOOKUP_EXT_V6,		/* 024: */
-#else
-    VIEW_UNUSED_24,		/* 024: */
-#endif
     VIEW_CREATE_CONTAINER,	/* 025: */
     VIEW_REMOVE_CONTAINER,	/* 026: */
     VIEW_RENAME_CONTAINER,	/* 027: */

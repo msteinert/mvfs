@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2005 */
+/* * (C) Copyright IBM Corporation 1991, 2009. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_TBS_MAJOR_VER_STR_H_)
 #define _TBS_MAJOR_VER_STR_H_
 
@@ -41,10 +41,10 @@
  *			    1.1.1.0
  */
 #define TBS_RATIONAL_RELEASE_GROUP      "7"
-#define TBS_RATIONAL_RELEASE_MAJOR      "0"
-#define TBS_RATIONAL_RELEASE_MINOR      "0"
+#define TBS_RATIONAL_RELEASE_MAJOR      "1"
+#define TBS_RATIONAL_RELEASE_MINOR      "2"
 /* Increment RELEASE_BUILD for patches.  Should be '0' for GA release */
-#define TBS_RATIONAL_RELEASE_BUILD      "5" 
+#define TBS_RATIONAL_RELEASE_BUILD      "2"
 #define TBS_RATIONAL_RELEASE_BU         ""
 
 /*
@@ -63,4 +63,4 @@
 #define TBS_VER_MAJOR_ID  TBS_RATIONAL_FCC_PRODUCT_ID
 
 #endif /* _TBS_MAJOR_VER_STR_H_ */
-/* $Id: c63bb870.752f11dd.83a6.00:01:83:20:15:36 $ */
+/* $Id: 76eb9914.e37211df.9d9a.00:14:5e:33:98:cc $ */

@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2006. */
+/* * (C) Copyright IBM Corporation 1990, 2008. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_TBS_RPC_KERNEL_H_)
 #define _TBS_RPC_KERNEL_H_
 #include <ks_rpc.h>
@@ -58,11 +58,15 @@ EZ_XDR_ROUTINE(size_t);
 #elif defined(ATRIA_SIZE_T_INT)
 #define xdr_size_t (TBS_XDR_FUNC(size_t) xdr_int)
 #elif defined(ATRIA_SIZE_T_UINT64)
-extern bool_t atria_xdr_uint64(XDR *, size_t * EZ_XDR_ARGDECL);
 #define xdr_size_t (TBS_XDR_FUNC(size_t) atria_xdr_uint64)
 #else
 #error "tbs_rpc_kernel.h: xdr type for size_t unknown"
 #endif 
+
+#if defined(ATRIA_SIZE_T_UINT64)
+EXTERN bool_t atria_xdr_uint64(XDR *, unsigned __int64 * EZ_XDR_ARGDECL);
+#endif
+
 #endif /* !TBS_RPC_DECLS_ONLY && TBS_XDR_FUNC */
 
 /****************************************************************************
@@ -77,17 +81,20 @@ EZ_XDR_ROUTINE(time_t);
 #if !defined(TBS_RPC_DECLS_ONLY) && defined(TBS_XDR_FUNC)
 #if (defined(ATRIA_TIME_T_INT) && !defined(ATRIA_64BIT_LONGS))
 #define xdr_time_t (TBS_XDR_FUNC(time_t) xdr_int) 
-#elif defined(ATRIA_TIME_T_UINT)
-#define xdr_time_t (TBS_XDR_FUNC(time_t) xdr_u_int)
 #else
 #if defined(ATRIA_TIME_T_LONG)
 #define xdr_time_t (TBS_XDR_FUNC(time_t) xdr_long)
-#elif defined(ATRIA_TIME_T_UINT64)
-#define xdr_time_t (TBS_XDR_FUNC(time_t) xdr_uint64)
+#elif defined(ATRIA_TIME_T_INT64)
+#define xdr_time_t (TBS_XDR_FUNC(time_t) atria_xdr_int64)
 #else
 #error "tbs_rpc.h: xdr type for time_t unknown"
 #endif
 #endif
+
+#if defined(ATRIA_TIME_T_INT64)
+EXTERN bool_t atria_xdr_int64(XDR *, __int64 * EZ_XDR_ARGDECL);
+#endif
+
 #endif /* !TBS_RPC_DECLS_ONLY && TBS_XDR_FUNC */
 
 /****************************************************************************
@@ -100,13 +107,11 @@ EZ_XDR_ROUTINE(time_t);
  * Provided by system libraries on some operating systems, and by us
  * on others.
  */
-#ifndef WINSOCK
 EXTERN bool_t
 xdr_timeval(
     XDR *,
     struct timeval *
 );
-#endif
 
 /****************************************************************************
  * xdr_tbs_boolean_t
@@ -210,5 +215,12 @@ EZ_XDR_ROUTINE(vob_mtype_t);
 
 #define xdr_xid_t xdr_u_long
 
+#if defined(ATRIA_LP64)
+#define xdr_u_long	atria_xdr_u_long
+#define xdr_long	atria_xdr_long
+extern bool_t   atria_xdr_u_long(XDR *, u_long * EZ_XDR_ARGDECL);
+extern bool_t   atria_xdr_long(XDR *, long * EZ_XDR_ARGDECL);
+#endif /* defined(ATRIA_LP64) */
+
 #endif /* !defined(_TBS_RPC_KERNEL_H_) */
-/* $Id: 0ba3822c.66bb11dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: 8c6140c6.9c1f11dd.9a62.00:01:83:29:c0:fc $ */

@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1998, 2005. */
+/* * (C) Copyright IBM Corporation 1998, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,13 +19,15 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_COPY_H_
 #define MVFS_COPY_H_
 
 extern int CopyInMfs_strbufpn(caddr_t uargp, struct mfs_strbufpn *kargp, MVFS_CALLER_INFO *callinfo);
+extern int CopyInMfs_strbufpn_index(caddr_t uargp, struct mfs_strbufpn *kargp, int index, MVFS_CALLER_INFO *callinfo);
 extern int CopyOutMfs_strbufpn(struct mfs_strbufpn *kargp, caddr_t uargp, MVFS_CALLER_INFO *callinfo);
+extern int CopyOutMfs_strbufpn_index(struct mfs_strbufpn *kargp, caddr_t uargp, int index, MVFS_CALLER_INFO *callinfo);
 extern int CopyInMfs_strbufpn_pair(caddr_t uargp , struct mfs_strbufpn_pair *kargp, MVFS_CALLER_INFO *callinfo);
 extern int CopyOutMfs_strbufpn_pair(struct mfs_strbufpn_pair *kargp, caddr_t uargp, MVFS_CALLER_INFO *callinfo);
 extern int CopyInMfs_strbuf(caddr_t uargp , struct mfs_strbuf *kargp, MVFS_CALLER_INFO *callinfo);
@@ -90,5 +92,7 @@ extern int CopyInMvfs_splitpool_index(caddr_t uargp, struct mvfs_splitpool *karg
 extern int CopyInMvfs_sidhost_cred( caddr_t uargp, struct mvfs_sidhost_cred *kargp, MVFS_CALLER_INFO *callinfo);
 extern int CopyInMvfs_sid( caddr_t uargp, struct mvfs_sid *kargp, MVFS_CALLER_INFO *callinfo);
 extern int CopyInMvfs_unmount_info( caddr_t uargp, struct mvfs_unmount_info *kargp, MVFS_CALLER_INFO *callinfo);
+extern int CopyInMvfs_gfsinfo(caddr_t uargp , struct mvfs_gfsinfo *kargp, MVFS_CALLER_INFO *callinfo);
+extern int CopyOutMvfs_gfsinfo(struct mvfs_gfsinfo *kargp, caddr_t uargp, MVFS_CALLER_INFO *callinfo);
 #endif /* MVFS_COPY_H_ */
-/* $Id: 2db2ae64.637a11da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: 9b0cb03f.e5fa11df.986f.00:01:83:0a:3b:75 $ */

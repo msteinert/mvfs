@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2006. */
+/* * (C) Copyright IBM Corporation 1990, 2007. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_debug.c */
 #include "mvfs_systm.h"
 #include "mvfs.h"
@@ -147,4 +147,4 @@ mdb_xlog(u_int f, A_CONST char *fmt, ...)
 }
 
 #endif
-static const char vnode_verid_mvfs_debug_c[] = "$Id:  787368dc.66ba11dc.9bbb.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_debug_c[] = "$Id:  ebc100a6.9c1c11dd.9a62.00:01:83:29:c0:fc $";

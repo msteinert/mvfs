@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_ntvwops.c */
 /* Description:
  *	NT view-tags are view-tags that work just like the orignal Unix
@@ -361,7 +361,6 @@ int *eofp;
             goto exit_no_lock;
     }
 		
-
     /* 
      * Start scan at beginning of all the VFS's.  Start returning
      * entries when we have passed the desired user offset

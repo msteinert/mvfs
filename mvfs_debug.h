@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2005. */
+/* * (C) Copyright IBM Corporation 1990, 2009. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MFS_DEBUG_H_
 #define MFS_DEBUG_H_
 
@@ -61,7 +61,15 @@ extern char *mvfs_sevmsg[];	/* Console msg hdr by severity */
 
 #define MVFS_PRI_LOGGED(pri)  ((pri) <= mfs_logpri)
 
-EXTERN void
+EXTERN 
+#if defined(ATRIA_WIN32_COMMON) && defined(ATRIA_NT_60)
+#ifdef DECL_IMPORT
+__declspec(dllimport)
+#else
+__declspec(dllexport)
+#endif
+#endif
+void
 mvfs_log(P1(int pri)
 	 PN(A_CONST char *fmt)
 	 PN(...));
@@ -239,4 +247,4 @@ EXTERN void mfs_chkpages(P1(VNODE_T *) PN(int));
 
 #endif	/* MVFS_DEBUG */
 #endif	/* MFS_DEBUG_H_ */
-/* $Id: 2b029d54.637911da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: 6609142d.b44911de.8ddb.00:01:83:29:c0:fc $ */

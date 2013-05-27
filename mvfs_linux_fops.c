@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2008 IBM Corporation.
+ * Copyright (C) 1999, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -142,6 +142,8 @@ F_OPS_T vnode_file_mmap_file_ops = {
 F_OPS_T vnode_dir_file_ops = {
         .owner =              THIS_MODULE,
         .llseek =             &vnode_fop_llseek,
+        /* generic_read_dir just returns EISDIR */
+        .read =               &generic_read_dir,
         .readdir =            &vnode_fop_readdir,
         .open =               &vnode_fop_open,
         .release =            &vnode_fop_release,
@@ -194,6 +196,8 @@ F_OPS_T vnode_file_mmap_file_ops = {
 F_OPS_T vnode_dir_file_ops = {
         .owner =              THIS_MODULE,
         .llseek =             &vnode_fop_llseek,
+        /* generic_read_dir just returns EISDIR */
+        .read =               &generic_read_dir,
         .readdir =            &vnode_fop_readdir,
         .open =               &vnode_fop_open,
         .release =            &vnode_fop_release,
@@ -234,7 +238,6 @@ vnode_fop_llseek(
     struct seek_ctx ctx;
     int err;
 
-    ASSERT_KERNEL_LOCKED_24x();
     ASSERT(MDKI_INOISMVFS(ip));
 
     switch (origin) {
@@ -271,12 +274,7 @@ vnode_fop_llseek(
     }
     if (!ctx.done && result != file_p->f_pos) {
         file_p->f_pos = result;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-        file_p->f_reada = 0;
-        file_p->f_version = ++event;
-#else
         file_p->f_version = 0;  /* See default_llseek() in fs/read_write.c */
-#endif
     }
     return result;
 }
@@ -317,7 +315,7 @@ vnode_fop_rdwr(
     int rval;
     int ioflag;
     INODE_T *ip;
-    CRED_T *cred;
+    CALL_DATA_T cd;
     loff_t loff;
     struct uio uio;
     iovec_t iov;
@@ -342,11 +340,11 @@ vnode_fop_rdwr(
         }
 
         mdki_linux_uioset(&uio, buf, buflen, loff, UIO_USERSPACE);
-        cred = MDKI_GET_UCRED();
-        rval = VOP_RDWR(ITOV(ip), &uio, dir, ioflag, NULL, cred, 
-                        (file_ctx *) file_p);
+        mdki_linux_init_call_data(&cd);
+        rval = VOP_RDWR(ITOV(ip), &uio, dir, ioflag, NULL, &cd, 
+                        (file_ctx *)file_p);
         rval = mdki_errno_unix_to_linux(rval);
-        MDKI_CRFREE(cred);
+        mdki_linux_destroy_call_data(&cd);
         if (rval == 0) {
             rval = buflen - uio.uio_resid; /* count of transferred bytes */
             *off_p = uio.uio_offset;    /* underlying FS sets it after write */
@@ -396,16 +394,16 @@ vnode_fop_ioctl(
 {
     int err;
     int rval;                           /* unused */
-    CRED_T *cred;
+    CALL_DATA_T cd;
     struct ioctl_ctx ctx;
 
     ASSERT_KERNEL_LOCKED();
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     ctx.filp = file_p;
     ctx.caller_is_32bit = 0;            /* unknown as of yet */
-    err = VOP_IOCTL(ITOV(ino_p), cmd, (void *)arg, 0, cred, &rval, NULL, &ctx);
+    err = VOP_IOCTL(ITOV(ino_p), cmd, (void *)arg, 0, &cd, &rval, NULL, &ctx);
     err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     return err;
 }
 
@@ -428,8 +426,8 @@ vnode_fop_open(
 {
     int status = 0;
     VNODE_T *avp;
-    CRED_T *ucred;
     VNODE_T *vp;
+    CALL_DATA_T cd;
 
     /* No asserts on BKL; locking protocol is changing */
 
@@ -449,11 +447,11 @@ vnode_fop_open(
     avp = ITOV(ino_p);
     vp = avp;
 
-    ucred = MDKI_GET_UCRED();
-    status = VOP_OPEN(&vp, vnlayer_filep_to_flags(file_p), ucred, 
-                     (file_ctx *) file_p);
+    mdki_linux_init_call_data(&cd);
+    status = VOP_OPEN(&vp, vnlayer_filep_to_flags(file_p), &cd, 
+                     (file_ctx *)file_p);
     status = mdki_errno_unix_to_linux(status);
-    MDKI_CRFREE(ucred);
+    mdki_linux_destroy_call_data(&cd);
 
     MDKI_TRACE(TRACE_OPEN, "%s opened vp=%p fp=%p pvt=%p pcnt=%d\n",
               __func__, vp, file_p, REALFILE(file_p),
@@ -485,7 +483,7 @@ vnode_fop_release(
     int status = 0;
     VNODE_T *vp;
     MOFFSET_T off = 0;
-    CRED_T *ucred;
+    CALL_DATA_T cd;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18) || defined(SLES10SP2)
     mdki_vop_close_ctx_t ctx;
 #endif
@@ -496,7 +494,7 @@ vnode_fop_release(
         MDKI_TRACE(TRACE_CLOSE, "shadow no-op fp=%p ip=%p\n", file_p, ino_p);
         return 0;                       /* XXX shadow something? */
     }
-    ucred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     vp = ITOV(ino_p);
     MDKI_TRACE(TRACE_CLOSE,
               "%s: fp=%p vp=%p fcount=%d pvt=%p rfcount=%d pid=%ld\n",
@@ -508,15 +506,15 @@ vnode_fop_release(
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18) || defined(SLES10SP2)
     ctx.file_p = file_p;
     ctx.owner_id = NULL;
-    status = VOP_CLOSE(vp, vnlayer_filep_to_flags(file_p), VNODE_LASTCLOSE_COUNT,
-                       off, ucred, (file_ctx *) &ctx);
+    status = VOP_CLOSE(vp, vnlayer_filep_to_flags(file_p),
+                       VNODE_LASTCLOSE_COUNT, off, &cd, (file_ctx *)&ctx);
 #else
-    status = VOP_CLOSE(vp, vnlayer_filep_to_flags(file_p), VNODE_LASTCLOSE_COUNT,
-                       off, ucred, (file_ctx *) file_p);
+    status = VOP_CLOSE(vp, vnlayer_filep_to_flags(file_p),
+                       VNODE_LASTCLOSE_COUNT, off, &cd, (file_ctx *)file_p);
 #endif
 
     status = mdki_errno_unix_to_linux(status);
-    MDKI_CRFREE(ucred);
+    mdki_linux_destroy_call_data(&cd);
     return status;
 }
 
@@ -530,36 +528,35 @@ vnode_fop_flush(
 {
     INODE_T *ip = fp->f_dentry->d_inode;
     int err;
-    CRED_T *ucred;
+    CALL_DATA_T cd;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18) || defined(SLES10SP2)
     mdki_vop_close_ctx_t ctx;
 #endif
 
-    ASSERT_KERNEL_LOCKED_24x();
     ASSERT(MDKI_INOISOURS(ip));
     if (!MDKI_INOISMVFS(ip)) {
         MDKI_VFS_LOG(VFS_LOG_ERR, "%s shouldn't be called? (files swapped at open): fp %p\n", __func__, fp);
         return 0;                       /* don't fail the operation, though */
     }
-    ucred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     ASSERT(F_COUNT(fp) != VNODE_LASTCLOSE_COUNT);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18) || defined(SLES10SP2)
     ctx.file_p = fp;
     ctx.owner_id = id;
     err = VOP_CLOSE(ITOV(ip), vnlayer_filep_to_flags(fp), F_COUNT(fp),
-                    (MOFFSET_T) 0, ucred, (file_ctx *) &ctx);
+                    (MOFFSET_T) 0, &cd, (file_ctx *)&ctx);
 #else
     err = VOP_CLOSE(ITOV(ip), vnlayer_filep_to_flags(fp), F_COUNT(fp),
-                    (MOFFSET_T) 0, ucred, (file_ctx *) fp);
+                    (MOFFSET_T) 0, &cd, (file_ctx *)fp);
 #endif
 
     err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(ucred);
+    mdki_linux_destroy_call_data(&cd);
     return err;
 }
 
-/* In Linux 2.4.0 they introduced the datasync field.  It is set to either
+/* In Linux they have introduced the datasync field.  It is set to either
  * 0 or 1 but I don't see it ever being referenced in the standard file
  * systems.  fs.h says that we may be called without the big kernel lock
  * but we are always called with the inode locked, so locking should not be
@@ -575,7 +572,7 @@ vnode_fop_fsync(
 {
     INODE_T *ip;
     int err;
-    CRED_T *ucred;
+    CALL_DATA_T cd;
 
     if (fp == NULL) {
         /* NFSD sometimes calls with null fp and dentry_p filled in. */
@@ -591,15 +588,31 @@ vnode_fop_fsync(
         return 0;                       /* don't fail the operation, though */
     }
 
-    ucred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     err = VOP_FSYNC(ITOV(ip), datasync == 0 ? FLAG_NODATASYNC : FLAG_DATASYNC,
-                    ucred, (file_ctx *) fp);
+                    &cd, (file_ctx *)fp);
     err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(ucred);
+    mdki_linux_destroy_call_data(&cd);
     return err;
 }
 
 #if !(defined(RATL_SUSE) && RATL_VENDOR_VER == 900)
+/* This function used to call back to mvfs_locktl_ctx to validate the
+ * vnode, to verify that we are being called on a MFS_LOOPCLAS or MFS_VOBCLAS
+ * file, and to call mvfs_getcleartext to get the cleartext vnode pointer.  
+ * If that call failed for any reason, we would never perform the locking 
+ * operation.  In the case of an unlock called from the close code, this 
+ * would panic the system because locks_remove_flock() would find dangling 
+ * Posix locks.
+ * One alternative would be to check for an error and if we had one, call 
+ * mvop_linux_lockctl directly.  Since we only used the vnode returned
+ * from mvfs_getcleartext to check that this is a regular file, there was
+ * no longer any compelling reason to call into common code at all.
+ * We assume that since the file is open, the cleartext is good.  We will
+ * add code to mvop_linux_lockctl to verify the existence of the realfp
+ * as a replacement for the check for mnode class since only loopback or
+ * vob files will have a realfp.
+ */
 int
 vnode_fop_lock(
     FILE_T *fp,
@@ -609,16 +622,15 @@ vnode_fop_lock(
 {
     INODE_T *ip = fp->f_dentry->d_inode;
     int err;
-    CRED_T *ucred;
+    CALL_DATA_T cd;
 
     ASSERT(MDKI_INOISMVFS(ip));
 
-    ucred = MDKI_GET_UCRED();
-    err = VOP_LOCKCTL(ITOV(ip), lock_p, cmd, ucred, (file_ctx *) fp);
-    err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(ucred);
+    mdki_linux_init_call_data(&cd);
+    err = mvop_linux_lockctl(ITOV(ip), lock_p, cmd, &cd, (file_ctx *)fp);
+    mdki_linux_destroy_call_data(&cd);
 
-    return err;
+    return mdki_errno_unix_to_linux(err);
 }
 #endif
 
@@ -649,12 +661,12 @@ vnode_fop_mmap(
 {
     INODE_T *ip = fp->f_dentry->d_inode;
     int err = 0;
-    int len;
-    CRED_T *cred;
+    loff_t len;
     loff_t offset = mem_p->vm_pgoff << PAGE_CACHE_SHIFT;
     loff_t maxoffset = MVFS_MAXOFF_T;
     VNODE_T *vp;
     struct mmap_ctx ctx;
+    CALL_DATA_T cd;
 
     /* make sure offset, len are within our range */
 
@@ -666,7 +678,7 @@ vnode_fop_mmap(
     if (offset < 0)
         return -EINVAL;
 
-    if ( offset >= maxoffset ||
+    if (offset >= maxoffset ||
         (offset + len) < 0 ||
         (offset + len) >= maxoffset)
     {
@@ -680,11 +692,11 @@ vnode_fop_mmap(
 
     ctx.file = fp;
     ctx.mem = mem_p;
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     err = VOP_MMAP(vp, vma_to_sharing(mem_p),
                    vma_to_rwx(mem_p),
-                   cred, &ctx);
-    MDKI_CRFREE(cred);
+                   &cd, &ctx);
+    mdki_linux_destroy_call_data(&cd);
 
     MDKI_TRACE(TRACE_MAP, "vp=%p mflags=%x prot=%x error=%d\n",
               vp, vma_to_sharing(mem_p),
@@ -703,10 +715,9 @@ vnode_fop_readdir(
     INODE_T *inode;
     DENT_T *dentry;
     int err;
-    CRED_T *cred;
+    CALL_DATA_T cd;
     struct readdir_ctx ctx;
 
-    ASSERT_KERNEL_LOCKED_24x();
     dentry = file_p->f_dentry;
     inode = dentry->d_inode;
 
@@ -724,10 +735,10 @@ vnode_fop_readdir(
     uios.uio_buff = dirent_p;
     uios.uio_func = filldir_func;
 
-    cred = MDKI_GET_UCRED();
-    err = VOP_READDIR(ITOV(inode), &uios, cred, NULL, &ctx);
+    mdki_linux_init_call_data(&cd);
+    err = VOP_READDIR(ITOV(inode), &uios, &cd, NULL, &ctx);
     err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
 
     if (!ctx.done)
         /* reset the file position */
@@ -736,4 +747,4 @@ vnode_fop_readdir(
     return err;
 }
 
-static const char vnode_verid_mvfs_linux_fops_c[] = "$Id:  4e6040ee.7aa111dd.871a.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_linux_fops_c[] = "$Id:  a73bf76b.dc5411df.9210.00:01:83:0a:3b:75 $";

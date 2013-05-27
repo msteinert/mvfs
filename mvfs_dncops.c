@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2008. */
+/* * (C) Copyright IBM Corporation 1991, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_dncops.c */
 #include "mvfs_systm.h"
 #include "mvfs.h"
@@ -240,7 +240,7 @@ mvfs_dnclookup_subr(
     struct mfs_dncent *dnp,
     VNODE_T *vw,
     VNODE_T **vpp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 
 STATIC int 
@@ -377,27 +377,30 @@ mvfs_dnlc_data_t mvfs_dnlc_data_var;
 #define UNUSED(dp) ((dp)->dvw == NULL && \
 		    MVFS_FLAGOFF((dp)->flags,MVFS_DNC_RVC_ENT))
 
-#define DNC_BUMPVW(vw,stat) { \
-        SPL_T _ss; \
-	MVFS_STATLOCK_LOCK(_ss); \
-	if (vw) BUMP_PVSTAT_LOCKED(VTOM(vw)->mn_view.pvstat->dncstat.stat, 1); \
-        BUMPSTAT_LOCKED(mfs_dncstat.stat, 1); \
-        MVFS_STATLOCK_UNLOCK(_ss); \
-    }
+#define DNC_BUMPVW(vw, stat) \
+        if (vw) {       \
+           BUMP_PVSTAT(vw, dncstat.stat); \
+        }       \
+        BUMPSTAT(mfs_dncstat.stat);
 
-#define DNC_BUMPVW_LOCKED(vw,stat) \
-	if (vw) BUMP_PVSTAT_LOCKED(VTOM(vw)->mn_view.pvstat->dncstat.stat,1); \
-        BUMPSTAT_LOCKED(mfs_dncstat.stat, 1);
-
-/* same as above, but handles two stats at a time while under lock */
-#define DNC_BUMPVW_2(vw,stat1, stat2) { \
-        SPL_T _ss; \
-	MVFS_STATLOCK_LOCK(_ss); \
-	if (vw) { BUMP_PVSTAT_LOCKED(VTOM(vw)->mn_view.pvstat->dncstat.stat1, 1); \
-                  BUMP_PVSTAT_LOCKED(VTOM(vw)->mn_view.pvstat->dncstat.stat2, 1);} \
-        BUMPSTAT_LOCKED(mfs_dncstat.stat1, 1); \
-        BUMPSTAT_LOCKED(mfs_dncstat.stat2, 1); \
-        MVFS_STATLOCK_UNLOCK(_ss); \
+/*
+ * Same as above, but handles two stats at a time while under lock.
+ * Care should be taken not to dereference the per-view stat pointer
+ * which could be in paged memory after taking the pvstatlock.  For
+ * detailed information on this, check the comment above the pvstat
+ * declaration.
+ */
+#define DNC_BUMPVW_2(vw, stat1, stat2) { \
+        if (vw) { \
+           SPL_T _ss; \
+           struct mvfs_pvstat *pvp = VTOM(vw)->mn_view.pvstat; \
+           MVFS_PVSTATLOCK_LOCK(_ss, pvp); \
+           BUMP_PVSTAT_LOCKED(pvp, dncstat.stat1); \
+           BUMP_PVSTAT_LOCKED(pvp, dncstat.stat2); \
+           MVFS_PVSTATLOCK_UNLOCK(_ss, pvp); \
+        } \
+        BUMPSTAT(mfs_dncstat.stat1); \
+        BUMPSTAT(mfs_dncstat.stat2); \
     }
 
 /* find a proper hash size, which should be a prime number, 
@@ -669,6 +672,7 @@ mvfs_dnc_setcaches(
     new_mvfs_dncmax += MVFS_SIZE_VALID(szp, DNCNOENTMAX) ? 
 	szp->size[MVFS_SETCACHE_DNCNOENTMAX] : mcdp->mvfs_dncnoentmax;
 
+
     /* Note that this has changed to use the KM_NOSLEEP flag to prevent
      * possible hangs or panics if the user tries to overallocate memory.
      * Now if the user sets the cache size too large, they can take what 
@@ -719,6 +723,7 @@ mvfs_dnc_setcaches(
     MVFS_SIZE_RUNTIME_SET(mcdp->mvfs_dncdirmax, szp, DNCDIRMAX);
     MVFS_SIZE_RUNTIME_SET(mcdp->mvfs_dncregmax, szp, DNCREGMAX);
     MVFS_SIZE_RUNTIME_SET(mcdp->mvfs_dncnoentmax, szp, DNCNOENTMAX);
+
 
     mvfs_dnclist_init();
     MVFS_RW_WRITE_UNLOCK(&(ncdp->mvfs_dnc_rwlock), srw);
@@ -1064,7 +1069,7 @@ mvfs_dncadd_subr(
     register mvfs_dnlc_data_t *ncdp = MDKI_DNLC_GET_DATAP();
     register mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
     register struct mfs_dncent *dnp;
-    SPL_T sh, sl, ss, srw;
+    SPL_T sh, sl, srw;
     SPLOCK_T *hash_spl;
     mfs_fid_t dvfid;
     VNODE_T *dvw, *stvw;
@@ -1089,7 +1094,7 @@ mvfs_dncadd_subr(
     dvfsp = dvp->v_vfsp;
 
     /* Count total adds */
-    DNC_BUMPVW(dvw,dnc_add);
+    DNC_BUMPVW(dvw, dnc_add);
 
     /* Lock structures */
 
@@ -1175,49 +1180,37 @@ mvfs_dncadd_subr(
             NC_HASH_UNLOCK(hash_spl, sh, ncdp);
             MVFS_RW_READ_UNLOCK(&(ncdp->mvfs_dnc_rwlock), srw);
 
-            MVFS_STATLOCK_LOCK(ss);
 	    /*
 	     * Count adds by objects type 
 	     */
 	    switch (type) {
 	    case VNON:
-                DNC_BUMPVW_LOCKED(stvw, dnc_addnoent);
+                DNC_BUMPVW(stvw, dnc_addnoent);
 		break;
 	    case VDIR:
-                DNC_BUMPVW_LOCKED(stvw, dnc_adddir);
+                DNC_BUMPVW(stvw, dnc_adddir);
 		break;
 	    default:
-                DNC_BUMPVW_LOCKED(stvw, dnc_addreg);
+                DNC_BUMPVW(stvw, dnc_addreg);
                 break;
 	    }
             if (addbhinvar) {
-                DNC_BUMPVW_LOCKED(stvw, dnc_addbhinvariant);
+                DNC_BUMPVW(stvw, dnc_addbhinvariant);
             }
             if (addnoop) {
-                DNC_BUMPVW_LOCKED(stvw, dnc_addnoop);
+                DNC_BUMPVW(stvw, dnc_addnoop);
             }
             if (addbh) {
-                DNC_BUMPVW_LOCKED(stvw, dnc_addbh);
+                DNC_BUMPVW(stvw, dnc_addbh);
             }
-            MVFS_STATLOCK_UNLOCK(ss);
 	    return;
 	} else {
 	    NC_RMHASH_LOCKED(dnp);	/* FID mismatch, remove entry */
             NC_SPLOCK_LRU(dnp,sl);
-	    /* RATLC00738154: mvfs_dnc_noent_other is the count of special ENOENT
-	     * entries, which are files currently not selected by the view. These
-	     * entries are marked with the MFS_DNC_NOTINDIR flag. This
-	     * count is used by mfs_dnc_inval_obj_not_found() to determine if the DNC
-	     * has to be linearly searched for invalidating such entries. As the 
-	     * current DNC entry in question is being released,  mvfs_dnc_noent_other
-	     * has to be decremented if the MFS_DNC_NOTINDIR flag is set.
-	     * Correcting the query which resulted in skipping this decrement.
-	     * Refer the CR notes for details.
-	     */
-            if (MFS_FIDNULL(dnp->vfid) && MVFS_FLAGON(dnp->flags, MFS_DNC_NOTINDIR)) {
+            if (MFS_FIDNULL(dnp->vfid) && MVFS_FLAGOFF(dnp->flags, MFS_DNC_NOTINDIR)) {
                 ASSERT(dnp->lruhead == (mfs_dncent_t *)&(ncdp->mfs_dncnoentlru));
                 ncdp->mvfs_dnc_noent_other--;
-            }
+                }
             if (!dnp->in_trans) {
 	        NC_RMLRU_LOCKED(dnp);
 	        SET_IN_TRANS(dnp);
@@ -1241,7 +1234,7 @@ mvfs_dncadd_subr(
                 NC_HASH_UNLOCK(hash_spl, sh, ncdp); 
                 mvfs_log(MFS_LOG_DEBUG, "dncadd_subr, dropping in_trans ent %x\n",dnp);
             }
-            DNC_BUMPVW(stvw,dnc_change);
+            DNC_BUMPVW(stvw, dnc_change);
 	}
     } else {
         /* didn't find an existing match */
@@ -1399,47 +1392,36 @@ get_lru:
     }
     NC_INSLRU_LOCKED(dnp->lruhead->lruprev, dnp);
     NC_INSHASH_LOCKED(&(ncdp->mfs_dnchash[hash]), dnp);
-    /* RATLC00738154: mvfs_dnc_noent_other is the count of special ENOENT
-     * entries, which are files currently not selected by the view. These
-     * entries are marked with the MFS_DNC_NOTINDIR flag. This 
-     * count is used by mfs_dnc_inval_obj_not_found() to determine if the DNC
-     * has to be linearly searched for invalidating such entries. If the 
-     * MFS_DNC_NOTINDIR flag is set, mvfs_dnc_noent_other has to be incremented
-     * Correcting the query which resulted in skipping this increment.
-     * Refer the CR notes for details.
-     */
-    if ((type == VNON) && MVFS_FLAGON(dnp->flags, MFS_DNC_NOTINDIR)) {
+    if ((type == VNON) && MVFS_FLAGOFF(dnp->flags, MFS_DNC_NOTINDIR)) {
         ASSERT(dnp->lruhead == (mfs_dncent_t *)&(ncdp->mfs_dncnoentlru));
         ncdp->mvfs_dnc_noent_other++;      
     }
     NC_SPUNLOCK_LRU(dnp,sl);
     NC_HASH_UNLOCK(hash_spl, sh, ncdp);
     MVFS_RW_READ_UNLOCK(&(ncdp->mvfs_dnc_rwlock), srw);
-    MVFS_STATLOCK_LOCK(ss);
     /*
      * Count adds by objects type 
      */
     switch (type) {
     case VNON:
-        DNC_BUMPVW_LOCKED(stvw, dnc_addnoent);
+        DNC_BUMPVW(stvw, dnc_addnoent);
 	break;
     case VDIR:
-        DNC_BUMPVW_LOCKED(stvw, dnc_adddir);
+        DNC_BUMPVW(stvw, dnc_adddir);
 	break;
     default:
-        DNC_BUMPVW_LOCKED(stvw, dnc_addreg);
+        DNC_BUMPVW(stvw, dnc_addreg);
         break;
     }
     /* Count "long name" adds */
     if (len >= MFS_DNMAXSHORTNAME) {
-        DNC_BUMPVW_LOCKED(stvw,dnc_addlong);
+        DNC_BUMPVW(stvw, dnc_addlong);
     }
 	    
     /* count build-handle invariant adds */
     if (MVFS_FLAGON(dnc_flags, MFS_DNC_BHINVARIANT)) {
-        DNC_BUMPVW_LOCKED(stvw,dnc_addbhinvariant);
+        DNC_BUMPVW(stvw, dnc_addbhinvariant);
     }
-    MVFS_STATLOCK_UNLOCK(ss);
     return;
 }
 
@@ -1557,7 +1539,7 @@ mfs_dnclookup(
     register VNODE_T *dvp,
     register char *nm,
     struct pathname *pnp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 )
 {
     register mvfs_dnlc_data_t *ncdp = MDKI_DNLC_GET_DATAP();
@@ -1589,7 +1571,7 @@ mfs_dnclookup(
     vw = MFS_VIEW(dvp);
 
     if (nm[0] == '.' && nm[1] == '\0') {
-        DNC_BUMPVW_2(vw,dnc_hits, dnc_hitdot);
+        DNC_BUMPVW_2(vw, dnc_hits, dnc_hitdot);
 	VN_HOLD(dvp);
 	return(dvp);
     }
@@ -1612,14 +1594,14 @@ mfs_dnclookup(
 
     NC_HASH_LOCK(hash, &hash_spl, sh, ncdp);
     if ((dnp = mfs_dncfind(&dvfid, dvfsp, vw, nm, len, 
-            MVFS_PN_CI_LOOKUP(pnp), hash, cred)) == NULL) {
+            MVFS_PN_CI_LOOKUP(pnp), hash, MVFS_CD2CRED(cd))) == NULL) {
 	/* Ordinary miss */
         NC_HASH_UNLOCK(hash_spl, sh, ncdp);
-        DNC_BUMPVW(vw,dnc_misses);
+        DNC_BUMPVW(vw, dnc_misses);
 	return (NULL);
     }
 
-    error = mvfs_dnclookup_subr(dnp, vw, &vvw, cred);
+    error = mvfs_dnclookup_subr(dnp, vw, &vvw, cd);
     /* 
      * Must make a copy of dir cache info before releasing the lock
      * as it can go away anytime after then.
@@ -1676,7 +1658,7 @@ mfs_dnclookup(
 	mfs_dnc_invalvp(dvp);      /* Invalidate entries from dir */
 	MUNLOCK(VTOM(dvp));
 	if (vvw) VN_RELE(vvw);
-        DNC_BUMPVW_2(vw,dnc_misses, dnc_missdncgen);
+        DNC_BUMPVW_2(vw, dnc_misses, dnc_missdncgen);
 	return(NULL);
     }
 
@@ -1704,7 +1686,7 @@ mfs_dnclookup(
 
     if (MFS_FIDNULL(vfid)) {
 	if (!mcdp->mvfs_dncnoentenabled) {
-	    DNC_BUMPVW(vw,dnc_misses);
+	    DNC_BUMPVW(vw, dnc_misses);
 	    return(NULL);
 	}
 
@@ -1714,13 +1696,13 @@ mfs_dnclookup(
 	 */
 	vevtime.tv_sec += V_TO_MMI(dvp)->mmi_ac_regmax;	/* timeout */
 	if (notindir || MDKI_CTIME() <= vevtime.tv_sec) {
-            DNC_BUMPVW_2(vw,dnc_hits,dnc_hitnoent);
+            DNC_BUMPVW_2(vw, dnc_hits, dnc_hitnoent);
             return(MFS_DNC_ENOENTVP);
 	} else {
 	    MLOCK(VTOM(dvp));
-	    mfs_dncremove(dvp, nm, cred);	/* Flush translation */
+	    mfs_dncremove(dvp, nm, MVFS_CD2CRED(cd));	/* Flush translation */
 	    MUNLOCK(VTOM(dvp));
-            DNC_BUMPVW_2(vw,dnc_misses,dnc_missnoenttimedout);
+            DNC_BUMPVW_2(vw, dnc_misses, dnc_missnoenttimedout);
 	    return(NULL);
         }
     }
@@ -1729,13 +1711,13 @@ mfs_dnclookup(
      * Get the vnode ptr from the FID information
      */
 
-    error = mfs_getvnode(dvp->v_vfsp, vvw, &vfid, &vp, cred);
+    error = mfs_getvnode(dvp->v_vfsp, vvw, &vfid, &vp, cd);
     if (vvw) VN_RELE(vvw);		/* Not needed any more */
     if (error) {			/* can't get it */
 	MLOCK(VTOM(dvp));
-	mfs_dncremove(dvp, nm, cred);	/* Flush translation */
+	mfs_dncremove(dvp, nm, MVFS_CD2CRED(cd));	/* Flush translation */
 	MUNLOCK(VTOM(dvp));
-        DNC_BUMPVW_2(vw,dnc_misses,dnc_missnovp);
+        DNC_BUMPVW_2(vw, dnc_misses, dnc_missnovp);
 	return (NULL);
     }
     ASSERT(vp);		/* Must have a vnode (held) now */
@@ -1770,12 +1752,12 @@ mfs_dnclookup(
      *
      */
 
-    if (!mfs_evtime_valid(vp, &vevtime, cred)) {
+    if (!mfs_evtime_valid(vp, &vevtime, cd)) {
 	VN_RELE(vp);	/* Can't trust this vnode, release it */
  	MLOCK(VTOM(dvp));
-	mfs_dncremove(dvp, nm, cred);	/* Flush translation */
+	mfs_dncremove(dvp, nm, MVFS_CD2CRED(cd));	/* Flush translation */
 	MUNLOCK(VTOM(dvp));
-        DNC_BUMPVW_2(vw,dnc_misses,dnc_missevtime);
+        DNC_BUMPVW_2(vw, dnc_misses, dnc_missevtime);
 	return(NULL);
     }
 
@@ -1786,9 +1768,9 @@ mfs_dnclookup(
 
     /* Counts hits by type */
     if (MVFS_ISVTYPE(vp, VDIR)) {
-        DNC_BUMPVW_2(vw,dnc_hits, dnc_hitdir);
+        DNC_BUMPVW_2(vw, dnc_hits, dnc_hitdir);
     } else {
-        DNC_BUMPVW_2(vw,dnc_hits, dnc_hitreg);
+        DNC_BUMPVW_2(vw, dnc_hits, dnc_hitreg);
     }
 
     return(vp);
@@ -1799,11 +1781,11 @@ mvfs_dnclookup_subr(
     struct mfs_dncent *dnp,
     VNODE_T *vw,
     VNODE_T **vpp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 )
 {
     SPL_T sl;
-    mvfs_thread_t *mth = mvfs_mythread();
+    mvfs_thread_t *mth = MVFS_MYTHREAD(cd);
 
     /*
      * See if entry is marked as 'invalid'
@@ -1816,7 +1798,7 @@ mvfs_dnclookup_subr(
      * are due to invalidations, making the cache larger won't help).
      */
     if (dnp->invalid) {
-        DNC_BUMPVW_2(vw,dnc_misses,dnc_missinvalid);
+        DNC_BUMPVW_2(vw, dnc_misses, dnc_missinvalid);
         return (1);
     }
 
@@ -1824,7 +1806,7 @@ mvfs_dnclookup_subr(
      * Try to apply null bh to non-null process bh optimization
      */
     if (mfs_dnc_nullbhcheck(dnp, mth)) {
-	DNC_BUMPVW(vw,dnc_hitbhfromnull);
+	DNC_BUMPVW(vw, dnc_hitbhfromnull);
     } else {
 
         /* 
@@ -1834,7 +1816,7 @@ mvfs_dnclookup_subr(
          */
 
         if (!mfs_dncbhcheck(dnp, mth)) {
-	    DNC_BUMPVW_2(vw,dnc_misses,dnc_missbh);
+	    DNC_BUMPVW_2(vw, dnc_misses, dnc_missbh);
 	    return(1);
         }
     }
@@ -1878,7 +1860,7 @@ mvfs_rvclookup(
     VNODE_T *vw,
     VNODE_T *vobrtvp,
     mfs_fid_t *fidp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 )
 {
     mvfs_dnlc_data_t *ncdp = MDKI_DNLC_GET_DATAP();
@@ -1890,7 +1872,7 @@ mvfs_rvclookup(
     mfs_fid_t vobrtfid;
     VFS_T *dvfsp;
     SPLOCK_T *hash_spl;
-    SPL_T sh, ss, srw;
+    SPL_T sh;
 
     MVFS_INIT_TIMEVAL(vevtime);  /* The compiler wants these initialized. */
 
@@ -1903,7 +1885,7 @@ mvfs_rvclookup(
     ASSERT(vobrtvp == V_TO_MMI(vobrtvp)->mmi_rootvp);
 
     if (!mcdp->mvfs_rvcenabled) {
-	BUMPSTAT(mfs_rvcstat.rvc_misses, ss);
+	BUMPSTAT(mfs_rvcstat.rvc_misses);
 	return(ENOENT);
     }
     
@@ -1928,13 +1910,13 @@ mvfs_rvclookup(
 
     NC_HASH_LOCK(hash, &hash_spl, sh, ncdp);
     if ((dnp = mfs_dncfind(&vobrtfid, dvfsp, vw, ".", 1, FALSE,
-			   hash, cred)) == NULL) {
+			   hash, MVFS_CD2CRED(cd))) == NULL) {
 	/* Ordinary miss */
         NC_HASH_UNLOCK(hash_spl, sh, ncdp);
-	BUMPSTAT(mfs_rvcstat.rvc_misses, ss);
+	BUMPSTAT(mfs_rvcstat.rvc_misses);
 	return (ENOENT);
     }
-    error = mvfs_dnclookup_subr(dnp, vw, NULL, cred);
+    error = mvfs_dnclookup_subr(dnp, vw, NULL, cd);
     *fidp = dnp->vfid;
     if (MVFS_FLAGOFF(dnp->flags, MVFS_DNC_RVC_ENT))
 	error = ENOENT;
@@ -1943,16 +1925,16 @@ mvfs_rvclookup(
     NC_HASH_UNLOCK(hash_spl, sh, ncdp);
 
     if (error != 0 || MFS_FIDNULL(*fidp)) {
-	BUMPSTAT(mfs_rvcstat.rvc_misses, ss);
+	BUMPSTAT(mfs_rvcstat.rvc_misses);
 	return ENOENT;
     }
     if (vevtime.tv_sec + V_TO_MMI(vobrtvp)->mmi_ac_dirmax  < MDKI_CTIME()) {
-	BUMPSTAT(mfs_rvcstat.rvc_misses, ss);
-	BUMPSTAT(mfs_rvcstat.rvc_misstimo, ss);
+	BUMPSTAT(mfs_rvcstat.rvc_misses);
+	BUMPSTAT(mfs_rvcstat.rvc_misstimo);
 	/* timed out */
 	return ENOENT;
     }
-    BUMPSTAT(mfs_rvcstat.rvc_hits, ss);
+    BUMPSTAT(mfs_rvcstat.rvc_hits);
     return 0;
 }
 
@@ -2003,7 +1985,7 @@ mvfs_rvcflush(
     mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
     register int i, j;
     mfs_dncent_t *dnp;
-    SPL_T ss, srw;
+    SPL_T srw;
 
     ASSERT(vw != NULL);
     ASSERT(MFS_ISVIEW(VTOM(vw)));
@@ -2032,11 +2014,11 @@ mvfs_rvcflush(
 	}
     }
     MVFS_RW_WRITE_UNLOCK(&(ncdp->mvfs_dnc_rwlock), srw);
-    MVFS_STATLOCK_LOCK(ss);
-    BUMPSTAT_LOCKED(mfs_rvcstat.rvc_purge, j);
-    BUMPSTAT_LOCKED(mfs_dncstat.dnc_invalhits, j);
-    if (vw) BUMP_PVSTAT_LOCKED(VTOM(vw)->mn_view.pvstat->dncstat.dnc_invalhits, j);
-    MVFS_STATLOCK_UNLOCK(ss);
+    BUMPSTAT_VAL(mfs_rvcstat.rvc_purge, j);
+    BUMPSTAT_VAL(mfs_dncstat.dnc_invalhits, j);
+    if (vw) {
+       BUMP_PVSTAT_VAL(vw, dncstat.dnc_invalhits, j);
+    }
 }
 
 /*
@@ -2105,7 +2087,7 @@ mfs_dncremove_one(
     int hash, rvchash, rval = 0;
     tbs_boolean_t inval_rvc = 0;
     SPLOCK_T *hash_spl;
-    SPL_T sh, sl, srw;
+    SPL_T sh, sl;
 
     ASSERT(MFS_ISVOB(VTOM(dvp)));
     ASSERT(MISLOCKED(VTOM(dvp)));
@@ -2212,7 +2194,7 @@ mfs_dncremove_one(
         /* We found the name to be flushed, and were able to flush RVC
            if needed.  Indicate that caller need not flush RVC for
            this view and VOB. */
-        if (inval_rvc) DNC_BUMPVW(vw,dnc_invalhits);
+        if (inval_rvc) DNC_BUMPVW(vw, dnc_invalhits);
         rval = 1;
     } else {
         /* Not found, but still invalidate any synonyms for CI lookup */
@@ -2238,7 +2220,7 @@ mvfs_dncflush_subr(
     register mvfs_dnlc_data_t *ncdp = MDKI_DNLC_GET_DATAP();
     register struct mfs_dncent *dnp;
     register int i;
-    SPL_T sh, sl, ss, srw, s;
+    SPL_T sh, sl, srw;
     SPLOCK_T *hash_spl;
     int dropped = 0;
 #ifdef MVFS_DEBUG
@@ -2313,7 +2295,7 @@ mvfs_dncflush_subr(
         NC_SPUNLOCK_LRU(dnp,sl);
     }
     if (vfsp == NULL) { 
-        BUMPSTAT(mfs_dncstat.dnc_flush, s); /* Bump whole cache dumped count */
+        BUMPSTAT(mfs_dncstat.dnc_flush); /* Bump whole cache dumped count */
     }
 
     MVFS_RW_READ_UNLOCK(&(ncdp->mvfs_dnc_rwlock), srw);
@@ -2415,7 +2397,7 @@ mfs_dnc_flushvw(
         NC_SPUNLOCK_LRU(dnp,sl);
     }
     MVFS_RW_READ_UNLOCK(&(ncdp->mvfs_dnc_rwlock), srw); 
-    DNC_BUMPVW(vw,dnc_flushvw);
+    DNC_BUMPVW(vw, dnc_flushvw);
 }
 
 /*
@@ -2435,11 +2417,10 @@ mvfs_dnc_flushvfs(
     mvfs_dnlc_data_t *ncdp = MDKI_DNLC_GET_DATAP();
     register struct mfs_dncent *dnp;
     register int i;
-    SPL_T s;
 
     if (ncdp->mfs_dnc == NULL) return;	/* No name cache */
     mvfs_dncflush_subr(vfsp);
-    BUMPSTAT(mfs_dncstat.dnc_flushvfs, s);
+    BUMPSTAT(mfs_dncstat.dnc_flushvfs);
 }
 
 /*
@@ -2459,7 +2440,7 @@ mfs_dnc_invalvp(
     register mvfs_dnlc_data_t *ncdp = MDKI_DNLC_GET_DATAP();
     register int i, j;
     mfs_dncent_t *dnp;
-    SPL_T ss, srw;
+    SPL_T srw;
     VNODE_T *vw;
     mfs_fid_t vfid;
 
@@ -2468,7 +2449,6 @@ mfs_dnc_invalvp(
     if (ncdp->mfs_dnc == NULL) return;	/* No name cache */
     if (!MFS_ISVOB(VTOM(vp))) return;   /* Only VOB stuff in name cache */
     
-
     vfid = VTOM(vp)->mn_hdr.fid;
     vw = MFS_VIEW(vp);
     
@@ -2497,11 +2477,11 @@ mfs_dnc_invalvp(
 	}
     }
     MVFS_RW_WRITE_UNLOCK(&(ncdp->mvfs_dnc_rwlock), srw);
-    MVFS_STATLOCK_LOCK(ss);
-    DNC_BUMPVW_LOCKED(vw, dnc_invalvp); 
-    BUMPSTAT_LOCKED(mfs_dncstat.dnc_invalhits, j);
-    if (vw) BUMP_PVSTAT_LOCKED(VTOM(vw)->mn_view.pvstat->dncstat.dnc_invalhits, j);
-    MVFS_STATLOCK_UNLOCK(ss);
+    DNC_BUMPVW(vw, dnc_invalvp); 
+    BUMPSTAT_VAL(mfs_dncstat.dnc_invalhits, j);
+    if (vw) {
+        BUMP_PVSTAT_VAL(vw, dncstat.dnc_invalhits, j);
+    }
 }
 
 /*
@@ -2556,25 +2536,18 @@ mfs_dnc_inval_obj_not_found()
          * that the cause of the name-not-found status was
          * due to the name not being in the dir.
          */
-	/* RATLC00738154: The DNC entry needs to be invalidated 
-	 * if the MFS_DNC_NOTINDIR flag is set. Correcting the wrong
-	 * query which resulted in skiping this invalidation.
-	 * Refer the CR notes for details.
-	 */
-        if (MVFS_FLAGON(dnp->flags, MFS_DNC_NOTINDIR)) {
+        if (MVFS_FLAGOFF(dnp->flags, MFS_DNC_NOTINDIR)) {
             dnp->invalid = 1;
             dnp->nullbh = 0;
             j++;  /* count hits, for stats */
         }
     }
     MVFS_RW_WRITE_UNLOCK(&(ncdp->mvfs_dnc_rwlock), srw);
-    MVFS_STATLOCK_LOCK(ss);
-    BUMPSTAT_LOCKED(mfs_dncstat.dnc_invalnf, 1);
-    BUMPSTAT_LOCKED(mfs_dncstat.dnc_invalhits, j);
-    if ((dnp) && dnp->vvw) 
-        BUMP_PVSTAT_LOCKED(VTOM(dnp->vvw)->mn_view.pvstat->dncstat.dnc_invalhits,
-                        j);
-    MVFS_STATLOCK_UNLOCK(ss);
+    BUMPSTAT(mfs_dncstat.dnc_invalnf);
+    BUMPSTAT_VAL(mfs_dncstat.dnc_invalhits, j);
+    if ((dnp) && dnp->vvw) {
+        BUMP_PVSTAT_VAL((dnp->vvw), dncstat.dnc_invalhits, j);
+    }
 }
 
 /*
@@ -2590,7 +2563,7 @@ mfs_dnc_invalvw(
     register mvfs_dnlc_data_t *ncdp = MDKI_DNLC_GET_DATAP();
     register int i, j;
     mfs_dncent_t *dnp;
-    SPL_T ss, srw;
+    SPL_T srw;
 
     ASSERT(vw != NULL);
     ASSERT(MFS_ISVIEW(VTOM(vw)));
@@ -2616,11 +2589,11 @@ mfs_dnc_invalvw(
 	}
     }
     MVFS_RW_WRITE_UNLOCK(&(ncdp->mvfs_dnc_rwlock), srw);
-    MVFS_STATLOCK_LOCK(ss);
-    DNC_BUMPVW_LOCKED(vw, dnc_invalvw);
-    BUMPSTAT_LOCKED(mfs_dncstat.dnc_invalhits, j);
-    if (vw) BUMP_PVSTAT_LOCKED(VTOM(vw)->mn_view.pvstat->dncstat.dnc_invalhits, j);
-    MVFS_STATLOCK_UNLOCK(ss);
+    DNC_BUMPVW(vw, dnc_invalvw);
+    BUMPSTAT_VAL(mfs_dncstat.dnc_invalhits, j);
+    if (vw) {
+       BUMP_PVSTAT_VAL(vw, dncstat.dnc_invalhits, j);
+    }
 }
 
 /*
@@ -2642,7 +2615,6 @@ mfs_dnc_inval_case_synonyms(
     register mfs_dncent_t *hp; 
     register mfs_dncent_t *dnp;
     register int j;
-    SPL_T sh, ss;
     SPLOCK_T *hash_spl; 
 
     ASSERT(len > 0);
@@ -2658,11 +2630,10 @@ mfs_dnc_inval_case_synonyms(
             j++;  /* count hits, for stats */
         }
     }
-
-    MVFS_STATLOCK_LOCK(ss);
-    BUMPSTAT_LOCKED(mfs_dncstat.dnc_invalhits, j);
-    if (vw) BUMP_PVSTAT_LOCKED(VTOM(vw)->mn_view.pvstat->dncstat.dnc_invalhits,j);
-    MVFS_STATLOCK_UNLOCK(ss);
+    BUMPSTAT_VAL(mfs_dncstat.dnc_invalhits, j);
+    if (vw) {
+        BUMP_PVSTAT(vw, dncstat.dnc_invalhits);
+    }
     return;
 }
 
@@ -2939,4 +2910,4 @@ mvfs_dnc_count(
     usage->cache_usage[MVFS_CACHE_MAX][MVFS_CACHE_DNCNOENT] = mcdp->mvfs_dncnoentmax;
     return;
 }
-static const char vnode_verid_mvfs_dncops_c[] = "$Id:  02678c9b.749011dd.968c.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_dncops_c[] = "$Id:  65abe643.dc5411df.9210.00:01:83:0a:3b:75 $";

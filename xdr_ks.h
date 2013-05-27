@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1992, 2005 */
+/* * (C) Copyright IBM Corporation 1992, 2007. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_XDR_KS_H_)
 #define _XDR_KS_H_
 
@@ -57,4 +57,4 @@ EZ_XDR_ROUTINE(ks_off32_t);
 #define XDR_KS_MEM_ZERO BZERO
 #endif /* _XDR_KS_H_ */
 
-/* $Id: 92b2a3a4.637911da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: 51b10f16.9c1e11dd.9a62.00:01:83:29:c0:fc $ */

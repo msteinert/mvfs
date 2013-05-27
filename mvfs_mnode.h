@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 2006. */
+/* * (C) Copyright IBM Corporation 2006, 2007. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_MNODE_H_
 #define MVFS_MNODE_H_
 
@@ -143,4 +143,4 @@ typedef struct mvfs_mnode_data
 } mvfs_mnode_data_t;
 
 #endif /* MVFS_MNODE_H_ */
-/* $Id: 2973888c.66bb11dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: c9d14d3e.9c1e11dd.9a62.00:01:83:29:c0:fc $ */

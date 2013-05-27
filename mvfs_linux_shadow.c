@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2008 IBM Corporation.
+ * Copyright (C) 1999, 2009 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -53,11 +53,7 @@ struct vnlayer_cvn_debug_info vnlayer_cvn_old_debug[HISTCOUNT] = {{0}};
 extern int
 vnode_shadow_dop_revalidate(
     DENT_T *dentry_p,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    int flags                         /* LOOKUP_* */
-#else
     struct nameidata *nd
-#endif
 )
 {
     int err;
@@ -65,7 +61,7 @@ vnode_shadow_dop_revalidate(
     VNODE_T *cvp;
 
     real_dentry = REALDENTRY_LOCKED(dentry_p, &cvp);
-    if ((!real_dentry) || DENT_HASH_IS_EMPTY(real_dentry)) {
+    if ((!real_dentry) || d_unhashed(real_dentry)) {
         err = FALSE;
  	if (real_dentry)
             /* drop the real entry, it's stale */
@@ -74,11 +70,7 @@ vnode_shadow_dop_revalidate(
         VNODE_DGET(real_dentry);
         err = TRUE;
         if (real_dentry->d_op && real_dentry->d_op->d_revalidate) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-            err = (*real_dentry->d_op->d_revalidate)(real_dentry, flags);
-#else
             err = (*real_dentry->d_op->d_revalidate)(real_dentry, nd);
-#endif
             /* Recreate what cached lookup would do to the real dentry.
              * Note that d_invalidate only returns non-zero if it is
              * called for a directory still in use.  We should never
@@ -102,6 +94,7 @@ vnode_shadow_dop_revalidate(
     }
     return(err);
 }
+
 
 /*
  * shadow_dop_release doesn't bother with getting the mvfs_cvn_lock before
@@ -211,13 +204,11 @@ vnode_shadow_fop_open(
     /* 
      * Swap the file structure contents to point at the underlying object.
      */
-	#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-	    /* In Linux 2.6 they added the mapping stuff to the file so we have to set
+    /* In Linux 2.6 they added the mapping stuff to the file so we have to set
     ** that up here, too.
     */
     file->f_mapping = real_inode->i_mapping;
     VNLAYER_RA_STATE_INIT(&(file->f_ra), file->f_mapping);
-#endif
     file->f_dentry = VNODE_DGET(rdentry);
     oldfops = file->f_op;
     file->f_vfsmnt = newmnt;
@@ -346,6 +337,7 @@ vnode_shadow_iop_readlink(
     return(err);
 }
 
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
 /* The return pointer points to a cookie to be given to put_link() to clean
 ** stuff up if necessary.
@@ -368,21 +360,21 @@ vnode_shadow_iop_follow_link(
     VNODE_T *cvp;
 
     /* this function must consume a reference on base */
-    /* On 2.4 we only path_release on error. */
+    /* We only path_release on error. */
 
     err = 0;
 
     real_dentry = REALDENTRY_LOCKED(dentry, &cvp);
     if (real_dentry == NULL) {
 	err = -ENOENT;
-        path_release(nd);
+        MDKI_PATH_RELEASE(nd);
         goto out_nolock;
     }
     VNODE_DGET(real_dentry);             /* protect inode */
     if (real_dentry->d_inode == NULL) {
         /* delete race */
 	err = -ENOENT;
-        path_release(nd);
+        MDKI_PATH_RELEASE(nd);
         goto out;
     }
     real_inode = real_dentry->d_inode;
@@ -392,7 +384,7 @@ vnode_shadow_iop_follow_link(
     {
         buff = KMEM_ALLOC(len, KM_SLEEP);
         if (!buff) {
-            path_release(nd);
+            MDKI_PATH_RELEASE(nd);
             err = -ENOMEM;
             goto out;
         }
@@ -403,7 +395,7 @@ vnode_shadow_iop_follow_link(
         set_fs(old_fs);
         if (err < 0) {
             KMEM_FREE(buff, len);
-            path_release(nd);
+            MDKI_PATH_RELEASE(nd);
             goto out;
         }
         /* done with dentry */
@@ -472,7 +464,7 @@ extern int
 vnode_shadow_iop_permission(
     INODE_T *inode,
     int mask
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     , struct nameidata *nd
 #endif
 )
@@ -490,12 +482,12 @@ vnode_shadow_iop_permission(
         VNODE_DPUT(dp);
         return -EACCES;
     }
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    err = permission(real_inode, mask);
-#else
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     err = permission(real_inode, mask, nd);
+#else
+    err = inode_permission(real_inode, mask);
 #endif
+
     if (err == 0)
         /* don't call permission() on inode, it will call back to us! */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)
@@ -508,47 +500,6 @@ vnode_shadow_iop_permission(
     return(err);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-extern int
-vnode_shadow_do_i_revalidate(
-    INODE_T * shadow_inode,
-    INODE_T * real_inode,
-    DENT_T *real_dentry
-)
-{
-    int err = 0;
-
-    if (real_inode->i_op && real_inode->i_op->revalidate) {
-        err = real_inode->i_op->revalidate(real_dentry);
-    }
-    if (err == 0) {
-        SHADOW_CP_INODAT(real_inode, shadow_inode);
-    }
-    return(err);
-}
-
-extern int
-vnode_shadow_iop_revalidate(DENT_T *dentry)
-{
-    DENT_T *rdentry;
-    INODE_T *sinode;
-    VNODE_T *cvp;
-    int err = 0;
-
-    sinode = dentry->d_inode;
-    rdentry = REALDENTRY_LOCKED(dentry, &cvp);
-    VNODE_DGET(rdentry);                 /* protect inode */
-    if (rdentry != NULL && rdentry->d_inode != NULL)
-        err = vnode_shadow_do_i_revalidate(sinode, rdentry->d_inode, rdentry);
-    else
-        err = -1;
-    if (rdentry) {
-        VNODE_DPUT(rdentry);
-        REALDENTRY_UNLOCK(dentry, cvp);
-    }
-    return(err);
-}
-#else /* 2.6.0 or later */
 extern int
 vnode_shadow_iop_getattr(
     struct vfsmount *mnt,
@@ -577,7 +528,6 @@ vnode_shadow_iop_getattr(
     }
     return(err);
 }
-#endif
 
 /* All 4 of the xattr functions are called with the BKL held */
 
@@ -594,7 +544,6 @@ vnode_shadow_iop_setxattr(
     VNODE_T *cvp;
     int err;
 
-    ASSERT_KERNEL_LOCKED_24x();
     rdent = REALDENTRY_LOCKED(dentry, &cvp);
     err = vnlayer_do_setxattr(rdent, name, value, size, flags);
     REALDENTRY_UNLOCK(dentry, cvp);
@@ -636,7 +585,6 @@ vnode_shadow_iop_listxattr(
     VNODE_T *cvp;
     ssize_t rsize;
 
-    ASSERT_KERNEL_LOCKED_24x();
 #if defined(RATL_SUSE)
     LOCK_INODE(dentry->d_inode);
 #endif
@@ -659,7 +607,6 @@ vnode_shadow_iop_removexattr(
     VNODE_T *cvp;
     int err;
 
-    ASSERT_KERNEL_LOCKED_24x();
     rdent = REALDENTRY_LOCKED(dentry, &cvp);
     err = vnlayer_do_removexattr(rdent, name);
     REALDENTRY_UNLOCK(dentry,cvp);
@@ -670,11 +617,7 @@ vnode_shadow_iop_removexattr(
 IN_OPS_T vnode_shadow_reg_inode_ops = {
     .truncate =         &vnode_shadow_iop_truncate,
     .permission =       &vnode_shadow_iop_permission,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    .revalidate =       &vnode_shadow_iop_revalidate,
-#else
     .getattr =          &vnode_shadow_iop_getattr,
-#endif
     .setattr =          &vnode_iop_notify_change,
     .setxattr =         &vnode_shadow_iop_setxattr,
     .getxattr =         &vnode_shadow_iop_getxattr,
@@ -690,11 +633,7 @@ IN_OPS_T vnode_shadow_slink_inode_ops = {
     .put_link = 	&vnode_iop_put_link,
 #endif
     .permission =       &vnode_shadow_iop_permission,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    .revalidate =       &vnode_shadow_iop_revalidate,
-#else
     .getattr =          &vnode_shadow_iop_getattr,
-#endif
     .setattr =          &vnode_iop_notify_change,
     .setxattr =         &vnode_shadow_iop_setxattr,
     .getxattr =         &vnode_shadow_iop_getxattr,
@@ -702,4 +641,4 @@ IN_OPS_T vnode_shadow_slink_inode_ops = {
     .removexattr =      &vnode_shadow_iop_removexattr,
 };
 
-static const char vnode_verid_mvfs_linux_shadow_c[] = "$Id:  d84dce63.541d11dd.90ce.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_linux_shadow_c[] = "$Id:  8f2be93d.b45711de.8ddb.00:01:83:29:c0:fc $";

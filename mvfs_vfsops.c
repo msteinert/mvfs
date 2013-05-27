@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2008. */
+/* * (C) Copyright IBM Corporation 1990, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_vfsops.c */
 #include "mvfs_systm.h"
 #include "mvfs.h"
@@ -29,7 +29,7 @@
 
 /* Static variable that includes all data used by vfs and statistics subsystems. */
 mvfs_vfs_data_t mvfs_vfs_data_var;
-mvfs_stats_data_t mvfs_stats_data_var;
+mvfs_stats_data_t **mvfs_stats_data_ptr_percpu;
 
 MVFS_MINMAP_T mvfs_minormap;	/* mvfs minor device map */
 
@@ -55,19 +55,22 @@ extern V_OP_T mvfs_vnodeops;
 
 int mvfs_init_state = MVFS_NOT_INITIALIZED;
 LOCK_T mfs_unload_lock;		/* lock between mount and unload procedures */
+#ifdef MVFS_NEEDS_UNLOAD_SYNC
+LOCK_T mvfs_unloading_lock;
+tbs_boolean_t mvfs_unload_in_progress = 0;
+#endif
 
 /* Turn on panics for Assertions by default */
 tbs_boolean_t mvfs_panic_assert = FALSE;
 
-#define FREE_INIT_LOCKS() { \
-	FREELOCK(&mvfs_printf_lock); \
-	FREELOCK(&mvfs_printstr_lock); \
-	FREELOCK(&(MDKI_VFS_GET_DATAP()->mvfs_mountlock)); \
-	MVFS_UNLOCK(&mfs_unload_lock); \
-	FREELOCK(&mfs_unload_lock); \
-}
+/*
+ * mvfs_max_cpus is the  maximum number of cpus that will ever be running
+ * during this load of the mvfs.  It is set at mvfs load time.  It is used
+ * by the statistics code to size the per-cpu statistics arrays.
+ */
 
-extern struct mfs_rpchist mfs_init_viewophist;
+int mvfs_max_cpus;
+tbs_boolean_t mvfs_cpu_beyond_limit;
 
 #ifndef MVFS_SYSTEM_KMEM
 extern struct mvfs_slab_list *mvfs_thread_slabs; 
@@ -138,9 +141,6 @@ mvfsinit(
          */
         MVFS_LOCK(&mfs_unload_lock);
 
-        /* Now, set the initted flag */
-	mvfs_init_state = MVFS_INIT_PHASE1;
-
 	/* Display our version on initialization */
 	mvfs_log(MFS_LOG_INFO, "%s", mvfs_version);
 
@@ -155,8 +155,10 @@ mvfsinit(
 	mfs_kmem_init();	/* Init kmem alloc (debug) before all else */
 #endif
 
-        /* everything else is deferred until viewroot mount--see
-           mvfs_misc_init() below */
+        /* Set our state to indicate we're partway done.  Everything else is
+        ** deferred until viewroot mount--see mvfs_misc_init() below
+        */
+	mvfs_init_state = MVFS_INIT_PHASE1;
 
 	MVFS_UNLOCK(&mfs_unload_lock);
 
@@ -164,6 +166,11 @@ mvfsinit(
                                                  "mvfs_thread_slabs");
 	MVFS_PROC_SLAB_INIT(mvfs_proc_slabs, sizeof(mvfs_proc_t), TRUE,
                                                "mvfs_proc_slabs");
+#ifdef MVFS_VATTR_SLAB_ALLOC
+    MVFS_VATTR_SLAB_INIT(mvfs_vattr_slabs, sizeof(VATTR_T), TRUE,
+                                                "mvfs_vattr_slabs");
+#endif
+
         MVFS_CLR_CRED_SLAB_INIT(mvfs_cred_list_slabs, sizeof(mvfs_clr_creds_t), 
 						TRUE, "mvfs_cl_slab");
 
@@ -248,14 +255,13 @@ void
 mvfs_misc_free(void)
 {
     mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
-    mvfs_stats_data_t *sdp = MDKI_STATS_GET_DATAP();
 
     /* 
      * Time to unload our data structures
      */
 
     MVFS_FREE_CREDLIST();
-    mvfs_clnt_free();
+    mvfs_clnt_destroy();
     mvfs_dncfree();
 
     mvfs_viewfree();
@@ -321,6 +327,7 @@ int fsnum;
     if (vswp != NULL) 
 	MFS_VFSSW_CLEAR(vswp, fsnum);
 
+
     MDKI_USECDELAY(1000000*2);
 
     if (mvfs_init_state == MVFS_INIT_PHASE1) {
@@ -338,15 +345,15 @@ int fsnum;
     MVFS_PROC_SLAB_DESTROY(mvfs_thread_slabs);
     MVFS_CLR_CRED_SLAB_DESTROY(mvfs_cred_list_slabs);
 
+#ifdef MVFS_VATTR_SLAB_ALLOC
+    MVFS_VATTR_SLAB_DESTROY(mvfs_vattr_slabs);
+#endif
+
+    /* We're still under the mfs_unload_lock here. */
     mvfs_init_state = MVFS_NOT_INITIALIZED;
 
-    FREELOCK(&mvfs_printf_lock);
-    FREELOCK(&mvfs_printstr_lock);
-    MVFS_STATLOCK_FREE();
-    FREELOCK(&(MDKI_VFS_GET_DATAP()->mvfs_mountlock));
-    MVFS_UNLOCK(&mfs_unload_lock);
-    FREELOCK(&mfs_unload_lock);
-
+    /* This unlocks and frees mfs_unload_lock, among other things. */
+    FREE_INIT_LOCKS();
     MVFS_MDEP_UNLOAD();
     return(0);
 }
@@ -424,45 +431,23 @@ mvfs_misc_init(
     mvfs_cache_sizes_t *mma_sizes
 )
 {
-    int error, i;
-    mvfs_stats_data_t *sdp;
+    int error, cpuid;
+    struct cpu *cp, *cur_cpu;
 
-    /* 
-     * Init spinlock for stats before any other inits 
-     */
+    mvfs_max_cpus = MVFS_GET_MAXCPU;
+    mvfs_cpu_beyond_limit = FALSE;
 
     MDKI_STATS_ALLOC_DATA();
-    sdp = MDKI_STATS_GET_DATAP();
-    MVFS_STATLOCK_INIT();
 
-    /* Init the statistics structures  
-     * Version number for each stats substruct, see sys/mfs_stats.h
-     */
-    sdp->mfs_clntstat.version = MFS_CLNTSTAT_VERS;
-    sdp->mfs_mnstat.version = MFS_MNSTAT_VERS;
-    sdp->mfs_clearstat.version = MFS_CLEARSTAT_VERS;
-    sdp->mfs_rvcstat.version = MFS_RVCSTAT_VERS;
-    sdp->mfs_dncstat.version = MFS_DNCSTAT_VERS;
-    sdp->mfs_acstat.version = MFS_ACSTAT_VERS;
-    sdp->mfs_rlstat.version = MFS_RLSTAT_VERS;
-    sdp->mfs_austat.version = MFS_AUSTAT_VERS;
-    /* Lazy way to init the histogram bucket markers, from 
-     * static inits in mvfs_rpcutl.c
-     */
-    sdp->mfs_viewophist = mfs_init_viewophist;  
-    /* Zero out all arrays */
-    BZERO(sdp->mfs_vnopcnt, mfs_vnopmax*sizeof(sdp->mfs_vnopcnt[0]));
-    BZERO(sdp->mfs_vfsopcnt, mfs_vfsopmax*sizeof(sdp->mfs_vfsopcnt[0]));
-    BZERO(sdp->mfs_viewopcnt, mfs_viewopmax*sizeof(sdp->mfs_viewopcnt[0]));
-    BZERO(&(sdp->mfs_viewophist.histrpc[0]),
-          sizeof(sdp->mfs_viewophist.histrpc));
-    BZERO(&(sdp->mfs_viewophist.histclr[0]),
-          sizeof(sdp->mfs_viewophist.histclr));
-    BZERO(&(sdp->mfs_viewophist.histperop[0][0]),
-          sizeof(sdp->mfs_viewophist.histperop));
-    for (i=0; i < VIEW_NUM_PROCS; i++) {
-        sdp->mfs_viewoptime[i].tv_sec = sdp->mfs_viewoptime[i].tv_nsec = 0; 
+    for (cpuid = 0; cpuid < mvfs_max_cpus; cpuid++) {
+        MDKI_STATS_GET_DATAP(cpuid) = NULL;
     }
+
+    /*
+     * For the statistics structures, memory is allocated dynamically when
+     * a process runs on a CPU for the first time.  This is handled in the
+     * statistics manipulation routines, e.g. BUMPSTAT, DECSTAT, etc .
+     */
 
     /*
      * adjust cache memory sizes
@@ -514,7 +499,7 @@ mvfs_misc_init(
     if (error != 0) {
         /* Unwind in reverse order */
         /* don't need to undo mvfs_clear_init, it failed so we came here */
-        mvfs_clnt_free();
+        mvfs_clnt_destroy();
       dncerr:
         mvfs_dncfree();
       viewerr:
@@ -539,6 +524,29 @@ mvfs_misc_init(
         MVFS_MDEP_MISC_FREE();
     }
     return error;
+}
+
+/*
+ * Allocate memory for the statistics on the specified CPU and initialize
+ * the stats structure.  Called from the statistics manipulation routines,
+ * e.g. BUMPSTAT, DECSTAT, etc.
+ */
+mvfs_stats_data_t *
+mvfs_stats_data_per_cpu_init(void)
+{
+    /* Initialize the statistics structure for the current cpu */
+    mvfs_stats_data_t *sdp =
+        (mvfs_stats_data_t *)KMEM_ALLOC(sizeof(mvfs_stats_data_t), KM_SLEEP);
+
+    if (sdp == NULL) {
+	mvfs_log(MFS_LOG_ERR,
+                 "Failed to allocate memory for statistics: ENOMEM\n");
+    } else {
+        MVFS_PERCPU_STAT_ZERO(sdp);
+        sdp->zero_me = FALSE;
+    }
+
+    return(sdp);
 }
 
 /*
@@ -809,7 +817,6 @@ MVFS_CALLER_INFO *callinfo; /* Caller info (irp info)    */
     VNODE_T *svp;		/* .specdev vp */
     register int i;
     int num;
-    SPL_T s;
     char *pnp;
     int vobminor, minor_num;
     dev_t major_num;
@@ -936,22 +943,18 @@ MVFS_CALLER_INFO *callinfo; /* Caller info (irp info)    */
 #endif
         mvfs_init_state = MVFS_INIT_COMPLETE;
     }
-    /*
-     * It may be the case that we fail after this point, and leave
-     * init state at MVFS_INIT_COMPLETE.  To fully clean up and be
-     * able to honor new cache sizes/etc will require a successful
-     * unmount of something (perhaps requiring a mount first, if this
-     * failure was for /view).
-     * XXX Seems like this should be cleaned up.
-     */
-
+    /* After this point, any error should cleanup everything we've done above
+    ** and put mvfs_init_state back to MVFS_INIT_PHASE1 (which is what it must
+    ** have been since we checked for MVFS_NOT_INITIALIZED when we started this
+    ** routine).  This all happens under the mfs_unload_lock, which protects the
+    ** state.
+    */
     /* stats structures are not available till after misc_init */
-    BUMPSTAT(mfs_vfsopcnt[MFS_VMOUNT], s);
+    BUMPSTAT(mfs_vfsopcnt[MFS_VMOUNT]);
 
     /* Allocate room for the mount info struct */
-
-    mmi = (struct mfs_mntinfo *)
-            KMEM_ALLOC(sizeof(struct mfs_mntinfo),KM_SLEEP);
+    mmi =
+        (struct mfs_mntinfo *)KMEM_ALLOC(sizeof(struct mfs_mntinfo), KM_SLEEP);
     if (mmi == NULL) {
 	error = ENOMEM;
 	goto errout;
@@ -962,7 +965,6 @@ MVFS_CALLER_INFO *callinfo; /* Caller info (irp info)    */
     mmi->mmi_zoneid = MDKI_GETZONEID();
 
     /* Set type of mount */
-
     if ((mmap->mma_flags & MFSMNT_VIEWROOT) != 0) {
 	if (mmap->mma_vobminor != 0) {
 	    error = EINVAL;
@@ -973,20 +975,24 @@ MVFS_CALLER_INFO *callinfo; /* Caller info (irp info)    */
     else {
 	if ((MDKI_INGLOBALZONE()) && (mmap->mma_vobminor != 0)) {
             /*
-	     * User space requests 1,2, ..., MVFS_MAJFIXMAX*MVFS_MINORMAX/2.
-	     * we convert this to (MVFS_MAJDYNMAX + MVFS_MAJFIXMAX) * MVFS_MINORMAX - 2,
+	     * User space requests 1,2, ..., MVFS_MAJFIXMAX * MVFS_MINORMAX / 2.
+	     * we convert this to:
+             * (MVFS_MAJDYNMAX + MVFS_MAJFIXMAX) * MVFS_MINORMAX - 2,
 	     * (MVFS_MAJDYNMAX + MVFS_MAJFIXMAX) * MVFS_MINORMAX - 4,
 	     * (MVFS_MAJDYNMAX + MVFS_MAJFIXMAX) * MVFS_MINORMAX - 6,
              * ...,
 	     * MVFS_MAJDYNMAX * MVFS_MINORMAX.
-             * The ncaexported vobs map to the high-addr part in the mvfs_minormap, 
-             * and going downward. But, the non-exported vobs look for empty slots 
-             * start from lower-addr part.
+             *
+             * The ncaexported vobs map to the high-addr part in the
+             * mvfs_minormap, and going downward. But, the non-exported vobs
+             * look for empty slots start from lower-addr part.
              *
 	     * Note: mma_vobminor is unsigned so math here is OK.
              */
-	    vobminor = (MVFS_MAJDYNMAX + MVFS_MAJFIXMAX) * MVFS_MINORMAX - 2*mmap->mma_vobminor;
-	    if (vobminor > (MVFS_MAJDYNMAX + MVFS_MAJFIXMAX) * MVFS_MINORMAX - 2 || vobminor < MVFS_MAJDYNMAX * MVFS_MINORMAX)
+	    vobminor = (MVFS_MAJDYNMAX + MVFS_MAJFIXMAX) * MVFS_MINORMAX -
+                2 * mmap->mma_vobminor;
+	    if (vobminor > (MVFS_MAJDYNMAX + MVFS_MAJFIXMAX) * MVFS_MINORMAX -
+                2 || vobminor < MVFS_MAJDYNMAX * MVFS_MINORMAX)
             {
 		error = EINVAL;
 		goto errout;
@@ -1042,8 +1048,15 @@ MVFS_CALLER_INFO *callinfo; /* Caller info (irp info)    */
 	mmi->mmi_svr.rpn = STRDUP("albd server");
 	mmi->mmi_svr.uuid = TBS_UUID_NULL;
 	mmi->mmi_svr.svrbound = 1;
-        mmi->mmi_svr.addr = mmap->mma_addr;
-	MVFS_SIN_CVT(&mmi->mmi_svr.addr);
+
+        /* We only care about the ALBD port for the viewroot mount.  The port
+        ** is assumed to be the same for IPv6 and IPv4 so we're just going to
+        ** "misuse" the addr field in this case and say it is IPv4 and save the
+        ** port in it (we set the family for safety).
+        */
+        mmi->mmi_svr.addr.ks_ss_s.sa_family = AF_INET;
+        mmi->mmi_svr.addr.ks_ss_sin4.sin_port = mmap->mma_port;
+
 	/* Set up MMI info before any makenodes. */
 
         mmi->mmi_minor = mvfs_vfsgetnum(&mvfs_minormap, MVFS_MINMAPSIZE);
@@ -1259,10 +1272,8 @@ MVFS_CALLER_INFO *callinfo; /* Caller info (irp info)    */
 	    }
 	}
     }
-    /* Fill in vob-only vob subdir and vob-oid args */
+    /* Fill in vob-only vob-oid args */
 
-    error = mfs_copyin_strbuf(mmap->mma_vob_subdir, &mmi->mmi_vobdir);
-    if (error) goto errout;
     mmi->mmi_voboid = mmap->mma_vob_oid; 
     mmi->mmi_vobuuid = mmap->mma_replica_uuid;
 
@@ -1367,7 +1378,6 @@ out:
             FREESPLOCK(mmi->mmi_rclock);
 	    mfs_svrdestroy(&mmi->mmi_svr);
 	    if (mmi->mmi_mntpath) STRFREE(mmi->mmi_mntpath);
-	    if (mmi->mmi_vobdir) STRFREE(mmi->mmi_vobdir);
 	    if (mmi->mmi_hmsuffix) STRFREE(mmi->mmi_hmsuffix);
 	    if (mmi->mmi_hmvers_nm) STRFREE(mmi->mmi_hmvers_nm);
 	    if (mmi->mmi_sptable) {
@@ -1399,12 +1409,31 @@ out:
     } else {
         mvdp->mvfs_mount_count++;
     }
-
     MVFS_UNLOCK(&(mvdp->mvfs_mountlock));
+
     if (mvdp->mvfs_mount_count == 0) {
-        if (mvfs_misc_init_done) mvfs_misc_free();
+        /* This is the error case since the mvfs_mount_count is still 0 (which
+        ** means the mount we were trying to do must not have worked) so cleanup
+        ** and put mvfs_init_state back (we're still under the mfs_unload_lock).
+        ** We do the same thing in mfs_vunmount() when the last unmount succeeds
+        ** (i.e. we leave the MVFS_INIT_COMPLETE state and go back to
+        ** MVFS_INIT_PHASE1).
+        */
+        if (mvfs_misc_init_done) {
+            mvfs_misc_free();
+        }
+        mvfs_init_state = MVFS_INIT_PHASE1;
+#ifndef MVFS_DEBUG
+        /* return logpri to default value */
+        mfs_logpri = MFS_LOG_INFO;
+#endif
     }
     MVFS_UNLOCK(&mfs_unload_lock);
+    /* Note, freeing the struct mfs_mntargs here doesn't leak memory because
+    ** all the strings that were copyin'd and pointed to by mma_xxx fields
+    ** (e.g. mma_host) are also pointed to by mmi_xxx fields, so they will be
+    ** freed when the struct mfs_mntinfo is (or if we had an error above).
+    */
     KMEM_FREE(alloc_unitp, sizeof(*alloc_unitp));
     return (error);
 }
@@ -1438,7 +1467,7 @@ CRED_T *acred;		/* Cred may be NULL from pre-SVR4 wrappers */
 
     MVFS_LOCK(&(mvdp->mvfs_mountlock));
 
-    BUMPSTAT(mfs_vfsopcnt[MFS_VUMOUNT], s);
+    BUMPSTAT(mfs_vfsopcnt[MFS_VUMOUNT]);
 
     mmi = VFS_TO_MMI(vfsp);
 
@@ -1570,7 +1599,6 @@ CRED_T *acred;		/* Cred may be NULL from pre-SVR4 wrappers */
 
     mfs_svrdestroy(&mmi->mmi_svr);
     if (mmi->mmi_mntpath) STRFREE(mmi->mmi_mntpath);
-    if (mmi->mmi_vobdir) STRFREE(mmi->mmi_vobdir);
     if (mmi->mmi_hmsuffix) STRFREE(mmi->mmi_hmsuffix);
     if (mmi->mmi_hmvers_nm) STRFREE(mmi->mmi_hmvers_nm);
     if (mmi->mmi_sptable) {
@@ -1629,13 +1657,13 @@ STATVFS_T *sbp;
     struct mfs_mntinfo *mmi;
     CLR_VNODE_T *cvp;
     CRED_T *cred;
-    SPL_T s;
+
     mvfs_viewroot_data_t *vrdp = MDKI_VIEWROOT_GET_DATAP();
 
     if (vfsp == NULL)
 	return(EINVAL);
 
-    BUMPSTAT(mfs_vfsopcnt[MFS_VSTATFS], s);
+    BUMPSTAT(mfs_vfsopcnt[MFS_VSTATFS]);
 
     /* Do STATFS  for VOB/View mount. */
 
@@ -1647,6 +1675,7 @@ STATVFS_T *sbp;
 	if (vfsp == vrdp->mfs_viewroot_vfsp) {
             MDB_VFSLOG((MFS_VSTATFS, "real viewroot, using ROOTDIR\n"));
 	    error = MVFS_STATFS(ROOTDIR->v_vfsp, CLR_ROOTDIR, sbp);  
+            STATVFS_RESET_FLAGS(sbp);
 	    STATVFS_FILL(sbp);
 	} else {
             /*
@@ -1689,7 +1718,6 @@ VNODE_T **vpp;
 {
     struct mfs_mntinfo *mmi;
     int error;
-    SPL_T s;
 
     mmi = VFS_TO_MMI(vfsp);
 
@@ -1727,7 +1755,7 @@ VNODE_T **vpp;
 	error = ENXIO;          /* No mount info. */
     }
     MDB_VFSLOG((MFS_VROOT, "vfsp=%"KS_FMT_PTR_T" rtvp= %"KS_FMT_PTR_T"\n", vfsp, *vpp));
-    BUMPSTAT(mfs_vfsopcnt[MFS_VROOT], s);
+    BUMPSTAT(mfs_vfsopcnt[MFS_VROOT]);
     return(error); 
 }
 
@@ -1815,11 +1843,9 @@ mfs_periodic_maintenance(P_NONE)
 	VN_RELE(rootvp);
     }
 
- 
     return;
 }
 
- 
 /* 
  * MFS_SYNC - vnode version of sync call.
  * This is called every 30 secs or minute.  Use it for background cleanup
@@ -1834,7 +1860,6 @@ mfs_vsync(VFS_T *vfsp,
 	  CRED_T *acred)	/* acred may be NULL from pre-SVR4 wrappers */
 {
 
-    SPL_T s;
     mvfs_viewroot_data_t *vrdp = NULL;
 
     if (mvfs_init_state != MVFS_INIT_COMPLETE) {
@@ -1875,7 +1900,7 @@ mfs_vsync(VFS_T *vfsp,
     MDB_VFSLOG((MFS_VSYNC, 
 		"vfsp=%"KS_FMT_PTR_T" time= %"MVFS_FMT_CTIME_X"\n", 
 		vfsp, MDKI_CTIME()));
-    BUMPSTAT(mfs_vfsopcnt[MFS_VSYNC], s);
+    BUMPSTAT(mfs_vfsopcnt[MFS_VSYNC]);
 
     /* 
      * Sync any "dirty" mnodes (vob mnodes with cached pages) 
@@ -1894,20 +1919,28 @@ mfs_vsync(VFS_T *vfsp,
  * this routine are responsible for calling mfs_mnrele when done
  * with the mnode, or when the vnode refcount has been successfully
  * incremented.
+ * The comments said that this could be called with a NULL cred (cd) 
+ * pointer.  This may be true for platforms that have not converted
+ * to using call_data structures.  Platforms making a conversion need
+ * to make sure that they pass call_data, even through mfs_vget or
+ * their equivalent.
  */
 
 int
-mfs_getmnode(vfsp, vw, fidp, mnpp, nnp, cred)
-VFS_T *vfsp;
-VNODE_T *vw;
-mfs_fid_t *fidp;
-mfs_mnode_t **mnpp;
-int *nnp;		/* Newnode flag ptr */
-CRED_T *cred;	/* May be NULL */
+mfs_getmnode(
+    VFS_T *vfsp,
+    VNODE_T *vw,
+    mfs_fid_t *fidp,
+    mfs_mnode_t **mnpp,
+    int *nnp,		/* Newnode flag ptr */
+    CALL_DATA_T *cd
+)
 {
+#ifndef MVFS_WRAP_ENTER_EXIT
+    CRED_T *cred;
+#endif
     int error = 0;
     mfs_mnode_t *mnp;
-    SPL_T s;
 
     /* Could we get a vnode's vp->v_vfsp which is a "local" file
      * system VFS type by accident, e.g. on systems which manufacture
@@ -1952,8 +1985,13 @@ CRED_T *cred;	/* May be NULL */
 		     * actual user, but be left at sys_cred.
 		     * This can create problems if the view ever did an
 		     * access check on the creds for a getattr!
+                     * With the conversion to using call_data instead of
+                     * creds, converted platforms will always pass a cd
+                     * pointer.  
                      */
 
+#ifndef MVFS_WRAP_ENTER_EXIT
+                    cred = MVFS_CD2CRED(cd);
 		    if (cred == NULL) {
 		        cred = MVFS_DUP_DEFAULT_CREDS();
 	    	        error = mfs_clnt_getattr_mnp(mnp, vfsp, cred);
@@ -1962,8 +2000,11 @@ CRED_T *cred;	/* May be NULL */
 		    } else {
 		        error = mfs_clnt_getattr_mnp(mnp, vfsp, cred);
 		    }
-		    BUMPSTAT(mfs_acstat.ac_misses, s);
-		    BUMPSTAT(mfs_acstat.ac_newmiss, s);
+#else
+                    error = mfs_clnt_getattr_mnp(mnp, vfsp, cd);
+#endif
+		    BUMPSTAT(mfs_acstat.ac_misses);
+		    BUMPSTAT(mfs_acstat.ac_newmiss);
 
 		    /* 
 		     * If no error, and only have partial fid, promote vfh gen
@@ -1982,7 +2023,7 @@ CRED_T *cred;	/* May be NULL */
 			
 			mnp->mn_hdr.fid.mf_gen = MFS_NULL_GEN;
 			MUNLOCK(mnp);
-			mfs_mnrele(mnp, vfsp);
+			mfs_mnrele(mnp);
 			mnp = NULL;
 		    }
 		}	/* if (*nnp) ... */
@@ -1999,12 +2040,13 @@ CRED_T *cred;	/* May be NULL */
 }
 
 int
-mfs_getvnode(vfsp, vw, fidp, vpp, cred)
-VFS_T *vfsp;
-VNODE_T *vw;
-mfs_fid_t *fidp;
-VNODE_T **vpp;
-CRED_T *cred;
+mfs_getvnode(
+    VFS_T *vfsp,
+    VNODE_T *vw,
+    mfs_fid_t *fidp,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+)
 {
     int error = 0;
     mfs_mnode_t *mnp;
@@ -2022,7 +2064,7 @@ CRED_T *cred;
      * a VOB mount).  NFS server might call it with a viewroot, which
      * we don't support, but let getmnode bounce that.
      */
-    error = mfs_getmnode(vfsp, vw, fidp, &mnp, &newnode, cred);
+    error = mfs_getmnode(vfsp, vw, fidp, &mnp, &newnode, cd);
     if (!error) {
 	ASSERT(mnp->mn_hdr.mcount > 0);
     }
@@ -2068,19 +2110,32 @@ A_CONST tbs_uuid_t *uuid_p;
 
 /*
  * MFS_VGET - find a vnode from its external (NFS) fid
+ * This is now a wrapper around mvfs_vget_cd which expects to receive
+ * a call_data block.  This is to preserve compatability with unconverted
+ * platforms where the interface is controlled by the base OS.
  */
+int
+mfs_vget(
+    VFS_T *vfsp,
+    VNODE_T **vpp,
+    struct fid *xfidp
+)
+{
+    return mvfs_vget_cd(vfsp, vpp, xfidp, NULL);
+}
 
 int
-mfs_vget(vfsp, vpp, xfidp)
-VFS_T *vfsp;
-VNODE_T **vpp;
-struct fid *xfidp;
+mvfs_vget_cd(
+    VFS_T *vfsp,
+    VNODE_T **vpp,
+    struct fid *xfidp,
+    CALL_DATA_T *cd
+)
 {
     int error = 0;
     mfs_xfid_t *mxfidp;
     mfs_fid_t fid;
     VNODE_T *vw;
-    SPL_T s;
     mfs_mnode_t *mnp;
     int exportid;
     mvfs_viewroot_data_t *vrdp = MDKI_VIEWROOT_GET_DATAP();
@@ -2136,7 +2191,7 @@ struct fid *xfidp;
      */
     fid.mf_gen -= mfs_uuid_to_hash32(&(VFS_TO_MMI(vfsp)->mmi_svr.uuid));
 
-    error = mfs_getvnode(vfsp, vw, &fid, vpp, NULL);
+    error = mfs_getvnode(vfsp, vw, &fid, vpp, cd);
     if (vw != NULL) {
         VN_RELE(vw);
     }
@@ -2152,7 +2207,7 @@ struct fid *xfidp;
     MDB_VFSLOG((MFS_VGET, "vfsp=%"KS_FMT_PTR_T" *vpp=%"KS_FMT_PTR_T", fid=%x/%x/%x/%x err=%d\n", vfsp,
 		*vpp, ((int *)mxfidp)[0], ((int *)mxfidp)[1],
 		((int *)mxfidp)[2], ((int *)mxfidp)[3], error));
-    BUMPSTAT(mfs_vfsopcnt[MFS_VGET], s);
+    BUMPSTAT(mfs_vfsopcnt[MFS_VGET]);
     MDB_CHKPOINT(0);
     return(error);
 }
@@ -2319,4 +2374,41 @@ mvfs_find_devnum(
     *minorp = mmi_minor % MVFS_MINORMAX;
     return 0;
 }
-static const char vnode_verid_mvfs_vfsops_c[] = "$Id:  f1e5f3d3.365611dd.8aaa.00:01:83:09:5e:0d $";
+
+/*
+ * Search in vob mount list, given a comparison callback.
+ * Returns the result of eval_func or NULL if nothing found.
+ * NB: The eval_func callback is called with mvfs_mountlock locked,
+ * and if the eval_func returns a result, that result will be
+ * returned to the caller after the mvfs_mountlock is unlocked.
+ * Therefore, if the result is, e.g. a vfs pointer, then the
+ * structure should be held before the eval_func returns it, if
+ * necessary.
+ */
+void *
+mvfs_find_mount(
+    void *(* eval_func)(VFS_T *vfsp, void *data),
+    void *data
+)
+{
+    int i;
+    void *result  = NULL;
+    mvfs_vfs_data_t *mvdp = MDKI_VFS_GET_DATAP();
+
+    MVFS_LOCK(&(mvdp->mvfs_mountlock));
+
+    /*
+     * searching backwards because nca_exported are
+     * placed into the end of the array
+     */
+    for (i = mvdp->mfs_vobmount_hwm; i >= 0; i--) {
+        if (mvdp->mfs_vobmounts[i] != NULL) {
+            result = eval_func(mvdp->mfs_vobmounts[i], data);
+            if (result != NULL)
+                break;
+        }
+    }
+    MVFS_UNLOCK(&(mvdp->mvfs_mountlock));
+    return result;
+}
+static const char vnode_verid_mvfs_vfsops_c[] = "$Id:  993cafaf.e5fa11df.986f.00:01:83:0a:3b:75 $";

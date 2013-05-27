@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2005. */
+/* * (C) Copyright IBM Corporation 1990, 2008. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MFS_AUDIT_H_
 #define MFS_AUDIT_H_
 
@@ -221,4 +221,4 @@ struct mfs_auditrmstat {
 typedef struct mfs_auditrmstat mfs_auditrmstat_t;
 
 #endif /* MFS_AUDIT_H_ */
-/* $Id: 33529dc4.637911da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: f681020e.9c1c11dd.9a62.00:01:83:29:c0:fc $ */

@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1995, 2005. */
+/* * (C) Copyright IBM Corporation 1995, 2007. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_KS_EXTERN_H_)
 #define _KS_EXTERN_H_
 
@@ -59,6 +59,24 @@
 #define IMPORT_CLASS 
 #endif
 
+/*
+ * Mechanism for toggling export or import declarations on client library
+ * imported or implementation exported data. The implementation should
+ * mark these symbols as "export", clients should see these symbols as
+ * import. KS_EXPORT_AS_IMPLEMENTATION is defined in the {I,X}makefile
+ * for this subsystem.
+ */
+
+#ifdef KS_EXPORT_AS_IMPLEMENTATION
+#define KS_EXPORT_CLASS           EXPORT_CLASS
+#define KS_EXPORT_FUNCTION        EXPORT_FUNCTION
+#define KS_EXPORT_DATA            EXPORT_DATA
+#else
+#define KS_EXPORT_CLASS           IMPORT_CLASS
+#define KS_EXPORT_FUNCTION        IMPORT_FUNCTION
+#define KS_EXPORT_DATA            IMPORT_DATA
+#endif
+
 #if !defined(EXTERN)
 
 #define EXTERN extern
@@ -72,4 +90,4 @@
 
 #endif /* EXTERN */
 #endif /* _KS_EXTERN_H_ */
-/* $Id: 1242ac14.637a11da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: ce4120ce.9c1d11dd.9a62.00:01:83:29:c0:fc $ */

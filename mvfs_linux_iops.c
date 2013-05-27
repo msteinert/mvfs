@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2008 IBM Corporation.
+ * Copyright (C) 1999, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,19 +30,15 @@ extern int
 vnode_iop_create(
     INODE_T * parent,
     DENT_T * dentry,
-    int mode
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    , struct nameidata *nd
-#endif
+    int mode,
+    struct nameidata *nd
 );
 
 extern DENT_T *
 vnode_iop_lookup(
     INODE_T *dir,
-    DENT_T *file
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    , struct nameidata *nd
-#endif
+    DENT_T *file,
+    struct nameidata *nd
 );
 
 extern int
@@ -78,11 +74,7 @@ vnode_iop_mknod(
     INODE_T *parent,
     DENT_T *new,
     int mode,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    int dev
-#else
     dev_t dev
-#endif
 );
 extern int
 vnode_iop_rename(
@@ -95,22 +87,17 @@ extern int
 vnode_iop_permission(
     INODE_T *ip,
     int permtype
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     , struct nameidata *nd
 #endif
 );
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-extern int
-vnode_iop_revalidate(DENT_T *dentry);
-#else
 extern int
 vnode_iop_getattr(
     struct vfsmount *mnt,
     DENT_T *dentry,
     struct kstat *kstat
 );
-#endif
 
 /* vnode_iop_notify_change in common header for shadow code */
 
@@ -170,21 +157,13 @@ vnode_iop_removexattr(
 
 IN_OPS_T vnode_file_inode_ops = {
     .permission =          &vnode_iop_permission,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    .revalidate =          &vnode_iop_revalidate,
-#else
     .getattr =             &vnode_iop_getattr,
-#endif
     .setattr =             &vnode_iop_notify_change,
 };
 
 IN_OPS_T vnode_file_mmap_inode_ops = {
     .permission =          &vnode_iop_permission,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    .revalidate =          &vnode_iop_revalidate,
-#else
     .getattr =             &vnode_iop_getattr,
-#endif
     .setattr =             &vnode_iop_notify_change,
 };
 
@@ -195,11 +174,7 @@ IN_OPS_T vnode_slink_inode_ops = {
     .put_link =            &vnode_iop_put_link,
 #endif
     .permission =          &vnode_iop_permission,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    .revalidate =          &vnode_iop_revalidate,
-#else
     .getattr =             &vnode_iop_getattr,
-#endif
 };
 
 IN_OPS_T vnode_dir_inode_ops = {
@@ -213,11 +188,7 @@ IN_OPS_T vnode_dir_inode_ops = {
     .mknod =               &vnode_iop_mknod,
     .rename =              &vnode_iop_rename,
     .permission =          &vnode_iop_permission,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    .revalidate =          &vnode_iop_revalidate,
-#else
     .getattr =             &vnode_iop_getattr,
-#endif
     .setattr =             &vnode_iop_notify_change,
     .setxattr =            &vnode_iop_setxattr,
     .getxattr =            &vnode_iop_getxattr,
@@ -234,36 +205,43 @@ IN_OPS_T vnode_dir_inode_ops = {
 
 /* This is VOP_ACCESS().
  * permtype = bitwise-OR of MAY_READ, MAY_WRITE, MAY_EXEC
+ * For 2.6.27 and beyond we may need to handle other
+ * permission requests than the tradional MAY_[RWX], like
+ * MAY_ACCESS.
  */
 extern int
 vnode_iop_permission(
     INODE_T *ip,
     int permtype
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     , struct nameidata *nd
 #endif
 )
 {
     int err;
-    CRED_T *cred;
+    CALL_DATA_T cd;
 
-    ASSERT_KERNEL_LOCKED_24x();
     ASSERT_I_SEM_NOT_MINE(ip);
 
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
+    /* we are not dealing with MAY_ACCESS and MAY_OPEN */
+    permtype &= (MAY_READ | MAY_WRITE | MAY_EXEC);
+#endif
 
     /*
      * Vnode core wants the mode test bits to be in the user position, not the
      * low bits.  Bits are in same order as standard UNIX rwx.
      */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    err = VOP_ACCESS(ITOV(ip), permtype << 6, 0, cred, NULL);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
+    err = VOP_ACCESS(ITOV(ip), permtype << 6, 0, &cd, (nameidata_ctx *)nd);
 #else
-    err = VOP_ACCESS(ITOV(ip), permtype << 6, 0, cred, (nameidata_ctx *)nd);
+    err = VOP_ACCESS(ITOV(ip), permtype << 6, 0, &cd, NULL);
 #endif
     err = mdki_errno_unix_to_linux(err);
 
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     return err;
 }
 
@@ -274,46 +252,27 @@ vnlayer_getattr(
 )
 {
     INODE_T *ip;
-    CRED_T *cred;
     VNODE_T *vp;
+    CALL_DATA_T cd;
     int err;
 
     ip = dentry->d_inode;
 
     ASSERT_KERNEL_UNLOCKED();
-    /* i_sem may be held or not held */
-    ASSERT_I_ZOMB_NOT_MINE(ip);
 
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
 
     vp = ITOV(ip);
     /* implicit and explicit attribute pullup to the vnode */
     VATTR_SET_MASK(vap, AT_ALL);
-    err = VOP_GETATTR(vp, vap, GETATTR_FLAG_PULLUP_ATTRS, cred);
+    err = VOP_GETATTR(vp, vap, GETATTR_FLAG_PULLUP_ATTRS, &cd);
     err = mdki_errno_unix_to_linux(err);
 
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
 
     return err;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-extern int
-vnode_iop_revalidate(DENT_T *dentry)
-{
-    VATTR_T *vap;
-    int err;
-
-    vap = VATTR_ALLOC();
-    if (vap != NULL) {
-        err = vnlayer_getattr(dentry, vap);
-        VATTR_FREE(vap);
-    } else {
-        err = -ENOMEM;
-    }
-    return(err);
-}
-#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0) */
 STATIC void
 vnlayer_linux_vattr2kstat(
     VATTR_T *src,
@@ -372,7 +331,6 @@ vnode_iop_getattr(
     VATTR_FREE(vap);
     return(err);
 }
-#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0) */
 
 STATIC void
 vnode_iop_iattr2vattr(
@@ -380,12 +338,7 @@ vnode_iop_iattr2vattr(
     VATTR_T *dst
 )
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    struct timeval tvtmp = {0, 0};
-    time_t curtime = MDKI_CTIME();
-#else
     struct timespec curtime = CURRENT_TIME;
-#endif
 
     VATTR_NULL(dst);
     if (src->ia_valid & ATTR_MODE) {
@@ -409,20 +362,11 @@ vnode_iop_iattr2vattr(
          * the current time.  We have to pass ATTR_ATIME_SET through because
          * Linux uses it to control its validation.
          */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-        if (src->ia_valid & ATTR_ATIME_SET) {
-            tvtmp.tv_sec = src->ia_atime;
-        } else {
-            tvtmp.tv_sec = curtime;
-        }
-        VATTR_SET_ATIME_TV(dst, &tvtmp);
-#else
         if (src->ia_valid & ATTR_ATIME_SET) {
             VATTR_SET_ATIME_TS(dst, &(src->ia_atime));
         } else {
             VATTR_SET_ATIME_TS(dst, &curtime);
         }
-#endif
         dst->va_mask |= AT_ATIME;
     }
     if (src->ia_valid & ATTR_ATIME_SET) dst->va_mask |= AT_ATIME_SET;
@@ -432,31 +376,17 @@ vnode_iop_iattr2vattr(
          * the current time.  We have to pass ATTR_MTIME_SET through because
          * Linux uses it to control its validation.
          */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-        if (src->ia_valid & ATTR_MTIME_SET) {
-            tvtmp.tv_sec = src->ia_mtime;
-        } else {
-            tvtmp.tv_sec = curtime;
-        }
-        VATTR_SET_MTIME_TV(dst, &tvtmp);
-#else
         if (src->ia_valid & ATTR_MTIME_SET) {
             VATTR_SET_MTIME_TS(dst, &(src->ia_mtime));
         } else {
             VATTR_SET_MTIME_TS(dst, &curtime);
         }
-#endif
         dst->va_mask |= AT_MTIME;
     }
     if (src->ia_valid & ATTR_MTIME_SET) dst->va_mask |= AT_MTIME_SET;
     /* No current time hack needed for ctime. */
     if (src->ia_valid & ATTR_CTIME) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-        tvtmp.tv_sec = src->ia_ctime;
-        VATTR_SET_CTIME_TV(dst, &tvtmp);
-#else
         VATTR_SET_CTIME_TS(dst, &(src->ia_ctime));
-#endif
         dst->va_mask |= AT_CTIME;
     }
     if (src->ia_valid & ATTR_ATTR_FLAG) {
@@ -472,15 +402,13 @@ vnode_iop_notify_change(
     struct iattr * iattr_p
 )
 {
-    CRED_T *ucred;
     VNODE_T *vp;
     VATTR_T *vap;
     VNODE_T *cvp;
     int err;
     DENT_T *rdent;
+    CALL_DATA_T cd;
     mdki_boolean_t tooksem = FALSE;
-
-    ASSERT_KERNEL_LOCKED_24x();
 
     if (iattr_p->ia_valid & ATTR_SIZE) {
         ASSERT_I_SEM_MINE(dent_p->d_inode);
@@ -493,9 +421,9 @@ vnode_iop_notify_change(
 
             /* reject attempts to use setattr to change object type */
             vap->va_mask &= ~AT_TYPE;
-            ucred = MDKI_GET_UCRED();
+            mdki_linux_init_call_data(&cd);
             vp = ITOV(dent_p->d_inode);
-            err = VOP_SETATTR(vp, vap, 0, ucred);
+            err = VOP_SETATTR(vp, vap, 0, &cd);
             err = mdki_errno_unix_to_linux(err);
             /* Any underlying cleartxt got its inode truncated via changeattr
              * if there's a need to change its size.
@@ -503,7 +431,7 @@ vnode_iop_notify_change(
             if (!err)
                 mdki_linux_vattr_pullup(vp, vap, vap->va_mask);
             VATTR_FREE(vap);
-            MDKI_CRFREE(ucred);
+            mdki_linux_destroy_call_data(&cd);
 	} else {
 	    err = -ENOMEM;
 	}
@@ -514,11 +442,8 @@ vnode_iop_notify_change(
             err = inode_setattr(dent_p->d_inode, iattr_p);
             if (err == 0) {
                 if (iattr_p->ia_valid & ATTR_SIZE) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-                    down_write(&rdent->d_inode->i_alloc_sem);
-#endif
                     LOCK_INODE(rdent->d_inode);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0) && LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13)
 #if !defined RHEL_UPDATE || RHEL_UPDATE < 5
                     down_write(&rdent->d_inode->i_alloc_sem);
 #endif
@@ -530,21 +455,20 @@ vnode_iop_notify_change(
                      */
                     tooksem = TRUE;
                 }
-#if defined(SLES10SP2)
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
                 err = notify_change(rdent, CVN_TO_VFSMNT(cvp), iattr_p);
 #else
                 err = notify_change(rdent, iattr_p);
 #endif
                 if (tooksem) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0) && LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13)
 #if !defined(RHEL_UPDATE) || RHEL_UPDATE < 5
                     up_write(&rdent->d_inode->i_alloc_sem);
 #endif
 #endif
                     UNLOCK_INODE(rdent->d_inode);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-                    up_write(&rdent->d_inode->i_alloc_sem);
-#endif
                 }
             }
 	} else {
@@ -569,10 +493,10 @@ vnode_iop_readlink(
 )
 {
     INODE_T *ip;
-    CRED_T *cred;
     struct uio uio;
     iovec_t iov;
     int err = 0;
+    CALL_DATA_T cd;
 
     /*
      * This routine is not called for shadow objects which need
@@ -582,15 +506,15 @@ vnode_iop_readlink(
     uio.uio_iov = &iov;
     mdki_linux_uioset(&uio, buf, buflen, 0, UIO_USERSPACE);
 
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     ip = dentry->d_inode;
 
     ASSERT_KERNEL_UNLOCKED();
     ASSERT_I_SEM_NOT_MINE(ip);
 
-    err = VOP_READLINK(ITOV(ip), &uio, cred);
+    err = VOP_READLINK(ITOV(ip), &uio, &cd);
     err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     if (err == 0) {
         /* return count of bytes */
         err = buflen - uio.uio_resid;
@@ -612,11 +536,11 @@ vnode_iop_follow_link(
 )
 {
     INODE_T *ip;
-    CRED_T *cred;
     struct uio uio;
     iovec_t iov;
     int err = 0;
     char *buf = KMEM_ALLOC(PATH_MAX, KM_SLEEP);
+    CALL_DATA_T cd;
 
     if (buf == NULL)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
@@ -626,16 +550,16 @@ vnode_iop_follow_link(
 #endif
     uio.uio_iov = &iov;
     mfs_uioset(&uio, buf, PATH_MAX-1, 0, UIO_SYSSPACE);
-    cred = MDKI_GET_UCRED();
 
+    mdki_linux_init_call_data(&cd);
     ip = dentry->d_inode;
 
     ASSERT_KERNEL_UNLOCKED();
     ASSERT_I_SEM_NOT_MINE(ip);
 
-    err = VOP_READLINK(ITOV(ip), &uio, cred);
+    err = VOP_READLINK(ITOV(ip), &uio, &cd);
     err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     if (err == 0) {
         if (uio.uio_resid == 0)
             err = -ENAMETOOLONG;
@@ -685,28 +609,24 @@ extern int
 vnode_iop_create(
     INODE_T * parent,
     struct dentry * dentry,
-    int mode
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    , struct nameidata *nd
-#endif
+    int mode,
+    struct nameidata *nd
 )
 {
     int err = 0;
-    CRED_T *cred;
     VATTR_T *vap;
     VNODE_T *newvp;
     struct create_ctx ctx;
+    CALL_DATA_T cd;
 
-    ASSERT_KERNEL_LOCKED_24x();
     ASSERT_I_SEM_MINE(parent);
-    ASSERT_I_ZOMB_MINE(parent);
     ASSERT(MDKI_INOISMVFS(parent));
 
     vap = VATTR_ALLOC();
     if (vap == NULL)
         return -ENOMEM;
     VATTR_NULL(vap);
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     /*
      * Solaris sends only type, mode, size, so we will too.
      */
@@ -724,7 +644,7 @@ vnode_iop_create(
                      NONEXCL, /* XXX handled by generic layer? */
                      mode, /* not used except for passthrough, see vap->va_mode */
                      &newvp,
-                     cred,
+                     &cd,
                      &ctx);
     err = mdki_errno_unix_to_linux(err);
 
@@ -736,7 +656,7 @@ vnode_iop_create(
             ASSERT(VTOI(newvp) != NULL);
             VNODE_D_INSTANTIATE(dentry, VTOI(newvp));
             VATTR_SET_MASK(vap, AT_ALL);
-            if (VOP_GETATTR(newvp, vap, 0, cred) == 0)
+            if (VOP_GETATTR(newvp, vap, 0, &cd) == 0)
                 mdki_linux_vattr_pullup(newvp, vap, AT_ALL);
         } else {
             /* drop the extra ref returned in newvp */
@@ -748,7 +668,7 @@ vnode_iop_create(
         ASSERT(!newvp);
     }
     VATTR_FREE(vap);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     return(err);
 }
 
@@ -765,10 +685,8 @@ vnode_iop_create(
 DENT_T *
 vnode_iop_lookup(
     INODE_T *dir,
-    struct dentry *dent
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    , struct nameidata *nd
-#endif
+    struct dentry *dent,
+    struct nameidata *nd
 )
 {
     char *name;
@@ -779,20 +697,18 @@ vnode_iop_lookup(
     INODE_T *rt_inode = NULL;           /* returned inode ptr */
     DENT_T * real_dentry;
     DENT_T *found_dentry = dent;
-    CRED_T *ucred;
     VATTR_T *vap;
     struct lookup_ctx ctx;
+    CALL_DATA_T cd;
 
-    ASSERT_KERNEL_LOCKED_24x();
     ASSERT_I_SEM_MINE(dir);
-    ASSERT_I_ZOMB_NOT_MINE(dir);
     /* We can find our parent entry via the dentry provided to us. */
     ASSERT(dent->d_parent->d_inode == dir);
 
     if (dent->d_name.len > NAME_MAX)
         return ERR_PTR(-ENAMETOOLONG);
     name = /* drop the const */(char *) dent->d_name.name;
-    ucred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
 
     /* We pass along the dentry, as well as the parent inode so that
      * mvop_linux_lookup_* has everything it needs, even if it is passed in
@@ -803,7 +719,7 @@ vnode_iop_lookup(
     ctx.flags = LOOKUP_CTX_VALID;
 
     err = VOP_LOOKUP(dvp, name, &rt_vnode, (struct pathname *)NULL,
-                     VNODE_LF_LOOKUP, NULL, ucred, &ctx);
+                     VNODE_LF_LOOKUP, NULL, &cd, &ctx);
     err = mdki_errno_unix_to_linux(err);
 
     if (!err) {
@@ -825,7 +741,7 @@ vnode_iop_lookup(
             rt_inode = VTOI(rt_vnode);
     }
     if (!err && (found_dentry != dent)) {
-        MDKI_CRFREE(ucred);
+        mdki_linux_destroy_call_data(&cd);
         /* The hold was granted in makeloopnode() in the 'nocover' case. */
         if (rt_vnode != NULL)
             VN_RELE(rt_vnode);
@@ -880,7 +796,7 @@ vnode_iop_lookup(
     if (!err && MDKI_INOISMVFS(rt_inode)) {
         /* fetch attributes & place in inode */
         VATTR_SET_MASK(vap, AT_ALL);
-        err = VOP_GETATTR(rt_vnode, vap, GETATTR_FLAG_UPDATE_ATTRS, ucred);
+        err = VOP_GETATTR(rt_vnode, vap, GETATTR_FLAG_UPDATE_ATTRS, &cd);
         err = mdki_errno_unix_to_linux(err);
         if (err == -EOPNOTSUPP)          /* ignore it */
             err = 0;
@@ -892,7 +808,7 @@ vnode_iop_lookup(
             /* return the real root */
             VN_RELE(rt_vnode);
             VATTR_FREE(vap);
-            MDKI_CRFREE(ucred);
+            mdki_linux_destroy_call_data(&cd);
             return VNODE_DGET(vnlayer_get_root_dentry());
         }
         else if (vnlayer_looproot_vp != NULL &&
@@ -903,36 +819,13 @@ vnode_iop_lookup(
             /* return the real /view */
             VN_RELE(rt_vnode);
             VATTR_FREE(vap);
-            MDKI_CRFREE(ucred);
+            mdki_linux_destroy_call_data(&cd);
             return real_dentry;
         }
     }
-    VATTR_SET_MASK(vap, AT_FSID);
-    if (MDKI_INOISMVFS(dir)) {
-        /* There are some places in the Linux kernel which obtain a
-         * dentry via the d_parent field, and don't call any
-         * revalidate function.  We depend on revalidation of some
-         * variety to ensure that the proper device numbers get copied
-         * into the inode (either the regular minor number or the
-         * non-current-view minor number).  We do that by hand here,
-         * when we have the parent handy.
-         *
-         * Note that there is an inherent race between two processes
-         * using the same inode, one looking at it from the object's
-         * view and one from a different procview (using view extended
-         * naming).  One of them will succeed in winning the race to
-         * set the file system ID attribute on the object.  We could
-         * get around this by not distinguishing between procview and
-         * non-procview device numbers, but that would likely break
-         * other things (user tools).  [They are already somewhat
-         * broken due to the restricted minor number device space--we
-         * can't smear dev_t's like we can on modern UNIX platforms.]
-         */
-        (void) VOP_GETATTR(dvp, vap, GETATTR_FLAG_PULLUP_ATTRS, ucred);
-    }
     VATTR_FREE(vap);
 alloc_err:
-    MDKI_CRFREE(ucred);
+    mdki_linux_destroy_call_data(&cd);
 
     /* It's an mnode-based object, set up a dentry for it */
 
@@ -958,12 +851,11 @@ alloc_err:
          * tree from parent to child, since it will be traversing only one
          * of the dentry trees.  But when the cache misses, the system calls
          * this lookup method and wants to get a dentry in return.
-         * There are standard interfaces (d_find_alias() in 2.4,
-         * d_splice_alias() in 2.6) which can find a good dentry
-         * referencing the inode returned by the file system's lookup
-         * method, but these methods don't work right when we have VOB
-         * directory vnodes with both setview and view-extended
-         * dentries.  We implement our own function
+         * There are standard interfaces ( d_splice_alias() in 2.6) 
+         * which can find a good dentry  referencing the inode returned
+         * by the file system's lookup method, but these methods don't 
+         * work right when we have VOB directory vnodes with both setview 
+         * and view-extended dentries.  We implement our own function
          * [vnlayer_inode2dentry_internal()] which knows the
          * distinctions and the rules for determining that an existing
          * attached dentry is valid for the lookup request.
@@ -1011,7 +903,6 @@ alloc_err:
                                                          dent->d_op);
         }
         if (found_dentry != NULL) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
             ASSERT(found_dentry->d_inode == rt_inode);
             /*
              * If the existing one is a disconnected dentry, we need
@@ -1028,7 +919,6 @@ alloc_err:
                 d_rehash(dent);
                 d_move(found_dentry, dent);
             } 
-#endif /* 2.6.x */
             /* Release our count.  found_dentry also references inode. */
             iput(rt_inode);
             return found_dentry;
@@ -1062,11 +952,7 @@ vnode_iop_link(
     VATTR_T *vap;
     VNODE_T *parentvp;
 
-    ASSERT_KERNEL_LOCKED_24x();
-    ASSERT_I_ZOMB_MINE(parent);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     ASSERT_I_SEM_MINE(olddent->d_inode);
-#endif
     ASSERT_I_SEM_MINE(parent);
     ASSERT(MDKI_INOISMVFS(parent));
 
@@ -1082,7 +968,7 @@ vnode_iop_link(
         err = mdki_errno_unix_to_linux(err);
     } else {
         /* This needs to be passed on to the mvfs to deal with */
-        CRED_T * cred;
+        CALL_DATA_T cd;
         INODE_T *inode;
         if (!MDKI_INOISOURS(olddent->d_inode))
             return -EXDEV;
@@ -1091,10 +977,10 @@ vnode_iop_link(
         ctx.olddent = olddent;
         ctx.done = FALSE;
 
-        cred = MDKI_GET_UCRED();
+        mdki_linux_init_call_data(&cd);
 	if (MDKI_INOISMVFS(olddent->d_inode)) {
             err = VOP_LINK(ITOV(parent), ITOV(olddent->d_inode),
-                           (char *)newdent->d_name.name, cred, &ctx);
+                           (char *)newdent->d_name.name, &cd, &ctx);
             err = mdki_errno_unix_to_linux(err);
             if (err == 0 && !ctx.done) {
                 /* Again, a heavy handed way of bumping the inode count and
@@ -1104,7 +990,7 @@ vnode_iop_link(
                 VNODE_D_INSTANTIATE(newdent, inode);
                 if ((vap = VATTR_ALLOC()) != NULL) {
                     VATTR_SET_MASK(vap, AT_ALL);
-                    if (VOP_GETATTR(ITOV(inode), vap, 0, cred) == 0)
+                    if (VOP_GETATTR(ITOV(inode), vap, 0, &cd) == 0)
                         mdki_linux_vattr_pullup(ITOV(inode), vap, AT_ALL);
                     VATTR_FREE(vap);
 		}
@@ -1112,7 +998,7 @@ vnode_iop_link(
 	} else {
 	    err = -EXDEV;
 	}
-        MDKI_CRFREE(cred);
+        mdki_linux_destroy_call_data(&cd);
     }
     return err;
 }
@@ -1158,17 +1044,13 @@ vnode_iop_unlink(
 )
 {
     int err = 0;
-    CRED_T *ucred;
     VNODE_T *obj;
     struct unlink_ctx ctx;
+    CALL_DATA_T cd;
     struct dentry *peer;
 
-    ASSERT_KERNEL_LOCKED_24x();
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     ASSERT_I_SEM_MINE(dent->d_inode);
-#endif
     ASSERT_I_SEM_MINE(dir);
-    ASSERT_I_ZOMB_MINE(dir);
     ASSERT(MDKI_INOISMVFS(dir));
 
     if (!S_ISDIR(dir->i_mode)) {
@@ -1178,22 +1060,18 @@ vnode_iop_unlink(
 
     peer = vnlayer_dentry_peer(dent);
 
-    ucred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     ctx.dentry = dent;
     ctx.done = FALSE;
     if (dent->d_inode && MDKI_INOISMVFS(dent->d_inode))
         obj = ITOV(dent->d_inode);      /* no extra reference (be careful) */
     else
         obj = NULL;
-    err = VOP_REMOVE(ITOV(dir), obj, (char *)dent->d_name.name, ucred, &ctx);
+    err = VOP_REMOVE(ITOV(dir), obj, (char *)dent->d_name.name, &cd, &ctx);
     /* XXX pullup attributes on removed object, if it's not gone yet? */
     err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(ucred);
+    mdki_linux_destroy_call_data(&cd);
     /* XXX Don't d_delete(dentry), our caller will do that */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    if (!err && !ctx.done)
-        d_delete(dent);
-#endif
 
     if (peer != NULL) {
         /*
@@ -1215,11 +1093,11 @@ vnode_iop_symlink(
     const char *targetname
 )
 {
-    CRED_T *cred;
     int err = 0;
     VATTR_T *vap;
     VNODE_T *linkvp;
     struct symlink_ctx ctx;
+    CALL_DATA_T cd;
 
     ASSERT(MDKI_INOISMVFS(parent));
 
@@ -1230,7 +1108,7 @@ vnode_iop_symlink(
     VATTR_SET_MASK(vap, AT_MODE|AT_TYPE);
     VATTR_SET_TYPE(vap, VLNK);
     VATTR_SET_MODE_RIGHTS(vap, S_IRWXU|S_IRWXG|S_IRWXO);
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     ctx.new = new;
     ctx.parent = parent;
     ctx.done = 0;
@@ -1242,7 +1120,7 @@ vnode_iop_symlink(
      */
     ctx.mode = 0777;
     err = VOP_SYMLINK(ITOV(parent), (char *)new->d_name.name,
-                      vap, (char *)targetname, &linkvp, cred, &ctx);
+                      vap, (char *)targetname, &linkvp, &cd, &ctx);
     if (err == 0 && !ctx.done) {
         ASSERT(linkvp != NULL);
         /* we need to fill in the inode in the passed-in dentry for NFS */
@@ -1250,7 +1128,7 @@ vnode_iop_symlink(
     }
     err = mdki_errno_unix_to_linux(err);
     VATTR_FREE(vap);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
 
     return err;
 }
@@ -1262,21 +1140,19 @@ vnode_iop_mkdir(
     int mode
 )
 {
-    CRED_T *cred;
     VNODE_T *new_vnode = NULL;
     int err = 0;
     VATTR_T *vap;
     struct mkdir_ctx mkctx;
+    CALL_DATA_T cd;
 
-    ASSERT_KERNEL_LOCKED_24x();
     ASSERT_I_SEM_MINE(parent);
-    ASSERT_I_ZOMB_MINE(parent);
     ASSERT(MDKI_INOISMVFS(parent));
 
     vap = VATTR_ALLOC();
     if (vap == NULL)
         return -ENOMEM;
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
 
     VATTR_NULL(vap);
     VATTR_SET_MASK(vap, AT_MODE|AT_TYPE);
@@ -1285,7 +1161,7 @@ vnode_iop_mkdir(
     mkctx.dentry = new;
     mkctx.pleasedrop = FALSE;
     err = VOP_MKDIR(ITOV(parent), (char *)new->d_name.name,
-                    vap, &new_vnode, cred, &mkctx);
+                    vap, &new_vnode, &cd, &mkctx);
     err = mdki_errno_unix_to_linux(err);
     if (err == 0) {
         if (mkctx.pleasedrop) {
@@ -1298,7 +1174,7 @@ vnode_iop_mkdir(
     if (new_vnode)
         VNODE_D_INSTANTIATE(new, VTOI(new_vnode));
     VATTR_FREE(vap);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     return(err);
 }
 
@@ -1309,26 +1185,21 @@ vnode_iop_rmdir(
 )
 {
     int err = 0;
-    CRED_T *cred;
     struct dentry *peer;
+    CALL_DATA_T cd;
 
-    ASSERT_KERNEL_LOCKED_24x();
     ASSERT_I_SEM_MINE(parent);
-    ASSERT_I_ZOMB_MINE(parent);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     ASSERT_I_SEM_MINE(target->d_inode);
-#endif
-    ASSERT_I_ZOMB_MINE(target->d_inode);
     ASSERT(MDKI_INOISMVFS(parent));
 
     peer = vnlayer_dentry_peer(target);
 
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     err = VOP_RMDIR(ITOV(parent), (char *)target->d_name.name,
                     NULL /* don't care about cdir on Linux */,
-                    cred, (dent_ctx *) target);
+                    &cd, (dent_ctx *) target);
     err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
 
     if (peer != NULL) {
         /* get rid of peer name in other mode */
@@ -1346,22 +1217,16 @@ vnode_iop_mknod(
     INODE_T *parent,
     DENT_T *new,
     int mode,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    int dev
-#else
     dev_t dev
-#endif
 )
 {
     int err = 0;
-    CRED_T *cred;
     VATTR_T *vap;
     VNODE_T *newvp;
     struct create_ctx ctx;
+    CALL_DATA_T cd;
 
-    ASSERT_KERNEL_LOCKED_24x();
     ASSERT_I_SEM_MINE(parent);
-    ASSERT_I_ZOMB_MINE(parent);
     ASSERT(MDKI_INOISMVFS(parent));
 
     vap = VATTR_ALLOC();
@@ -1394,7 +1259,7 @@ vnode_iop_mknod(
     ctx.parent = parent;
     ctx.dev = dev;
 
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     /* Only returns non-errors on loopback files, see
        mvop_linux_mknod() for real work */
     err = VOP_CREATE(ITOV(parent),
@@ -1403,12 +1268,12 @@ vnode_iop_mknod(
                      NONEXCL, /* XXX handled by generic layer? */
                      mode, /* not used except for passthrough, see vap->va_mode */
                      &newvp,
-                     cred,
+                     &cd,
                      &ctx);
     err = mdki_errno_unix_to_linux(err);
     if (!err && newvp != NULL)
         VN_RELE(newvp);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     VATTR_FREE(vap);
     return(err);
 }
@@ -1471,23 +1336,15 @@ vnode_iop_rename(
 {
     int err = 0;
     struct rename_ctx rnctx;
-    CRED_T *cred;
+    CALL_DATA_T cd;
     struct dentry *opeer, *npeer;
 
-    ASSERT_KERNEL_LOCKED_24x();
     ASSERT_I_SEM_MINE(odir);
-    ASSERT_I_ZOMB_MINE(odir);
     ASSERT_I_SEM_MINE(ndir);
-    ASSERT_I_ZOMB_MINE(ndir);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     if (ndent->d_inode) {
         ASSERT_I_SEM_MINE(ndent->d_inode);
     }
-#endif
     if (S_ISDIR(odent->d_inode->i_mode)) {
-        if (ndent->d_inode) {
-            ASSERT_I_ZOMB_MINE(ndent->d_inode);
-        }
         if (odir != ndir) {
             ASSERT_SEMA_MINE(&ndir->i_sb->s_vfs_rename_sem);
         }
@@ -1544,21 +1401,20 @@ vnode_iop_rename(
         }
     }
 
-    cred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     if (err == 0)
         err = VOP_RENAME(ITOV(odir), (char *)odent->d_name.name,
-                         ITOV(ndir), (char *)ndent->d_name.name, cred,
-                         &rnctx);
+                         ITOV(ndir), (char *)ndent->d_name.name, &cd, &rnctx);
     err = mdki_errno_unix_to_linux(err);
-    MDKI_CRFREE(cred);
+    mdki_linux_destroy_call_data(&cd);
     if (err == 0) {
         if (opeer != NULL) {
             if (npeer != NULL) {
                 ASSERT(npeer->d_op == opeer->d_op);
-                if (DENT_HASH_IS_EMPTY(npeer)) {
-                    /* On 2.4 kernels it is a BUG() if you try to rehash
-                     * a hashed dentry.  On 2.6 kernels it just has the
-                     * possibility of truncating the hash chain.
+                if (d_unhashed(npeer)) {
+                    /* 2.6 kernels no longer panic if you try to rehash
+                     * a hashed dentry. Instead they just truncate the
+                     * hash chain after this entry.
                      */
                     d_rehash(npeer);
                 }
@@ -1586,10 +1442,8 @@ vnode_iop_rename(
 DENT_T *
 vnlayer_hijacked_lookup(
     INODE_T *dir,
-    struct dentry *dent
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    , struct nameidata *nd
-#endif
+    struct dentry *dent,
+    struct nameidata *nd
 )
 {
     DENT_T *parent = dent->d_parent;
@@ -1597,11 +1451,7 @@ vnlayer_hijacked_lookup(
 
     if (!DENT_IS_ROOT_ALIAS(parent)) {
         /* This is not our faked-up dentry, use the provided function */
-        return (*vnlayer_root_iops_copy.lookup)(dir, dent
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-                                                  , nd
-#endif
-        );
+        return (*vnlayer_root_iops_copy.lookup)(dir, dent, nd);
     }
     alias = DENT_GET_ALIAS(parent);
     ASSERT(alias->rootdentry->d_inode == dir);
@@ -1721,4 +1571,4 @@ vnode_iop_removexattr(
     }
     return err;
 }
-static const char vnode_verid_mvfs_linux_iops_c[] = "$Id:  d71dce1b.541d11dd.90ce.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_linux_iops_c[] = "$Id:  a7cbf783.dc5411df.9210.00:01:83:0a:3b:75 $";

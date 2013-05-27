@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1998, 2005 */
+/* * (C) Copyright IBM Corporation 1998, 2008. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,10 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* ks_mdep_linux64.h */
+
 #if !defined(_KS_MDEP_LINUX64_H_)
 #define _TBS_KS_MDEP_LINUX64_H_
 
@@ -71,9 +72,11 @@ procname(                                       \
 
 #define ATRIA_SIZE_T_ULONG
 #define ATRIA_TIME_T_LONG
+#define KS_TIME_T time_t
 #define ATRIA_TIMEVAL_T_INT
 #define ATRIA_PID_T_INT
 #define ATRIA_TIMEVAL_TV_SEC_TIME_T
+#define KS_TIMEVAL_TV_SEC time_t
 
 #if !defined(TRUE)
 /* need our own private defs to be the same as Linux headers.  Most
@@ -86,4 +89,4 @@ procname(                                       \
 
 #endif /* !defined(_KS_MDEP_LINUX64_H_) */
 
-/* $Id: 90a2b544.637a11da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: 5cb13a36.9c1f11dd.9a62.00:01:83:29:c0:fc $ */

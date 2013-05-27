@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2006. */
+/* * (C) Copyright IBM Corporation 1991, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_PARAM_H_
 #define MVFS_PARAM_H_
 /*
@@ -212,4 +212,4 @@ EXTERN PARAM_TYPE mvfs_ctxt_atime_refresh;
 /* leave MVFS_PARAM_TYPE visible for other users */
 
 #endif	/* MVFS_PARAM_H_ */
-/* $Id: a0636f9c.66b911dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: 1ab3a2cf.a23a11df.8bc7.00:01:84:7a:f2:e4 $ */

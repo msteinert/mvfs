@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2008.  */
+/* * (C) Copyright IBM Corporation 1991, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,10 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_mioctl.c */
+
 #include "mvfs_systm.h"
 #include <tbs_base.h>
 #include <tbs_errno.h>
@@ -51,7 +52,7 @@ mvfs_do_inval(
     mvfs_ioinval_t *invp,
     VNODE_T *cdir,
     VNODE_T *vp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 
 STATIC int MVFS_NOINLINE
@@ -87,7 +88,7 @@ mvfs_xstat(
     VNODE_T *vp,
     CLR_VNODE_T *cvp,
     mvfscmd_block_t *data,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 );
 
@@ -95,7 +96,7 @@ STATIC int MVFS_NOINLINE
 mvfs_get_clrname(
     VNODE_T *vp,
     mvfscmd_block_t *data,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 );
 
@@ -110,7 +111,7 @@ STATIC int MVFS_NOINLINE
 mvfs_ioinval(
     VNODE_T *vp,
     mvfscmd_block_t *data,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     VNODE_T *cdir,
     MVFS_CALLER_INFO *callinfo
 );
@@ -168,7 +169,7 @@ STATIC int MVFS_NOINLINE
 mvfs_set_xattr(
     VNODE_T *vp,
     mvfscmd_block_t *data,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 );
 
@@ -193,7 +194,7 @@ mvfs_get_loginfo(
 STATIC int MVFS_NOINLINE
 mvfs_set_loginfo(
     mvfscmd_block_t *data,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 );
 
@@ -275,6 +276,96 @@ mvfs_set_vobrt_vfsmnt(
     MVFS_CALLER_INFO *callinfo
 );
 
+STATIC int MVFS_NOINLINE
+mvfs_get_gfsinfo(
+     mvfscmd_block_t *data,
+     MVFS_CALLER_INFO *callinfo
+);
+
+STATIC void
+mvfs_addup_clntstat(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_mnstat(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_clearstat(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_rvcstat(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_dncstat(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_acstat(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_rlstat(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_austat(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_vnopcnt(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_vfsopcnt(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_viewopcnt(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_viewophist(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_addup_viewoptime(
+    mvfs_stats_data_t *sdp,
+    mvfs_stats_data_t *total_sdp
+);
+
+STATIC void
+mvfs_add_times(
+      timestruc_t *sdp_time,
+      timestruc_t *percpu_time
+);
+
 /*
  * MVFS_IOCTL_COPYIN - copyin the ioctl command block and lookup pathname
  * returning vnode ptr if command takes a pathname.
@@ -298,7 +389,6 @@ mvfs_ioctl_copyin(
     if (iocbufp == NULL) return(ENOMEM);
 
     return(CopyInMvfscmd_block((caddr_t)data, iocbufp, callinfo));
-
 }
 
 /*
@@ -312,7 +402,7 @@ mvfs_ioctl_lookup(
     mvfscmd_block_t *iocbuf,
     VNODE_T **vpp,
     CLR_VNODE_T **cvpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 )
 {
@@ -408,7 +498,7 @@ mvfs_ioctl_lookup(
      * we don't want all this meta-junk in the audit.
      */
  
-    mth = mvfs_mythread(); 
+    mth = MVFS_MYTHREAD(cd); 
     MFS_INHAUDIT(mth);
 
     /* Do the name lookup */
@@ -416,7 +506,7 @@ mvfs_ioctl_lookup(
     vp = NULL;
     cvp = NULL;
     error = LOOKUP_FOR_IOCTL(pn, UIO_USERSPACE, lookflag, extra_lookflag, 
-						NULL, &cvp, cred);
+						NULL, &cvp,cd);
     if (error) {
 	ASSERT(cvp == NULL);
 	iocbuf->status = tbs_errno2status(error);
@@ -460,7 +550,7 @@ mvfs_ioctl_lookup(
      * These calls work even without a view on the vob root. 
      */
     if (MFS_VPISMFS(vp) && MFS_ISVOBRT(VTOM(vp)) && bindroot) {
-        xvp = mfs_bindroot(vp, MVFS_VIEW_CREDS(vp, cred), &error);
+        xvp = mfs_bindroot(vp, MVFS_VIEW_CREDS(vp, cd), &error);
 
 	/* The looked up vnode is no longer needed.
 	   If bindroot failed, then we need to release the
@@ -499,7 +589,7 @@ out:
      */
 
     if (MFS_VPISMFS(vp) && MFS_ISVOB(VTOM(vp))) {
-	mfs_rebind_vpp(1, &vp, MVFS_VIEW_CREDS(vp, cred));
+	mfs_rebind_vpp(1, &vp, MVFS_VIEW_CREDS(vp, cd));
         ASSERT(MFS_VPISMFS(vp));
     }
     if (vp != NULL) {
@@ -619,7 +709,7 @@ mvfs_do_inval(
     mvfs_ioinval_t *invp,
     VNODE_T *cdir,
     VNODE_T *vp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 )
 {
     char *inv_nm = NULL;
@@ -644,7 +734,7 @@ mvfs_do_inval(
 	if (error) break;
 	error = mfs_clnt_inval(vp,VIEW_INVALIDATE_TYPE_NAME,
 			       replica_oid_p, &invp->obj_oid, inv_nm,
-			       MVFS_VIEW_CREDS(vp, cred));
+			       MVFS_VIEW_CREDS(vp, cd));
 	mnum = 0;
         vfsp = NULL;
         safe = FALSE;
@@ -658,7 +748,7 @@ mvfs_do_inval(
 	    MFS_ATTRINVAL(xvp);  /* Before DNLC so that rddir cache does not lag */
             /* remove name */
 	    safe = (mfs_dncremove(xvp, inv_nm,
-                                  MVFS_VIEW_CREDS(xvp, cred)) != 0);
+                                  MVFS_VIEW_CREDS(xvp, MVFS_CD2CRED(cd))) != 0);
             /*
              * If we were able to find the entry in the DNC, then
              * the RVC was purged if appropriate and safe == TRUE.
@@ -701,7 +791,7 @@ mvfs_do_inval(
     case MVFS_INV_ELEM:
 	error = mfs_clnt_inval(vp, VIEW_INVALIDATE_TYPE_OBJ,
 			       replica_oid_p, &invp->obj_oid, NULL,
-			       MVFS_VIEW_CREDS(vp, cred));
+			       MVFS_VIEW_CREDS(vp, cd));
 	mnum = 0;
         safe = FALSE;
 	while ((mnp = mfs_mngetnextoid(&mnum, vp, 
@@ -780,7 +870,7 @@ mvfs_do_inval(
     case MVFS_INV_VIEW:
 	error = mfs_clnt_inval(vp, VIEW_INVALIDATE_TYPE_VIEW,
 			       &TBS_OID_NULL, &TBS_OID_NULL, NULL,
-			       MVFS_VIEW_CREDS(vp, cred));
+			       MVFS_VIEW_CREDS(vp, cd));
 	/* What about active vnodes?  HACK: Just do cdir! */
 	if (MFS_VPISMFS(cdir) && MFS_ISVOB(VTOM(cdir))) {
 	    MFS_ATTRINVAL(cdir);  /* Before DNLC so that rddir cache does not lag */
@@ -794,7 +884,7 @@ mvfs_do_inval(
     case MVFS_INV_VFS:
 	error = mfs_clnt_inval(vp, VIEW_INVALIDATE_TYPE_VOB,
 			       replica_oid_p, &TBS_OID_NULL, NULL,
-			       MVFS_VIEW_CREDS(vp, cred));
+			       MVFS_VIEW_CREDS(vp, cd));
 	/* HACK: invalidate attrs on u_cdir if mfs */
 	if (MFS_VPISMFS(cdir) && MFS_ISVOB(VTOM(cdir))) {
 	    MFS_ATTRINVAL(cdir);  /* Before DNLC so that rddir cache does not lag */
@@ -818,7 +908,7 @@ mvfs_mioctl(
     CLR_VNODE_T *cvp,
     mvfscmd_block_t *data,
     int flag,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 )
 {
@@ -847,7 +937,7 @@ mvfs_mioctl(
 
 	/* Set process view */
 	case MVFS_CMD_SETPROCVIEW: {
-            error = mvfs_setprocview(data, cred, callinfo);
+            error = mvfs_setprocview(data, MVFS_CD2CRED(cd), callinfo);
             break;
 	}
 
@@ -859,7 +949,7 @@ mvfs_mioctl(
 	}
 
 	case MVFS_CMD_GET_VIEWINFO: {
-            error = mvfs_get_viewinfo(vp, data, cred, callinfo);
+            error = mvfs_get_viewinfo(vp, data, MVFS_CD2CRED(cd), callinfo);
 	    break;
 	}
 
@@ -867,11 +957,11 @@ mvfs_mioctl(
 	 * MVFS_CMD_XSTAT - xstat call.
 	 */
 	case MVFS_CMD_XSTAT: {
-            error = mvfs_xstat(vp, cvp, data, cred, callinfo);
+            error = mvfs_xstat(vp, cvp, data, cd, callinfo);
             break;
 	}
 	case MVFS_CMD_GET_CLRNAME: {
-            error = mvfs_get_clrname(vp, data, cred, callinfo);
+            error = mvfs_get_clrname(vp, data, cd, callinfo);
             break;
 	}
 	/*
@@ -902,7 +992,7 @@ mvfs_mioctl(
                 MDKI_VNRELE_RCDIR(cdir);
                 cdir = rvp;			/* no need to frob ref cnts */
             }
-            error = mvfs_ioinval(vp, data, cred, cdir, callinfo);
+            error = mvfs_ioinval(vp, data, cd, cdir, callinfo);
             if (cdir != NULL) {
                 MDKI_VNRELE_RCDIR(cdir);
             }
@@ -915,25 +1005,25 @@ mvfs_mioctl(
 	 */
 
 	case MVFS_CMD_MKVIEWTAG: {
-            error = mvfs_mkviewtag(data, cred, callinfo);
+            error = mvfs_mkviewtag(data, MVFS_CD2CRED(cd), callinfo);
             break;
         }
 
 	case MVFS_CMD_RMVIEWTAG: {
-            error = mvfs_rmviewtag(data, cred, callinfo);
+            error = mvfs_rmviewtag(data, MVFS_CD2CRED(cd), callinfo);
             break;
         }
 
 	case MVFS_CMD_EXPORTVIEWTAG: {
-            error = mvfs_exportviewtag(data, cred, callinfo);
+            error = mvfs_exportviewtag(data, MVFS_CD2CRED(cd), callinfo);
 	    break;
 	}
 	case MVFS_CMD_UNEXPORTVIEWTAG: {
-            error = mvfs_unexportviewtag(data, cred, callinfo);
+            error = mvfs_unexportviewtag(data, MVFS_CD2CRED(cd), callinfo);
 	    break;
 	}
 	case MVFS_CMD_GET_VIEWTAG_EXPORT: {
-            error = mvfs_get_viewtag_export(data, cred, callinfo);
+            error = mvfs_get_viewtag_export(data, MVFS_CD2CRED(cd), callinfo);
 	    break;
 	}
 	case MVFS_CMD_GET_VIEWADDR: {
@@ -949,7 +1039,7 @@ mvfs_mioctl(
 
 	    error = mfs_clnt_change_mtype(vp, change_mtype.mtype,
                                      &data->status,  
-                                     MVFS_VIEW_CREDS(vp, cred));
+                                     MVFS_VIEW_CREDS(vp, cd));
 	    break;
 	}
 
@@ -959,7 +1049,7 @@ mvfs_mioctl(
 	}
 
 	case MVFS_CMD_SET_XATTR: {
-            error = mvfs_set_xattr(vp, data, cred, callinfo);
+            error = mvfs_set_xattr(vp, data, cd, callinfo);
 	    break;
 	}
 
@@ -974,7 +1064,7 @@ mvfs_mioctl(
 	case MVFS_CMD_SYNC_AUDIT:
 	case MVFS_CMD_REVALIDATE:
 	case MVFS_CMD_AUDIT_MARKER:
-	    error = mfs_auditioctl(data, cred, callinfo);
+	    error = mfs_auditioctl(data, cd, callinfo);
 	    break;
 	case MVFS_CMD_GET_VXSUFFIX: {
 	    if ((error = CopyInMfs_strbuf(data->infop, 
@@ -1018,7 +1108,7 @@ mvfs_mioctl(
 
 	case MVFS_CMD_SET_CACHE_ENB: {
 	    ulp = &mvfs_data;
-	    if (!MDKI_SUSER(cred)) {
+	    if (!MDKI_SUSER(MVFS_CD2CRED(cd))) {
 		error = EPERM;
 	 	MDKI_SET_U_ERROR(0);   /* Eliminate suser side effect */
 		break;
@@ -1091,7 +1181,7 @@ mvfs_mioctl(
 	}
 
 	case MVFS_CMD_SET_LOGINFO: {
-            error = mvfs_set_loginfo(data, cred, callinfo);
+            error = mvfs_set_loginfo(data, cd, callinfo);
 	    break;
 	}
 
@@ -1103,7 +1193,7 @@ mvfs_mioctl(
 #if (defined(MVFS_DEBUG) || defined(MVFS_CRASH_DEBUG))
 	case MVFS_CMD_ABORT: {
 	    extern int mdb_crash;
-	    if (MDKI_INGLOBALZONE() && MDKI_SUSER(cred))
+	    if (MDKI_INGLOBALZONE() && MDKI_SUSER(MVFS_CD2CRED(cd)))
 		mdb_crash = 1;
 	    else {
 		error = EPERM;
@@ -1113,12 +1203,12 @@ mvfs_mioctl(
 	}
 #endif
 	case MVFS_CMD_RMALLVIEWTAGS: {
-            error = mvfs_rmallviewtags(data, cred);
+            error = mvfs_rmallviewtags(data, MVFS_CD2CRED(cd));
 	    break;
 	}
 
 	case MVFS_CMD_UNMOUNTALL: {
-	    error = mfs_unregister_all_vobs(cred);
+	    error = mfs_unregister_all_vobs(MVFS_CD2CRED(cd));
 	    break;
 	}
 
@@ -1128,7 +1218,7 @@ mvfs_mioctl(
 	}
 
         case MVFS_CMD_ZERO_STATS: {
-            error = mvfs_zero_stats(cred);
+            error = mvfs_zero_stats(MVFS_CD2CRED(cd));
 	    break;
 	}
 	case MVFS_CMD_GET_CACHE_USAGE: {
@@ -1136,7 +1226,7 @@ mvfs_mioctl(
 	    break;
 	}
 	case MVFS_CMD_SET_CACHE_SIZES: {
-            error = mvfs_set_cache_sizes(data, cred, callinfo);
+            error = mvfs_set_cache_sizes(data, MVFS_CD2CRED(cd), callinfo);
 	    break;
 	}
 	case MVFS_CMD_GET_CACHE_SIZES: {
@@ -1148,11 +1238,11 @@ mvfs_mioctl(
 	    break;
 	}
 	case MVFS_CMD_GET_VIEW_STATS: {
-            error = mvfs_get_view_stats(data, cred, callinfo);
+            error = mvfs_get_view_stats(data, MVFS_CD2CRED(cd), callinfo);
             break;
 	}
 	case MVFS_CMD_ZERO_VIEW_STATS: {
-            error = mvfs_zero_view_stats(data, cred, callinfo);
+            error = mvfs_zero_view_stats(data, MVFS_CD2CRED(cd), callinfo);
             break;
 	}
 	case MVFS_CMD_SIDHOST_CREDMAPPING: {
@@ -1164,6 +1254,11 @@ mvfs_mioctl(
             error = mvfs_delete_sidhost_credmapping(data, callinfo);
 	    break;
 	}
+
+        case MVFS_CMD_GET_GFSINFO: {
+             error = mvfs_get_gfsinfo(data, callinfo);
+           break;
+       }
 
 	case MVFS_CMD_SET_VOBRT_VFSMNT: {
             error = mvfs_set_vobrt_vfsmnt(data, callinfo);
@@ -1424,7 +1519,7 @@ mvfs_xstat(
     VNODE_T *vp,
     CLR_VNODE_T *cvp,
     mvfscmd_block_t *data, 
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 )
 {
@@ -1449,7 +1544,7 @@ mvfs_xstat(
                                         KM_SLEEP);
     if (vstatp == NULL) return(ENOMEM);
 
-    vap = (VATTR_T *)KMEM_ALLOC(sizeof(*vap), KM_SLEEP);
+    vap = MVFS_VATTR_ALLOC();
 
     if (vap == NULL) {
         KMEM_FREE(vstatp, sizeof(*vstatp));
@@ -1466,12 +1561,13 @@ mvfs_xstat(
      *     kludging size, devs etc. for the external world.
      */
     if (MFS_VPISMFS(vp))
-        error = mfs_getattr(vp, vap, 0, MVFS_VIEW_CREDS(vp, cred));
+        error = mfs_getattr(vp, vap, 0, MVFS_VIEW_CREDS(vp, cd));
     else
-        error = MVOP_GETATTR(vp, cvp, vap, 0, MVFS_VIEW_CREDS(vp, cred));
+        error = MVOP_GETATTR(vp, cvp, vap, 0,
+                             MVFS_VIEW_CREDS(vp, MVFS_CD2CRED(cd)));
     if (error) {
         MVFS_FREE_VATTR_FIELDS(vap);
-	KMEM_FREE(vap, sizeof(*vap));
+        MVFS_VATTR_FREE(vap);
 	KMEM_FREE(vstatp, sizeof(*vstatp));
 	return(error);
     }
@@ -1504,7 +1600,7 @@ mvfs_xstat(
     VATTR_GET_CTIME_TV(vap, &vstatp->fstat.ctime);
 
     MVFS_FREE_VATTR_FIELDS(vap);
-    KMEM_FREE(vap, sizeof(*vap));	/* Done with vap */
+    MVFS_VATTR_FREE(vap);   /* Done with vap */
 
     /* Set oids/mtype only if MFS object under VOB */
 
@@ -1561,7 +1657,7 @@ mvfs_xstat(
 STATIC int MVFS_NOINLINE
 mvfs_get_clrname(VNODE_T *vp, 
     mvfscmd_block_t *data,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 )
 {
@@ -1595,7 +1691,7 @@ mvfs_get_clrname(VNODE_T *vp,
             mnp->mn_vob.cleartext.nm == NULL) 
         {
             error = mfs_getcleartext(vp, NULL,  
-                                     MVFS_VIEW_CREDS(vp, cred));
+                                     MVFS_VIEW_CREDS(vp, cd));
         } else {
             /* No cleartext expected, or already have it. */
             error = 0;
@@ -1656,7 +1752,7 @@ STATIC int MVFS_NOINLINE
 mvfs_ioinval(
     VNODE_T *vp,
     mvfscmd_block_t *data,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     VNODE_T *cdir,
     MVFS_CALLER_INFO *callinfo
 )
@@ -1708,7 +1804,7 @@ mvfs_ioinval(
                 vob_uuid = VFS_TO_MMI(vobvfs)->mmi_vobuuid;
                 vob_oid_p = (tbs_oid_t *)&vob_uuid;
                 error = mvfs_do_inval(vob_oid_p, &ioinval, 
-                                      cdir, vp, cred);
+                                      cdir, vp, cd);
                 first = 0;
                 if (error)
                     break;
@@ -1717,12 +1813,15 @@ mvfs_ioinval(
         else /* just invalidate on requested replica */
             error = mvfs_do_inval((tbs_oid_t *)
                                   &ioinval.un.replica_uuid,
-            		          &ioinval, cdir, vp, cred);
+            		          &ioinval, cdir, vp, cd);
     }
     return(error);
 }
 
-STATIC int
+/* 
+ * UNIX version of mkviewtag 
+ */
+STATIC int MVFS_NOINLINE
 mvfs_mkviewtag(
     mvfscmd_block_t *data,
     CRED_T *cred,
@@ -1739,21 +1838,56 @@ mvfs_mkviewtag(
     CRED_T *vwcreds = NULL;
     void *attp = NULL;
     mfs_mnode_t *mnp;
+    /* Declare a type so we can do one allocation to save stack space. */
+    struct {
+        struct mfs_svr svr;
+    } *alloc_unitp;
+    struct mfs_svr *svrp;
     mvfs_viewroot_data_t *vrdp = MDKI_VIEWROOT_GET_DATAP();
 
-    if ((vtp = KMEM_ALLOC(sizeof(*vtp), KM_SLEEP)) == NULL) {
+    /* Allocate stuff to keep the stack size down. */
+    if ((alloc_unitp = KMEM_ALLOC(sizeof(*alloc_unitp), KM_SLEEP)) == NULL) {
         return(ENOMEM);
+    }
+    svrp = &(alloc_unitp->svr);
+
+    if ((vtp = KMEM_ALLOC(sizeof(*vtp), KM_SLEEP)) == NULL) {
+        error = ENOMEM;
+        goto cleanup;
     }
     if ((error = CopyInMvfs_mkviewtag_info(data->infop, vtp, callinfo)) != 0) {
         goto cleanup;
     }
     data->status = TBS_ST_OK;
 
+    /* 
+     * Check to see if the new addr that was passed in via
+     * the ioctl can actually be contacted, before assuming
+     * that it is valid. Use a null RPC to the view 
+     * server at that address to do so.
+     */
+    BZERO(svrp, sizeof(*svrp));
+    svrp->addr = vtp->addr;
+    svrp->down = 0;
+    svrp->svrbound = 1;
+    if ((error = mvfs_clnt_ping_server(svrp, cred)) != 0) {
+        mvfs_log(MFS_LOG_DEBUG, "mvfs_clnt_ping_server failed with error %d\n",
+                 error);
+        goto cleanup;
+    }
+
     /* Get parameters */
 
     if ((error = mfs_copyin_strbuf(vtp->viewtag, &tagn)) != 0) {
         goto cleanup;
     }
+
+    /* We must prevent of history mode sufix being part of the view name */
+    if (mfs_hmname(tagn, NULL)){
+        error = EINVAL;
+        goto cleanup;
+    }
+
     /* We are going to use the pathname strings, so copy them in.  The
     ** CopyInMvfs_mkviewtag_info above already did the equivalent of
     ** CopyInMfs_strbufpn_pair since mkviewtag_info.spath is a
@@ -1800,7 +1934,6 @@ mvfs_mkviewtag(
         {
             /* Always fix with latest address */
             mnp->mn_view.svr.addr = vtp->addr;
-            MVFS_SIN_CVT(&mnp->mn_view.svr.addr);
             mnp->mn_view.svr.svrbound = 1;  /* Reset flags */
             mnp->mn_view.svr.dprinted = 0;
             mnp->mn_view.svr.uprinted = 0;
@@ -1827,7 +1960,6 @@ mvfs_mkviewtag(
             mnp = VTOM(vw);
             MLOCK(mnp);
             mnp->mn_view.svr.addr = vtp->addr;
-            MVFS_SIN_CVT(&mnp->mn_view.svr.addr);
             mnp->mn_view.svr.svrbound = 1;  /* Reset flags */
             mnp->mn_view.svr.dprinted = 0;
             mnp->mn_view.svr.uprinted = 0;
@@ -1875,11 +2007,11 @@ mvfs_mkviewtag(
             */
             (vtp->spath).kpn.s = NULL;
             (vtp->spath).upn.s = NULL;
-            mnp->mn_view.svr.host = host; host = NULL;
+
+            /* View server hostname already filled in during mfs_viewdirmkdir call */
             mnp->mn_view.svr.rpn = rpn;   rpn = NULL;
             mnp->mn_view.svr.uuid = vtp->uuid;
             mnp->mn_view.svr.addr = vtp->addr;
-            MVFS_SIN_CVT(&mnp->mn_view.svr.addr);
             mnp->mn_view.svr.svrbound = 1;  /* reset flags */
             mnp->mn_view.svr.dprinted = 0;
             mnp->mn_view.svr.uprinted = 0;
@@ -1888,7 +2020,6 @@ mvfs_mkviewtag(
              * talking to a different view than I think I am.
              */
             mnp->mn_view.vh.view_uuid = vtp->uuid;
-
             vwcreds = MDKI_GET_UCRED();
             mnp->mn_view.cuid = MDKI_CR_GET_UID(vwcreds);
             mnp->mn_view.cgid = MDKI_CR_GET_GID(vwcreds);
@@ -1908,7 +2039,10 @@ mvfs_mkviewtag(
     if (host) HN_STRFREE(host);
 
   cleanup:
+    KMEM_FREE(alloc_unitp, sizeof(*alloc_unitp));
+    if (vtp != NULL) {
     KMEM_FREE(vtp, sizeof(*vtp));
+    }
     return(error);
 }
 
@@ -2055,7 +2189,7 @@ mvfs_get_viewtag_export(
          &tagn)) == 0) {
 
         if ((error = mfs_viewtaglookup(tagn, &vp, cred)) == 0) {
-            if (VTOM(vp)->mn_view.exid == -1) {
+            if (VTOM(vp)->mn_view.exid == (u_int) -1) {
                 data->status = TBS_ST_NOT_FOUND;
             } else {
                 export_viewinfo.exportid = VTOM(vp)->mn_view.exid;
@@ -2144,7 +2278,7 @@ STATIC int MVFS_NOINLINE
 mvfs_set_xattr(
     VNODE_T *vp,
     mvfscmd_block_t *data,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 )
 {
@@ -2168,7 +2302,7 @@ mvfs_set_xattr(
                     error = mfs_clnt_change_mtype(vp, 
 				    (vob_mtype_t)io_xattr.xvalue
                                     , &data->status, 
-				    MVFS_VIEW_CREDS(vp, cred));
+				    MVFS_VIEW_CREDS(vp, cd));
 		    break;
 	        case MVFS_IO_XATTR_XMODE:
 		    if (io_xattr.xvalue != TBS_FMODE_AUDITED_OBJ)
@@ -2181,7 +2315,7 @@ mvfs_set_xattr(
 		    error = mvfs_clnt_setattr_locked(vp,
 				    NULL, io_xattr.xvalue,
 				    MFS_USE_PROCBH, 0,  
-				    MVFS_VIEW_CREDS(vp, cred), 0);
+				    MVFS_VIEW_CREDS(vp, cd), 0);
 		    MUNLOCK(mnp);
 		    break;
 	    case MVFS_IO_XATTR_NTFILEATTRS:
@@ -2295,7 +2429,7 @@ mvfs_get_loginfo(
 STATIC int MVFS_NOINLINE
 mvfs_set_loginfo(
     mvfscmd_block_t *data,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_CALLER_INFO *callinfo
 )
 {
@@ -2306,7 +2440,7 @@ mvfs_set_loginfo(
     if ((error = CopyInMvfs_loginfo(data->infop, &loginfo, callinfo)) == 0)
     {
 
-        if (!MDKI_SUSER(cred) || !MDKI_INGLOBALZONE()) {
+        if (!MDKI_SUSER(MVFS_CD2CRED(cd)) || !MDKI_INGLOBALZONE()) {
             error = EPERM;
             MDKI_SET_U_ERROR(0);/* Eliminate suser side effect.*/
         } else {
@@ -2318,7 +2452,7 @@ mvfs_set_loginfo(
                                             loginfo.kernlog_pn,
                                             &logfile);
                     if (error == 0) {
-                        error = mvfs_logfile_set(logfile, cred);
+                        error = mvfs_logfile_set(logfile, cd);
                     }
                 }
             }
@@ -2357,121 +2491,167 @@ mvfs_get_stats(
 )
 {
     int  error = 0;
-    auto mvfs_statbufs_t *mvfs_statbufsp;
-    mvfs_stats_data_t *sdp = MDKI_STATS_GET_DATAP();
+    int  cpuid;
+    mvfs_statbufs_t *mvfs_statbufsp;
+    mvfs_stats_data_t *percpu_sdp;
+    mvfs_stats_data_t *output_sdp;
 
-    if ((mvfs_statbufsp = KMEM_ALLOC(sizeof(*mvfs_statbufsp), KM_SLEEP)) == NULL) {
+    /*
+     * If we have a CPU id beyond the max cpus, we print an error message before
+     * returning the statistics.  We print a different error message for platforms
+     * in which max cpu is obtained through an API and the ones which define it as
+     * a constant value that is obtained from the header files.  This is because,
+     * in the former case, restarting ClearCase might help pick up the right value.
+     * MAXCPU_IS_CONSTANT is used to indicate if the max cpu is constant.
+     */
+    if (mvfs_cpu_beyond_limit) {
+        UPRINTF(("mvfs: ERROR: The current number of CPUs is larger than the "
+                 "maximum number of CPUs(%d) MVFS could handle. Some "
+                 "statistics might have been lost. \n", mvfs_max_cpus));
+#ifndef MAXCPU_IS_CONSTANT
+        UPRINTF(("Stopping and restarting ClearCase might fix this issue.\n"));
+#endif
+        UPRINTF(("Continuing with the available statistics....\n \n"));
+    }
+
+    if ((output_sdp = KMEM_ALLOC(sizeof(mvfs_stats_data_t), KM_SLEEP)) == NULL) {
         return(ENOMEM);
     }
-    if ((error = CopyInMvfs_statbufs(data->infop, 
+    MVFS_STAT_ZERO(output_sdp);
+
+    if ((mvfs_statbufsp = KMEM_ALLOC(sizeof(*mvfs_statbufsp), KM_SLEEP)) == NULL) {
+        KMEM_FREE(output_sdp, sizeof(mvfs_stats_data_t));
+        return(ENOMEM);
+    }
+    for (cpuid = 0; cpuid < mvfs_max_cpus; cpuid++) {
+        percpu_sdp = MDKI_STATS_GET_DATAP(cpuid);
+        if ((percpu_sdp != NULL) && !(percpu_sdp->zero_me))  {
+           mvfs_addup_clntstat(percpu_sdp, output_sdp);
+           mvfs_addup_mnstat(percpu_sdp, output_sdp);
+           mvfs_addup_clearstat(percpu_sdp, output_sdp);
+           mvfs_addup_rvcstat(percpu_sdp, output_sdp);
+           mvfs_addup_dncstat(percpu_sdp, output_sdp);
+           mvfs_addup_acstat(percpu_sdp, output_sdp);
+           mvfs_addup_rlstat(percpu_sdp, output_sdp);
+           mvfs_addup_austat(percpu_sdp, output_sdp);
+           mvfs_addup_vnopcnt(percpu_sdp, output_sdp);
+           mvfs_addup_vfsopcnt(percpu_sdp, output_sdp);
+           mvfs_addup_viewopcnt(percpu_sdp, output_sdp);
+           mvfs_addup_viewophist(percpu_sdp, output_sdp);
+           mvfs_addup_viewoptime(percpu_sdp, output_sdp);
+        }
+    }
+
+    if ((error = CopyInMvfs_statbufs(data->infop,
                                      mvfs_statbufsp, callinfo)) == 0)
     {
 
-        if (mvfs_statbufsp->clntstat.s && 
-            mvfs_statbufsp->clntstat.m) 
+        if (mvfs_statbufsp->clntstat.s &&
+            mvfs_statbufsp->clntstat.m)
         {
-            error = CopyOutMfs_clntstat(&(sdp->mfs_clntstat),
-                        (caddr_t)mvfs_statbufsp->clntstat.s, 
+            error = CopyOutMfs_clntstat(&(output_sdp->mfs_clntstat),
+                        (caddr_t)mvfs_statbufsp->clntstat.s,
                          mvfs_statbufsp->clntstat.m, callinfo);
-        } 
-        if (error == 0 && mvfs_statbufsp->mnstat.s && 
-            mvfs_statbufsp->mnstat.m) 
+        }
+        if (error == 0 && mvfs_statbufsp->mnstat.s &&
+            mvfs_statbufsp->mnstat.m)
         {
-            error = COPYOUT((caddr_t)&(sdp->mfs_mnstat), 
-                            (caddr_t)mvfs_statbufsp->mnstat.s, 
-                            KS_MIN(mvfs_statbufsp->mnstat.m, 
+            error = COPYOUT((caddr_t)&(output_sdp->mfs_mnstat),
+                            (caddr_t)mvfs_statbufsp->mnstat.s,
+                            KS_MIN(mvfs_statbufsp->mnstat.m,
                                    sizeof(struct mfs_mnstat)));
         }
-        if (error == 0 && mvfs_statbufsp->clearstat.s && 
-            mvfs_statbufsp->clearstat.m) 
+        if (error == 0 && mvfs_statbufsp->clearstat.s &&
+            mvfs_statbufsp->clearstat.m)
         {
-            error = CopyOutMfs_clearstat(&(sdp->mfs_clearstat),
-                        (caddr_t)mvfs_statbufsp->clearstat.s, 
+            error = CopyOutMfs_clearstat(&(output_sdp->mfs_clearstat),
+                        (caddr_t)mvfs_statbufsp->clearstat.s,
                         mvfs_statbufsp->clearstat.m, callinfo);
         }
-        if (error == 0 && mvfs_statbufsp->rvcstat.s && 
-            mvfs_statbufsp->rvcstat.m) 
-        {
-            error = COPYOUT((caddr_t)&(sdp->mfs_rvcstat), 
-                            (caddr_t)mvfs_statbufsp->rvcstat.s, 
-                            KS_MIN(mvfs_statbufsp->rvcstat.m, 
+        if (error == 0 && mvfs_statbufsp->rvcstat.s &&
+            mvfs_statbufsp->rvcstat.m)
+       {
+            error = COPYOUT((caddr_t)&(output_sdp->mfs_rvcstat),
+                            (caddr_t)mvfs_statbufsp->rvcstat.s,
+                            KS_MIN(mvfs_statbufsp->rvcstat.m,
                                    sizeof(struct mfs_rvcstat)));
         }
-        if (error == 0  && mvfs_statbufsp->dncstat.s && 
-            mvfs_statbufsp->dncstat.m) 
+        if (error == 0  && mvfs_statbufsp->dncstat.s &&
+            mvfs_statbufsp->dncstat.m)
         {
-            error = COPYOUT((caddr_t)&(sdp->mfs_dncstat), 
-                            (caddr_t)mvfs_statbufsp->dncstat.s, 
-                            KS_MIN(mvfs_statbufsp->dncstat.m, 
+            error = COPYOUT((caddr_t)&(output_sdp->mfs_dncstat),
+                            (caddr_t)mvfs_statbufsp->dncstat.s,
+                            KS_MIN(mvfs_statbufsp->dncstat.m,
                                    sizeof(struct mfs_dncstat)));
         }
-        if (error == 0 && mvfs_statbufsp->acstat.s && 
-            mvfs_statbufsp->acstat.m) 
+        if (error == 0 && mvfs_statbufsp->acstat.s &&
+            mvfs_statbufsp->acstat.m)
         {
-            error = COPYOUT((caddr_t)&(sdp->mfs_acstat), 
-                            (caddr_t)mvfs_statbufsp->acstat.s, 
-                            KS_MIN(mvfs_statbufsp->acstat.m, 
+            error = COPYOUT((caddr_t)&(output_sdp->mfs_acstat),
+                            (caddr_t)mvfs_statbufsp->acstat.s,
+                            KS_MIN(mvfs_statbufsp->acstat.m,
                                    sizeof(struct mfs_acstat)));
         }
-        if (error == 0 && mvfs_statbufsp->rlstat.s && 
-            mvfs_statbufsp->rlstat.m) 
+        if (error == 0 && mvfs_statbufsp->rlstat.s &&
+            mvfs_statbufsp->rlstat.m)
         {
-            error = COPYOUT((caddr_t)&(sdp->mfs_rlstat), 
-                            (caddr_t)mvfs_statbufsp->rlstat.s, 
-                            KS_MIN(mvfs_statbufsp->rlstat.m, 
+            error = COPYOUT((caddr_t)&(output_sdp->mfs_rlstat),
+                            (caddr_t)mvfs_statbufsp->rlstat.s,
+                            KS_MIN(mvfs_statbufsp->rlstat.m,
                                    sizeof(struct mfs_rlstat)));
         }
-        if (error == 0 && mvfs_statbufsp->austat.s && 
-            mvfs_statbufsp->austat.m) 
+        if (error == 0 && mvfs_statbufsp->austat.s &&
+            mvfs_statbufsp->austat.m)
         {
-            error = CopyOutMfs_austat(&(sdp->mfs_austat), 
-                        (caddr_t)mvfs_statbufsp->austat.s, 
+            error = CopyOutMfs_austat(&(output_sdp->mfs_austat),
+                        (caddr_t)mvfs_statbufsp->austat.s,
                         mvfs_statbufsp->austat.m, callinfo);
         }
 
         /* Copy out the opcnt vectors */
 
-        if (error == 0 && mvfs_statbufsp->vnopcnt.s && 
-            mvfs_statbufsp->vnopcnt.m) 
+        if (error == 0 && mvfs_statbufsp->vnopcnt.s &&
+            mvfs_statbufsp->vnopcnt.m)
         {
-            error = COPYOUT((caddr_t)sdp->mfs_vnopcnt, 
+            error = COPYOUT((caddr_t)output_sdp->mfs_vnopcnt,
                              (caddr_t)mvfs_statbufsp->vnopcnt.s,
                               KS_MIN(mvfs_statbufsp->vnopcnt.m,
-                              sizeof(MVFS_ATOMIC_T)*mfs_vnopmax));
+                              sizeof(MVFS_STAT_CNT_T)*mfs_vnopmax));
         }
-        if (error == 0 && mvfs_statbufsp->vfsopcnt.s && 
-            mvfs_statbufsp->vfsopcnt.m) 
+        if (error == 0 && mvfs_statbufsp->vfsopcnt.s &&
+            mvfs_statbufsp->vfsopcnt.m)
         {
-            error = COPYOUT((caddr_t)sdp->mfs_vfsopcnt, 
+            error = COPYOUT((caddr_t)output_sdp->mfs_vfsopcnt,
                             (caddr_t)mvfs_statbufsp->vfsopcnt.s,
                              KS_MIN(mvfs_statbufsp->vfsopcnt.m,
-                              sizeof(MVFS_ATOMIC_T)*mfs_vfsopmax));
+                              sizeof(MVFS_STAT_CNT_T)*mfs_vfsopmax));
         }
-        if (error == 0 && mvfs_statbufsp->viewopcnt.s && 
-            mvfs_statbufsp->viewopcnt.m) 
+        if (error == 0 && mvfs_statbufsp->viewopcnt.s &&
+            mvfs_statbufsp->viewopcnt.m)
         {
-            error = COPYOUT((caddr_t)sdp->mfs_viewopcnt,
+            error = COPYOUT((caddr_t)output_sdp->mfs_viewopcnt,
                             (caddr_t)mvfs_statbufsp->viewopcnt.s,
                             KS_MIN(mvfs_statbufsp->viewopcnt.m,
-                             sizeof(MVFS_ATOMIC_T)*mfs_viewopmax));
+                             sizeof(MVFS_STAT_CNT_T)*mfs_viewopmax));
         }
-        if (error == 0 && mvfs_statbufsp->viewoptime.s && 
-                 mvfs_statbufsp->viewoptime.m) 
+        if (error == 0 && mvfs_statbufsp->viewoptime.s &&
+                 mvfs_statbufsp->viewoptime.m)
         {
-            error = CopyOuttimestruc_array(sdp->mfs_viewoptime,
-                        (caddr_t)mvfs_statbufsp->viewoptime.s, 
-                        mfs_viewopmax, 
+            error = CopyOuttimestruc_array(output_sdp->mfs_viewoptime,
+                        (caddr_t)mvfs_statbufsp->viewoptime.s,
+                        mfs_viewopmax,
                         KS_MIN(mvfs_statbufsp->viewoptime.m,
                             sizeof(timestruc_t)*mfs_viewopmax), callinfo);
         }
-        if (error == 0 && mvfs_statbufsp->viewophist.s && 
-            mvfs_statbufsp->viewophist.m) 
+        if (error == 0 && mvfs_statbufsp->viewophist.s &&
+            mvfs_statbufsp->viewophist.m)
         {
-            error = CopyOutMfs_rpchist(&(sdp->mfs_viewophist),
-                        (caddr_t)mvfs_statbufsp->viewophist.s, 
+            error = CopyOutMfs_rpchist(&(output_sdp->mfs_viewophist),
+                        (caddr_t)mvfs_statbufsp->viewophist.s,
                          mvfs_statbufsp->viewophist.m, callinfo);
         }
     }
+    KMEM_FREE(output_sdp, sizeof(mvfs_stats_data_t));
     KMEM_FREE(mvfs_statbufsp, sizeof(*mvfs_statbufsp));
     return(error);
 }
@@ -2584,9 +2764,9 @@ mvfs_get_poolmaps(
                   * the user-version of the
                   * pathnames 
                   */
-                  error = CopyInMfs_strbufpn((caddr_t)
-                                             &pmap.patterns[i], 
-                                             &buftmp, callinfo);
+                  error = CopyInMfs_strbufpn_index((caddr_t)
+                                             pmap.patterns, 
+                                             &buftmp, i, callinfo);
                   /* 
                    * all these break's get out of the "for" 
                    * loop only 
@@ -2597,12 +2777,12 @@ mvfs_get_poolmaps(
                                   mmi->mmi_sptable[i].sp_prefix);
                   if (error)
                       break;
-                  error = CopyOutMfs_strbufpn(&buftmp,
-                                   (caddr_t)&pmap.patterns[i], callinfo);
+                  error = CopyOutMfs_strbufpn_index(&buftmp,
+                                   (caddr_t)pmap.patterns, i, callinfo);
                   if (error)
                       break;
-                  error = CopyInMfs_strbufpn((caddr_t)
-                                &pmap.replacements[i], &buftmp, callinfo);
+                  error = CopyInMfs_strbufpn_index((caddr_t)
+                                pmap.replacements, &buftmp, i, callinfo);
         
                   if (error)
                     break;
@@ -2610,8 +2790,8 @@ mvfs_get_poolmaps(
                              mmi->mmi_sptable[i].sp_usertarget);
                   if (error)
                       break;
-                  error = CopyOutMfs_strbufpn(&buftmp,
-                                (caddr_t)&pmap.replacements[i], callinfo);
+                  error = CopyOutMfs_strbufpn_index(&buftmp,
+                                (caddr_t)pmap.replacements, i, callinfo);
                   if (error)
                       break;
             }
@@ -2625,40 +2805,18 @@ STATIC int MVFS_NOINLINE
 mvfs_zero_stats(CRED_T *cred)
 {
     int  error = 0;
-    SPL_T s;
-    mvfs_stats_data_t *sdp = MDKI_STATS_GET_DATAP();
+    int  cpuid;
+    mvfs_stats_data_t *sdp;
 
     if (MDKI_SUSER(cred)) {
-        MVFS_STATLOCK_LOCK(s);
-	BZERO(&(sdp->mfs_clntstat), sizeof(struct mfs_clntstat));
-	BZERO(&(sdp->mfs_mnstat), sizeof(struct mfs_mnstat));
-	BZERO(&(sdp->mfs_clearstat), sizeof(struct mfs_clearstat));
-	BZERO(&(sdp->mfs_rvcstat), sizeof(struct mfs_rvcstat));
-	BZERO(&(sdp->mfs_dncstat), sizeof(struct mfs_dncstat));
-	BZERO(&(sdp->mfs_acstat), sizeof(struct mfs_acstat));
-	BZERO(&(sdp->mfs_rlstat), sizeof(struct mfs_rlstat));
-	BZERO(&(sdp->mfs_austat), sizeof(struct mfs_austat));
-	BZERO(sdp->mfs_vnopcnt, mfs_vnopmax*sizeof(MVFS_ATOMIC_T));
-	BZERO(sdp->mfs_vfsopcnt, mfs_vfsopmax*sizeof(MVFS_ATOMIC_T));
-	BZERO(sdp->mfs_viewopcnt, mfs_viewopmax*sizeof(MVFS_ATOMIC_T));
-	BZERO(&(sdp->mfs_viewophist.histrpc[0]),
-	      sizeof(sdp->mfs_viewophist.histrpc));
-	BZERO(&(sdp->mfs_viewophist.histclr[0]),
-	      sizeof(sdp->mfs_viewophist.histclr));
-	BZERO(&(sdp->mfs_viewophist.histperop[0][0]),
-	      sizeof(sdp->mfs_viewophist.histperop));
-	sdp->mfs_clntstat.version = MFS_CLNTSTAT_VERS;
-	sdp->mfs_mnstat.version = MFS_MNSTAT_VERS;
-	sdp->mfs_clearstat.version = MFS_CLEARSTAT_VERS;
-	sdp->mfs_rvcstat.version = MFS_RVCSTAT_VERS;
-	sdp->mfs_dncstat.version = MFS_DNCSTAT_VERS;
-	sdp->mfs_acstat.version = MFS_ACSTAT_VERS;
-	sdp->mfs_rlstat.version = MFS_RLSTAT_VERS;
-	sdp->mfs_austat.version = MFS_AUSTAT_VERS;
-        MVFS_STATLOCK_UNLOCK(s);
+        for (cpuid = 0; cpuid < mvfs_max_cpus; cpuid++) {
+             if ((sdp = MDKI_STATS_GET_DATAP(cpuid)) != NULL) {
+                sdp->zero_me = TRUE;
+             }
+        }
     } else {
-	error = EPERM;
-	MDKI_SET_U_ERROR(0);/* Eliminate suser side effect. */
+        error = EPERM;
+        MDKI_SET_U_ERROR(0);/* Eliminate suser side effect. */
     }
     return(error);
 }
@@ -2865,7 +3023,6 @@ mvfs_zero_view_stats(
 )
 {
     int  error = 0;
-    SPL_T s;
     mvfs_zero_viewstat_t mvfs_zero_viewstat;
     char *tagn = NULL;
     VNODE_T *vw = NULL;
@@ -2883,16 +3040,7 @@ mvfs_zero_view_stats(
             PN_STRFREE(tagn);       
             if (error == 0 ) {
                 if (MDKI_SUSER(cred)) {
-                    MVFS_STATLOCK_LOCK(s);
-                    BZERO((VTOM(vw)->mn_view.pvstat), 
-                           sizeof(struct mvfs_pvstat));
-                    VTOM(vw)->mn_view.pvstat->clntstat.version =
-                            MFS_CLNTSTAT_VERS;
-                    VTOM(vw)->mn_view.pvstat->acstat.version = 
-                            MFS_ACSTAT_VERS;
-                    VTOM(vw)->mn_view.pvstat->dncstat.version =
-                            MFS_DNCSTAT_VERS;
-                    MVFS_STATLOCK_UNLOCK(s);
+                    MVFS_PVSTAT_ZERO(vw);
                 } else {
                     error = EPERM;
                     MDKI_SET_U_ERROR(0); /* Eliminate suser side effect. */ 
@@ -2956,4 +3104,384 @@ mvfs_set_vobrt_vfsmnt(
     return(error);
 }
 
-static const char vnode_verid_mvfs_mioctl_c[] = "$Id:  a5d60520.b25211dd.9387.00:01:83:9c:f6:11 $";
+STATIC int MVFS_NOINLINE
+mvfs_get_gfsinfo(
+     mvfscmd_block_t *data,
+     MVFS_CALLER_INFO *callinfo
+)
+{
+     int error = 0;
+     mvfs_gfsinfo_t gfsinfo;
+
+     if ((error = CopyInMvfs_gfsinfo(data->infop, &gfsinfo, callinfo)) == 0) {
+         /* Do the actual work of this ioctl if everything is OK. */
+         if (error == 0) {
+             error = MVFS_GET_GFSINFO(&gfsinfo);
+         }
+         if (error == 0) {
+             error = CopyOutMvfs_gfsinfo(&gfsinfo, data->infop, callinfo);
+         }
+     }
+     return(error);
+}
+
+STATIC void
+mvfs_addup_clntstat(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+
+#define ADDUP_FIELD(field) sdp->mfs_clntstat.field +=  \
+                                percpu_sdp->mfs_clntstat.field
+
+    ADDUP_FIELD(clntget);
+    ADDUP_FIELD(clntfree);
+    ADDUP_FIELD(clntcreate);
+    ADDUP_FIELD(clntdestroy);
+    ADDUP_FIELD(clntcalls);
+    ADDUP_FIELD(clntretries);
+    ADDUP_FIELD(mfscall);
+    ADDUP_FIELD(mfsfail);
+    ADDUP_FIELD(mfsintr);
+    ADDUP_FIELD(mfsmaxdelay);
+    ADDUP_FIELD(mfsmaxdelaytime);
+
+    mvfs_add_times(&(sdp->mfs_clntstat.mvfsthread_time),
+                   &(percpu_sdp->mfs_clntstat.mvfsthread_time));
+    return;
+
+#undef ADDUP_FIELD
+}
+
+STATIC void
+mvfs_addup_mnstat(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+#define ADDUP_FIELD(field) sdp->mfs_mnstat.field +=  \
+                                percpu_sdp->mfs_mnstat.field
+
+    ADDUP_FIELD(mnget);
+    ADDUP_FIELD(mnfound);
+    ADDUP_FIELD(mnfoundstale);
+    ADDUP_FIELD(mnreusefree);
+    ADDUP_FIELD(mncreate);
+    ADDUP_FIELD(mngetnum);
+    ADDUP_FIELD(mnfree);
+    ADDUP_FIELD(mndestroy);
+    ADDUP_FIELD(mnreclaim);
+    ADDUP_FIELD(mnvobhashcnt);
+    ADDUP_FIELD(mncvphashcnt);
+    ADDUP_FIELD(mnotherhashcnt);
+    ADDUP_FIELD(mnflushvfscnt);
+    ADDUP_FIELD(mnflushvwcnt);
+
+    return;
+
+#undef ADDUP_FIELD
+}
+
+STATIC void
+mvfs_addup_clearstat(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+#define ADDUP_FIELD(field) sdp->mfs_clearstat.field  += \
+                                percpu_sdp->mfs_clearstat.field
+
+#define ADDUP_TIME(t_val) (mvfs_add_times(&(sdp->mfs_clearstat.t_val), \
+                                          &(percpu_sdp->mfs_clearstat.t_val)))
+    ADDUP_FIELD(clearget);
+    ADDUP_FIELD(clearcreate);
+    ADDUP_FIELD(clearraces);
+    ADDUP_FIELD(clearcreatraces);
+    ADDUP_FIELD(clearread);
+    ADDUP_FIELD(clearwrite);
+
+    ADDUP_TIME(clearget_time);
+    ADDUP_TIME(clearcreat_time);
+    ADDUP_TIME(clearrd_time);
+    ADDUP_TIME(clearwr_time);
+    ADDUP_TIME(clearopen_time);
+    ADDUP_TIME(unclearrd_time);
+    ADDUP_TIME(unclearwr_time);
+    ADDUP_TIME(unclearget_time);
+    ADDUP_TIME(cto_getattr_time);
+
+    ADDUP_FIELD(clearopen);
+    ADDUP_FIELD(unclearopen);
+    ADDUP_FIELD(cleargetmiss);
+    ADDUP_FIELD(clearreclaim);
+    ADDUP_FIELD(clearreclaimmiss);
+    ADDUP_FIELD(cleargetlkup);
+
+    return;
+
+#undef ADDUP_FIELD
+#undef ADDUP_TIME
+}
+
+STATIC void
+mvfs_addup_rvcstat(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+#define ADDUP_FIELD(field) sdp->mfs_rvcstat.field  += \
+                                percpu_sdp->mfs_rvcstat.field
+
+    ADDUP_FIELD(rvc_hits);
+    ADDUP_FIELD(rvc_misses);
+    ADDUP_FIELD(rvc_misstimo);
+    ADDUP_FIELD(rvc_purge);
+
+    return;
+
+#undef ADDUP_FIELD
+}
+
+STATIC void
+mvfs_addup_dncstat(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+#define ADDUP_FIELD(field) sdp->mfs_dncstat.field  += \
+                                percpu_sdp->mfs_dncstat.field
+
+    ADDUP_FIELD(dnc_hits);
+    ADDUP_FIELD(dnc_hitdot);
+    ADDUP_FIELD(dnc_hitdir);
+    ADDUP_FIELD(dnc_hitreg);
+    ADDUP_FIELD(dnc_hitnoent);
+    ADDUP_FIELD(dnc_hitbhfromnull);
+    ADDUP_FIELD(dnc_misses);
+    ADDUP_FIELD(dnc_missinvalid);
+    ADDUP_FIELD(dnc_missdncgen);
+    ADDUP_FIELD(dnc_missevtime);
+    ADDUP_FIELD(dnc_missnoenttimedout);
+    ADDUP_FIELD(dnc_missbh);
+    ADDUP_FIELD(dnc_missnovp);
+    ADDUP_FIELD(dnc_add);
+    ADDUP_FIELD(dnc_adddir);
+    ADDUP_FIELD(dnc_addreg);
+    ADDUP_FIELD(dnc_addnoent);
+    ADDUP_FIELD(dnc_addbhinvariant);
+    ADDUP_FIELD(dnc_addnoop);
+    ADDUP_FIELD(dnc_addbh);
+    ADDUP_FIELD(dnc_addlong);
+    ADDUP_FIELD(dnc_addunlock);
+    ADDUP_FIELD(dnc_change);
+    ADDUP_FIELD(dnc_remove);
+    ADDUP_FIELD(dnc_invalvp);
+    ADDUP_FIELD(dnc_flush);
+    ADDUP_FIELD(dnc_invalhits);
+    ADDUP_FIELD(dnc_flushvw);
+    ADDUP_FIELD(dnc_flushvfs);
+    ADDUP_FIELD(dnc_invalvw);
+    ADDUP_FIELD(dnc_invalnf);
+    ADDUP_FIELD(dnc_missdir);
+    ADDUP_FIELD(dnc_missreg);
+    ADDUP_FIELD(dnc_missnoent);
+
+    return;
+
+#undef ADDUP_FIELD
+}
+
+STATIC void
+mvfs_addup_acstat(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+#define ADDUP_FIELD(field) sdp->mfs_acstat.field  += \
+                                percpu_sdp->mfs_acstat.field
+
+    ADDUP_FIELD(ac_hits);
+    ADDUP_FIELD(ac_misses);
+    ADDUP_FIELD(ac_updates);
+    ADDUP_FIELD(ac_mod);
+    ADDUP_FIELD(ac_expmod);
+    ADDUP_FIELD(ac_vobmod);
+    ADDUP_FIELD(ac_evmiss);
+    ADDUP_FIELD(ac_cto);
+    ADDUP_FIELD(ac_timo);
+    ADDUP_FIELD(ac_genmiss);
+    ADDUP_FIELD(ac_newmiss);
+    ADDUP_FIELD(ac_lvuthit);
+    ADDUP_FIELD(ac_lvutmiss);
+    ADDUP_FIELD(ac_rddirhit);
+    ADDUP_FIELD(ac_rddirmiss);
+
+    return;
+
+#undef ADDUP_FIELD
+}
+
+STATIC void
+mvfs_addup_rlstat(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+#define ADDUP_FIELD(field) sdp->mfs_rlstat.field  += \
+                                percpu_sdp->mfs_rlstat.field
+    ADDUP_FIELD(rl_hits);
+    ADDUP_FIELD(rl_misses);
+
+    return;
+
+#undef ADDUP_FIELD
+}
+
+STATIC void
+mvfs_addup_austat(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+#define ADDUP_FIELD(field) sdp->mfs_austat.field  += \
+                                percpu_sdp->mfs_austat.field
+
+#define ADDUP_TIME(t_val) (mvfs_add_times(&(sdp->mfs_austat.t_val), \
+                                          &(percpu_sdp->mfs_austat.t_val)))
+
+    ADDUP_FIELD(au_calls);
+    ADDUP_FIELD(au_vgetattr);
+    ADDUP_FIELD(au_nvgetattr);
+    ADDUP_FIELD(au_dupl);
+
+    ADDUP_TIME(au_time);
+    ADDUP_TIME(au_settime);
+    ADDUP_TIME(au_ioctltime);
+
+    return;
+
+#undef ADDUP_FIELD
+#undef ADDUP_TIME
+}
+
+STATIC void
+mvfs_addup_vnopcnt(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+    int i;
+    for (i = 0; i < MFS_VNOPCNT; i++) {
+         sdp->mfs_vnopcnt[i] += percpu_sdp->mfs_vnopcnt[i];
+    }
+
+    return;
+}
+
+STATIC void
+ mvfs_addup_vfsopcnt(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+    int i;
+    for (i = 0; i < MFS_VFSOPCNT; i++) {
+         sdp->mfs_vfsopcnt[i] += percpu_sdp->mfs_vfsopcnt[i];
+    }
+
+    return;
+}
+
+STATIC void
+mvfs_addup_viewopcnt(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+    int i;
+    for (i = 0; i < VIEW_NUM_PROCS; i++) {
+         sdp->mfs_viewopcnt[i] += percpu_sdp->mfs_viewopcnt[i];
+    }
+
+    return;
+}
+
+STATIC void
+mvfs_addup_viewophist(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+    int i,j;
+    for (i = 0; i < MFS_NUM_HISTX; i++) {
+         mvfs_add_times(&(sdp->mfs_viewophist.histval[i]),
+                        &(percpu_sdp->mfs_viewophist.histval[i]));
+    }
+    for (i = 0; i < MFS_NUM_HISTX; i++) {
+         sdp->mfs_viewophist.histrpc[i] +=
+                percpu_sdp->mfs_viewophist.histrpc[i];
+         sdp->mfs_viewophist.histclr[i] +=
+                percpu_sdp->mfs_viewophist.histclr[i];
+    }
+    for (i = 0; i < VIEW_NUM_PROCS; i++) {
+         for (j = 0; j < MFS_NUM_HISTX; j++) {
+              sdp->mfs_viewophist.histperop[i][j] +=
+                 percpu_sdp->mfs_viewophist.histperop[i][j];
+         }
+    }
+
+    return;
+}
+
+STATIC void
+mvfs_addup_viewoptime(
+    mvfs_stats_data_t *percpu_sdp,
+    mvfs_stats_data_t *sdp
+)
+{
+        int i;
+        for (i = 0; i < VIEW_NUM_PROCS; i++) {
+             mvfs_add_times(&(sdp->mfs_viewoptime[i]),
+                            &(percpu_sdp->mfs_viewoptime[i]));
+        }
+
+        return;
+}
+
+STATIC void
+mvfs_add_times(
+    timestruc_t *sdp_time,
+    timestruc_t *percpu_time
+)
+{
+        timestruc_t tmp;
+
+        tmp.tv_nsec = sdp_time->tv_nsec + percpu_time->tv_nsec;
+        tmp.tv_sec = sdp_time->tv_sec + percpu_time->tv_sec;
+
+        if (tmp.tv_nsec  >= 1000000000) {
+            tmp.tv_nsec -= 1000000000;
+            tmp.tv_sec++;
+        }
+        sdp_time->tv_nsec = tmp.tv_nsec;
+        sdp_time->tv_sec = tmp.tv_sec;
+
+        return;
+}
+
+/*
+ * Routine to zero out per-view statistics.  We don't zero out the whole
+ * per-view stat structure because it has our lock in it.
+ */
+void
+mvfs_pview_stat_zero(struct mvfs_pvstat *pvp)
+{
+        BZERO(&(pvp->clntstat), sizeof(struct mfs_clntstat));
+        BZERO(&(pvp->acstat), sizeof(struct mfs_acstat));
+        BZERO(&(pvp->dncstat), sizeof(struct mfs_dncstat));
+        pvp->clntstat.version = MFS_CLNTSTAT_VERS;
+        pvp->acstat.version = MFS_ACSTAT_VERS;
+        pvp->dncstat.version = MFS_DNCSTAT_VERS;
+}
+static const char vnode_verid_mvfs_mioctl_c[] = "$Id:  66dbe673.dc5411df.9210.00:01:83:0a:3b:75 $";

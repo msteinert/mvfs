@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 2001, 2006. */
+/* * (C) Copyright IBM Corporation 2001, 2009. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,10 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_rdc.c */
+
 #include "mvfs_systm.h"
 #include "mvfs.h"
 
@@ -132,7 +133,6 @@ mvfs_rddir_cache_get(
 {
     register int i;
     struct mvfs_rce *ep;
-    SPL_T s;
     int size;
 
     ASSERT(MFS_ISVOB(mnp));
@@ -173,14 +173,14 @@ mvfs_rddir_cache_get(
 		    *errorp = 0;
 		if (eofp != NULL)
 		    *eofp = ep->eof;
-		BUMPSTAT(mfs_acstat.ac_rddirhit, s);
+		BUMPSTAT(mfs_acstat.ac_rddirhit);
 		return TRUE;
 	    }
 	}
     } else {
 	MDB_XLOG((MDB_MNOPS, "rddir cache get (empty) mnp %lx\n", mnp));
     }
-    BUMPSTAT(mfs_acstat.ac_rddirmiss, s);
+    BUMPSTAT(mfs_acstat.ac_rddirmiss);
     MDB_XLOG((MDB_MNOPS, "rddir cache miss mnp %lx off %"MVFS_FMT_UIO_OFFSET_X" size %"MVFS_FMT_UIO_RESID_X"\n", mnp,
 	      MVFS_UIO_OFFSET(uiop), uiop->uio_resid));
     return FALSE;
@@ -306,4 +306,4 @@ mvfs_rddir_compute_caches(
     }
     return 0;
 }
-static const char vnode_verid_mvfs_rdc_c[] = "$Id:  fcc38094.66ba11dc.9bbb.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_rdc_c[] = "$Id:  922924ad.b44911de.8ddb.00:01:83:29:c0:fc $";

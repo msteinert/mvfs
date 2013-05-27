@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_tunables.c */
 #include "mvfs_systm.h"
 #include "mvfs.h"
@@ -251,4 +251,4 @@ int mvfs_copy_tunable(mvfs_common_data_t *mcdp)
 
     return 0;
 }
-static const char vnode_verid_mvfs_tunables_c[] = "$Id:  0a7381cc.66bb11dc.9bbb.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_tunables_c[] = "$Id:  3b655ae4.c20911db.897a.00:01:83:a6:4c:63 $";

@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_KS_RPC_H_)
 #define _KS_RPC_H_
 
@@ -28,7 +28,12 @@
 
 #include <linux/socket.h>
 
+
 #include "linux_krpc.h"                 /* our own custom hacks */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define EZ_XDR_ROUTINE_TYPE(name,type)          \
 EZ_EXTERN bool_t                                \
@@ -44,5 +49,9 @@ xdr_##name(                                     \
 
 #define EZ_EXTERN EXTERN
 
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
 #endif /* _KS_RPC_H */
-/* $Id: a8c2a4e4.637911da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: 698111fe.9c1e11dd.9a62.00:01:83:29:c0:fc $ */

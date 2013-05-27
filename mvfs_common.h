@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_COMMON_H_
 #define MVFS_COMMON_H_
 
@@ -64,4 +64,4 @@ typedef struct mvfs_common_data
 EXTERN int mvfs_copy_tunable(mvfs_common_data_t *mcdp);
 EXTERN void mfs_periodic_maintenance(P_NONE);
 #endif /* MVFS_COMMON_H_ */
-/* $Id: 2b4388bc.66bb11dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: f50778a9.e3fd11db.822d.00:01:83:a6:4c:63 $ */

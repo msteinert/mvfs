@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2008 IBM Corporation.
+ * Copyright (C) 1999, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -52,37 +52,6 @@ WAIT_QUEUE_HEAD_T vnlayer_inactive_waitq;
 
 struct dentry * vnlayer_sysroot_dentry;
 struct vfsmount * vnlayer_sysroot_mnt;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-STATIC int
-vnlayer_blkdev_open(
-   INODE_T *inode,
-   FILE_T *file
-);
-
-/* The following is a set to use when registering /dev/mvfs. */
-struct block_device_operations vnlayer_device_ops = {
-        .open = &vnlayer_blkdev_open,
-};
-F_OPS_T vnlayer_device_file_ops = {
-};
-
-STATIC int
-vnlayer_blkdev_open(
-   INODE_T *inode,
-   FILE_T *file
-)
-{
-    if (inode)
-        inode->i_fop = &vnlayer_device_file_ops;
-    if (file) {
-        if (file->f_op)
-            fops_put(file->f_op);
-        file->f_op = fops_get(&vnlayer_device_file_ops);
-    }
-    return(0);
-}
-#endif
 
 int
 vnlayer_vtype_to_mode(
@@ -204,39 +173,14 @@ vnlayer_shadow_inode(
 #error not enough room in creds structure for Linux groups
 #endif
 
-/*
- * MDKI_NGROUPS may be larger than NGROUPS, so we make sure
- * only to copy at most NGROUPS from creds to the task struct.
- */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-STATIC void
-vnlayer_groups_cred_to_task(
-    struct task_struct *task,
-    CRED_T *cred
-)
-{
-    register int i;
-
-    LINUX_TASK_NGROUPS(task) = MIN(cred->cr_ngroups, LINUX_NGROUPS);
-    for (i = 0; i < MIN(LINUX_TASK_NGROUPS(task), MIN(LINUX_NGROUPS,MDKI_NGROUPS)); i++)
-        LINUX_TASK_GROUPS(task)[i] = cred->cr_groups[i];
-    for (; i < LINUX_NGROUPS; i++)
-        /* be clean and zap the rest of the structure */
-        LINUX_TASK_GROUPS(task)[i] = 0;
-}
-#endif
-
 mdki_boolean_t
 vnlayer_fsuid_save(
     vnlayer_fsuid_save_t *save_p,
     CRED_T *cred
 )
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
     mdki_boolean_t rv = FALSE;  /* Assume failure. */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    int my_ngroups = LINUX_TASK_NGROUPS(current);
-    gid_t *my_groups = LINUX_TASK_GROUPS(current);
-#else
     int my_ngroups;
     gid_t *my_groups;
     struct group_info *my_group_info;
@@ -264,11 +208,10 @@ vnlayer_fsuid_save(
     } else {
         my_groups = my_group_info->blocks[0];
     }
-#endif
     *save_p = NULL;             /* Assume failure. */
 
-    if (MDKI_CR_GET_UID(cred) != current->fsuid ||
-        MDKI_CR_GET_GID(cred) != current->fsgid ||
+    if (MDKI_CR_GET_UID(cred) != MDKI_GET_CURRENT_FSUID() ||
+        MDKI_CR_GET_GID(cred) != MDKI_GET_CURRENT_FSGID() ||
         cred->cr_ngroups != my_ngroups ||
         (my_ngroups > 0 &&
          BCMP(cred->cr_groups, my_groups, 
@@ -278,15 +221,6 @@ vnlayer_fsuid_save(
 
         save = KMEM_ALLOC(sizeof(*save), KM_SLEEP);
         if (save != NULL) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-            save->ngroups = my_ngroups;
-            /*
-             * We checked the sizes were the same at load time, see
-             * vnlayer_check_types().
-             */
-            BCOPY(my_groups, save->groups, sizeof(save->groups));
-            vnlayer_groups_cred_to_task(current, cred);
-#else
             struct group_info *gi_from_cred_p;
 
             /* Construct our own struct group_info from the creds we got. */
@@ -313,9 +247,8 @@ vnlayer_fsuid_save(
             } else {
                 put_group_info(gi_from_cred_p);
             }
-#endif
-            save->old_fsuid = current->fsuid;
-            save->old_fsgid = current->fsgid;
+            save->old_fsuid = MDKI_GET_CURRENT_FSUID();
+            save->old_fsgid = MDKI_GET_CURRENT_FSGID();
             current->fsuid = MDKI_CR_GET_UID(cred);
             current->fsgid = MDKI_CR_GET_GID(cred);
 
@@ -323,11 +256,53 @@ vnlayer_fsuid_save(
             rv = TRUE;
         }
     }
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
   done:                         /* Branching here assumes failure. */
     put_group_info(my_group_info);
-#endif
     return(rv);
+#else
+    struct cred *tmp_cred;
+    vnlayer_fsuid_save_t save = NULL;
+    struct group_info *gi_p;
+    struct group_info *new_gi_p;
+
+    gi_p = get_current_groups();
+
+    if (MDKI_CR_GET_UID(cred) != MDKI_GET_CURRENT_FSUID() ||
+        MDKI_CR_GET_GID(cred) != MDKI_GET_CURRENT_FSGID() ||
+        cred->cr_ngroups != gi_p->ngroups ||
+        (gi_p->ngroups > 0 &&
+         BCMP(cred->cr_groups, gi_p->blocks[0],
+              (cred->cr_ngroups * sizeof(cred->cr_groups[0]))) != 0))
+    {
+        save = KMEM_ALLOC(sizeof(*save), KM_SLEEP);
+        if (save == NULL) {
+            goto error;
+        }
+        tmp_cred = prepare_creds();
+        if (tmp_cred == NULL) {
+           goto error;
+        }
+        put_group_info(tmp_cred->group_info);
+        new_gi_p = groups_alloc(cred->cr_ngroups);
+        if (new_gi_p == NULL) {
+            abort_creds(tmp_cred);
+            goto error;
+        }
+        /* GID's are unsigned int (32 bits) for everybody, so bcopy is OK. */
+        BCOPY(cred->cr_groups, new_gi_p->blocks[0],
+                cred->cr_ngroups * sizeof(cred->cr_groups[0]));
+        set_groups(tmp_cred, new_gi_p);
+        tmp_cred->fsuid = MDKI_CR_GET_UID(cred);
+        tmp_cred->fsgid = MDKI_CR_GET_GID(cred);
+        save->saved_cred = override_creds(tmp_cred);
+        *save_p = save;
+        return TRUE;
+    }
+error:
+    if (save != NULL)
+        KMEM_FREE(save, sizeof(*save));
+    return FALSE;
+#endif
 }
 
 void
@@ -336,22 +311,13 @@ vnlayer_fsuid_restore(
 )
 {
     vnlayer_fsuid_save_struct_t *saved = *saved_p;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
     int err;
-#endif
 
     *saved_p = NULL;
     current->fsuid = saved->old_fsuid;
     current->fsgid = saved->old_fsgid;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    LINUX_TASK_NGROUPS(current) = saved->ngroups;
-    /*
-     * We checked the sizes were the same at load time, see
-     * vnlayer_check_types().
-     */
-    BCOPY(saved->groups, LINUX_TASK_GROUPS(current), sizeof(LINUX_TASK_GROUPS(current)));
-#else
     /* This will do a put on our group_info (which is current), which should
     ** free it. But it does a get on the saved info which will prevent
     ** it from being released later. So we will need to do another put
@@ -365,6 +331,8 @@ vnlayer_fsuid_restore(
      * the pointer to it so we had better free the memory too.
      */
     put_group_info(saved->saved_group_info);
+#else
+    revert_creds(saved->saved_cred);
 #endif
     KMEM_FREE(saved, sizeof(*saved));
 }
@@ -392,17 +360,13 @@ vnlayer_bogus_vnop(void)
 typedef int (*ino_create_fn_t)(
     struct inode *,
     struct dentry *,
-    int
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    , struct nameidata *
-#endif
+    int,
+    struct nameidata *
 );
 typedef struct dentry * (*ino_lookup_fn_t)(
     struct inode *,
-    struct dentry *
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    , struct nameidata *
-#endif
+    struct dentry *,
+    struct nameidata *
 );
 typedef int (*ino_link_fn_t)(
     struct dentry *,
@@ -431,11 +395,7 @@ typedef int (*ino_mknod_fn_t)(
     struct inode *,
     struct dentry *,
     int,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    int
-#else
     dev_t
-#endif
 );
 typedef int (*ino_rename_fn_t)(
     struct inode *,
@@ -458,15 +418,10 @@ typedef void (*ino_truncate_fn_t)(
 typedef int (*ino_permission_fn_t)(
     struct inode *,
     int
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     , struct nameidata *
 #endif
 );
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-typedef int (*ino_revalidate_fn_t)(
-    struct dentry *
-);
-#endif
 typedef int (*ino_setattr_fn_t)(
     struct dentry *,
     struct iattr *
@@ -478,9 +433,6 @@ typedef int (*ino_getattr_fn_t)(
 
 IN_OPS_T vnlayer_clrvnode_iops = {
     .permission = (ino_permission_fn_t)&vnlayer_bogus_op,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    .revalidate = (ino_revalidate_fn_t)&vnlayer_bogus_op,
-#endif
     .setattr = (ino_setattr_fn_t)&vnlayer_bogus_op,
     .create = (ino_create_fn_t)&vnlayer_bogus_op,
     .lookup = (ino_lookup_fn_t)&vnlayer_bogus_op,
@@ -601,10 +553,8 @@ F_OPS_T vnlayer_clrvnode_fops = {
 };
 
 typedef int (*asop_writepage_fn_t)(
-    struct page *
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    , struct writeback_control *
-#endif
+    struct page *,
+    struct writeback_control *
 );
 typedef int (*asop_readpage_fn_t)(
     struct file *,
@@ -619,7 +569,6 @@ typedef void (*asop_sync_page_fn_t)(
     struct page *
 );
 #endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 typedef int (*asop_writepages_fn_t)(
     struct address_space *,
     struct writeback_control *
@@ -633,7 +582,7 @@ typedef int (*asop_readpages_fn_t)(
     struct list_head *pages,
     unsigned nr_pages
 );
-#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
 typedef int (*asop_prepare_write_fn_t)(
     struct file *,
     struct page *,
@@ -646,21 +595,30 @@ typedef int (*asop_commit_write_fn_t)(
     unsigned,
     unsigned
 );
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-typedef int (*asop_bmap_fn_t)(
-    struct address_space *,
-    long
-);
-typedef int (*asop_flushpage_fn_t)(
-    struct page *,
-    unsigned long
-);
 #else
+typedef int (*asop_write_begin_fn_t)(
+    struct file *,
+    struct address_space *mapping,
+    loff_t pos,
+    unsigned len,
+    unsigned flags,
+    struct page **pagep,
+    void **fsdata
+);
+typedef int (*asop_write_end_fn_t)(
+    struct file *,
+    struct address_space *mapping,
+    loff_t pos,
+    unsigned len,
+    unsigned copied,
+    struct page *page,
+    void *fsdata
+);
+#endif
 typedef sector_t (*asop_bmap_fn_t)(
     struct address_space *,
     sector_t
 );
-#endif
 typedef int (*asop_releasepage_fn_t)(
     struct page *,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
@@ -669,15 +627,6 @@ typedef int (*asop_releasepage_fn_t)(
     gfp_t
 #endif
 );
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-typedef int (*asop_direct_IO_fn_t)(
-    int,
-    struct file *,
-    struct kiobuf *,
-    unsigned long,
-    int
-);
-#else /* 2.6.0 or later */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
 typedef int (*asop_invalidatepage_fn_t)(
     struct page *,
@@ -696,25 +645,25 @@ typedef ssize_t (*asop_direct_IO_fn_t)(
     loff_t,
     unsigned long
 );
-#endif /* 2.4 or 2.6 */
 
 struct address_space_operations vnlayer_clrvnode_asops = {
     .writepage = (asop_writepage_fn_t) &vnlayer_bogus_op,
     .readpage = (asop_readpage_fn_t) &vnlayer_bogus_op,
     .sync_page = (asop_sync_page_fn_t) &vnlayer_bogus_op,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     .writepages = (asop_writepages_fn_t) &vnlayer_bogus_op,
     .set_page_dirty = (asop_set_page_dirty_fn_t) &vnlayer_bogus_op,
     .readpages = (asop_readpages_fn_t) &vnlayer_bogus_op,
-#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
     .prepare_write = (asop_prepare_write_fn_t) &vnlayer_bogus_op,
     .commit_write = (asop_commit_write_fn_t) &vnlayer_bogus_op,
+#else
+    .write_begin = (asop_write_begin_fn_t) &vnlayer_bogus_op,
+    .write_end = (asop_write_end_fn_t) &vnlayer_bogus_op,
+#endif
     .bmap = (asop_bmap_fn_t) &vnlayer_bogus_op,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     .invalidatepage = (asop_invalidatepage_fn_t) &vnlayer_bogus_op,
     .releasepage = (asop_releasepage_fn_t) &vnlayer_bogus_op,
     .direct_IO = (asop_direct_IO_fn_t) &vnlayer_bogus_op,
-#endif
 };
 
 atomic_t vnlayer_clrvnode_count = ATOMIC_INIT(0);
@@ -854,10 +803,14 @@ vnlayer_linux_vprintf(
      * standard).  We use an estimated fixed buffer size.
      */
     buf = mdki_linux_kmalloc(PRINTF_BUFSZ, KM_SLEEP);
-    buf[PRINTF_BUFSZ-1] = '\0';
-    vsnprintf(buf, PRINTF_BUFSZ-1, fmt, ap);
-    printk(buf);
-    mdki_linux_kfree(buf, PRINTF_BUFSZ);
+    if (buf != NULL) {
+        buf[PRINTF_BUFSZ-1] = '\0';
+        vsnprintf(buf, PRINTF_BUFSZ-1, fmt, ap);
+        printk(buf);
+        mdki_linux_kfree(buf, PRINTF_BUFSZ);
+    } else {
+        printk("vnlayer_linux_vprintf: No memory for vsnprintf, format string is \"%s\"\n", fmt);
+    }
     return;
 }
 
@@ -963,24 +916,31 @@ vnlayer_make_temp_fs_struct(void)
     new_fs = mdki_linux_kmalloc(sizeof(*new_fs), KM_SLEEP);
     if (new_fs == NULL)
         return(new_fs);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
     atomic_set(&new_fs->count, 1);
+#else
+    new_fs->in_exec = 0;
+    new_fs->users = 0;
+#endif
     rwlock_init(&new_fs->lock);
     read_lock(&current->fs->lock);
     new_fs->umask = current->fs->umask;
-    new_fs->root = dget(vnlayer_sysroot_dentry);
-    new_fs->pwd = dget(current->fs->pwd);
+    MDKI_FS_SET_ROOTDENTRY(new_fs, dget(vnlayer_sysroot_dentry));
+    MDKI_FS_SET_PWDDENTRY(new_fs, dget(MDKI_FS_PWDDENTRY(current->fs)));
+    MDKI_FS_SET_ROOTMNT(new_fs, mntget(vnlayer_sysroot_mnt));
+    MDKI_FS_SET_PWDMNT(new_fs, mntget(MDKI_FS_PWDMNT(current->fs)));
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     if (current->fs->altroot) {
         new_fs->altroot = dget(current->fs->altroot);
     } else {
         new_fs->altroot = NULL;
     }
-    new_fs->rootmnt = mntget(vnlayer_sysroot_mnt);
-    new_fs->pwdmnt = mntget(current->fs->pwdmnt);
     if (current->fs->altrootmnt) {
         new_fs->altrootmnt = mntget(current->fs->altrootmnt);
     } else {
         new_fs->altrootmnt = NULL;
     }
+#endif
     read_unlock(&current->fs->lock);
     return(new_fs);
 }
@@ -992,16 +952,18 @@ vnlayer_make_temp_fs_struct(void)
 extern void
 vnlayer_free_temp_fs_struct(struct fs_struct *fs)
 {
-    dput(fs->root);
-    dput(fs->pwd);
+    dput(MDKI_FS_ROOTDENTRY(fs));
+    dput(MDKI_FS_PWDDENTRY(fs));
+    MDKI_MNTPUT(MDKI_FS_ROOTMNT(fs));
+    MDKI_MNTPUT(MDKI_FS_PWDMNT(fs));
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     if (fs->altroot) {
         dput(fs->altroot);
     }
-    MDKI_MNTPUT(fs->rootmnt);
-    MDKI_MNTPUT(fs->pwdmnt);
     if (fs->altrootmnt) {
         MDKI_MNTPUT(fs->altrootmnt);
     }
+#endif
     mdki_linux_kfree(fs, sizeof(*fs));
     return;
 }
@@ -1021,27 +983,27 @@ vnlayer_swap_task_fs(
     return rv;
 }
 
-/* This function will get a dentry from a given inode.  In Linux 2.4,
- * we will get the dcache_lock while manipulating the lists.  d_find_alias
+/* This function will get a dentry from a given inode.
+ * We will get the dcache_lock while manipulating the lists.  d_find_alias
  * does almost what we want, but it expects there to be multiple dentries.
  * This is not the case for file-system roots, so we will provide our own
  * function.
  * The dentry will be returned with its count incremented.
+ * Must be called with dcache_lock acquired.
  */
 
 extern struct dentry *
-vnlayer_inode2dentry_internal(
+vnlayer_inode2dentry_internal_no_lock(
     struct inode *inode,
     struct dentry *parent,
     struct qstr *name,
-    struct dentry_operations *ops
+    const struct dentry_operations *ops
 )
 {
     struct dentry *found = NULL;
     struct list_head *le;
     mdki_boolean_t want_connected = TRUE;
 
-    spin_lock(&dcache_lock);
     if (!list_empty(&inode->i_dentry)) {
       retry:
         list_for_each(le, &inode->i_dentry) {
@@ -1051,7 +1013,17 @@ vnlayer_inode2dentry_internal(
                 found = NULL;
                 continue;
             }
-            if (parent != NULL && found->d_parent != parent) {
+            /*
+             * The dentry's parent needs to satisfy the following
+             * criteria:
+             * 1) caller does not care about dentry's parent, or
+             * 2) found dentry has the same parent informed by the caller, or
+             * 3) we are accepting disconnected dentries and we found 
+             *    an IS_ROOT disconnected dentry.
+             */
+            if (!(parent == NULL || found->d_parent == parent ||
+                     (!want_connected && IS_ROOT(found) &&
+                     (found->d_flags & NFSD_DCACHE_DISCON)))) {
                 /* must match requested parent, if any */
                 found = NULL;
                 continue;
@@ -1069,7 +1041,7 @@ vnlayer_inode2dentry_internal(
                     continue;
                 }
                 /* don't accept it if it's not hashed (it wants to go away) */
-                if (DENT_HASH_IS_EMPTY(found)) {
+                if (d_unhashed(found)) {
                     found = NULL;
                     continue;
                 }
@@ -1109,6 +1081,24 @@ vnlayer_inode2dentry_internal(
             goto retry;
         }
     }
+    return(found);
+}
+
+/*
+ * Just calls vnlayer_inode2dentry_internal_no_lock with dcache_lock acquired.
+ */
+extern struct dentry *
+vnlayer_inode2dentry_internal(
+    struct inode *inode,
+    struct dentry *parent,
+    struct qstr *name,
+    const struct dentry_operations *ops
+)
+{
+    struct dentry *found;
+
+    spin_lock(&dcache_lock);
+    found = vnlayer_inode2dentry_internal_no_lock(inode, parent, name, ops);
     spin_unlock(&dcache_lock);
     return(found);
 }
@@ -1120,7 +1110,7 @@ vnlayer_inode2dentry_internal(
 struct inode *
 vnlayer_get_ucdir_inode(void)
 {
-    return(current->fs->pwd->d_inode);
+    return(MDKI_FS_PWDDENTRY(current->fs)->d_inode);
 }
 
 /*
@@ -1130,7 +1120,7 @@ vnlayer_get_ucdir_inode(void)
 struct inode *
 vnlayer_get_urdir_inode(void)
 {
-    return(current->fs->root->d_inode);
+    return(MDKI_FS_ROOTDENTRY(current->fs)->d_inode);
 }
 
 /* VNLAYER_GET_ROOT_MNT - Get the root vfsmnt structure for a process
@@ -1138,7 +1128,7 @@ vnlayer_get_urdir_inode(void)
 struct vfsmount *
 vnlayer_get_root_mnt(void)
 {
-    return(mntget(current->fs->rootmnt));
+    return(mntget(MDKI_FS_ROOTMNT(current->fs)));
 }
 
 /*
@@ -1148,7 +1138,7 @@ vnlayer_get_root_mnt(void)
 struct dentry *
 vnlayer_get_root_dentry(void)
 {
-    return(current->fs->root);
+    return(MDKI_FS_ROOTDENTRY(current->fs));
 }
 
 #ifdef MDKI_SET_PROC_RDIR
@@ -1228,4 +1218,4 @@ mdki_vsnprintf(
 {
     return vsnprintf(str, limit, fmt, ap);
 }
-static const char vnode_verid_mvfs_linux_utils_c[] = "$Id:  d8ddce93.541d11dd.90ce.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_linux_utils_c[] = "$Id:  f8c7240e.d6d511df.8121.00:01:83:0a:3b:75 $";

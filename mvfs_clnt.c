@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2007. */
+/* * (C) Copyright IBM Corporation 1991, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,10 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_clnt.c */
+
 /*
  * This is the MFS's client interface to the view server.  It encapsulates
  * the core of the calls in the view RPC trait.  You will find
@@ -77,10 +78,11 @@
  */
 
 int
-mfs_clnt_getattr_mnp(mnp, vfsp, cred)
-register mfs_mnode_t *mnp;
-VFS_T *vfsp;
-CRED_T *cred;
+mfs_clnt_getattr_mnp(
+    register mfs_mnode_t *mnp,
+    VFS_T *vfsp,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw;
@@ -96,12 +98,13 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->fhandle = mnp->mn_vob.vfh;
 
     error = mfs_vwcall(vw, vfsp, VIEW_GETATTR,
 		(xdrproc_t) xdr_view_getattr_req_t,  (caddr_t)rap, 
-		(xdrproc_t) xdr_view_getattr_reply_t, (caddr_t)rrp, cred);
+		(xdrproc_t) xdr_view_getattr_reply_t, (caddr_t)rrp,
+                 MVFS_CD2CRED(cd));
 
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
@@ -111,7 +114,7 @@ CRED_T *cred;
          * and store in mnode
          */
 
-        MVFS_CREDUTL_SIDS_TO_NATIVE_IDS(mnp, cred);
+        MVFS_CREDUTL_SIDS_TO_NATIVE_IDS(mnp, MVFS_CD2CRED(cd));
 
 	mnp->mn_vob.lvut = rrp->lvut;
         /*
@@ -150,9 +153,10 @@ CRED_T *cred;
 /* MFS_CLNT_GETATTR - RPC to the view to get attrs */
 
 int
-mfs_clnt_getattr(vp, cred)
-register VNODE_T *vp;
-CRED_T *cred;
+mfs_clnt_getattr(
+    register VNODE_T *vp,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw;
@@ -170,7 +174,7 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->fhandle = MFS_VFH(vp);
 
     /* 
@@ -182,8 +186,9 @@ CRED_T *cred;
 
     MLOCK(mnp);
     error = mfs_vwcall(vw, vp->v_vfsp, VIEW_GETATTR,
-		(xdrproc_t) xdr_view_getattr_req_t,  (caddr_t)rap, 
-		(xdrproc_t) xdr_view_getattr_reply_t, (caddr_t)rrp, cred);
+                       (xdrproc_t) xdr_view_getattr_req_t,  (caddr_t)rap, 
+                       (xdrproc_t) xdr_view_getattr_reply_t, (caddr_t)rrp,
+                        MVFS_CD2CRED(cd));
 
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
@@ -206,7 +211,7 @@ CRED_T *cred;
             rrp->vstat.fstat.size += mfs_hmsuffix_len();
         }
 
-	(void) mfs_attrcache(vp, &rrp->vstat, 0, cred);
+	(void) mfs_attrcache(vp, &rrp->vstat, 0, MVFS_CD2CRED(cd));
 	/* cache the LVUT too */
 	mvfs_set_ac_timeout(mnp, vp->v_vfsp, 0, TRUE, TRUE);
 	/*
@@ -244,7 +249,7 @@ mvfs_clnt_setattr_locked(
     u_long xmode,          /* extra (special) fmode bits */
     int bhflag,            /* Which build handle to use */
     int wcred,             /* We think cred is a "writer's" cred */
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     u_int saflag           /* Set Attr Flag */
 )
 {
@@ -267,13 +272,14 @@ mvfs_clnt_setattr_locked(
 
     /* Change attributes in the view database (if view object) */
 
+
     /* Set up request */
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
     if (bhflag == MFS_USE_NULLBH) {
 	rap->hdr.build_handle = mfs_null_bh;
     } else {
-        rap->hdr.build_handle = MFS_BH();
+        rap->hdr.build_handle = MFS_BH(cd);
     }
     rap->fhandle = MFS_VFH(vp);
 
@@ -304,7 +310,8 @@ mvfs_clnt_setattr_locked(
     if (mnp->mn_hdr.realvp) {
 	ASSERT(MVFS_ISVTYPE(vp, VREG));
         if ( wcred || 
-             (cred && (MVFS_COMPARE_MNODE_UID(cred, mnp->mn_vob.user_id))) ) 
+             (MVFS_CD2CRED(cd) &&
+             (MVFS_COMPARE_MNODE_UID(MVFS_CD2CRED(cd), mnp->mn_vob.user_id))) ) 
         {
 	    if ((mask & AT_SIZE) == 0 &&
 		  VATTR_GET_SIZE(&mnp->mn_vob.cleartext.va) != 
@@ -380,7 +387,8 @@ mvfs_clnt_setattr_locked(
 
     error = mfs_vwcall(vw, vp->v_vfsp, VIEW_SETATTR, 
 		(xdrproc_t) xdr_view_setattr_req_t,   (caddr_t)rap, 
-		(xdrproc_t) xdr_view_setattr_reply_t, (caddr_t)rrp, cred);
+		(xdrproc_t) xdr_view_setattr_reply_t, (caddr_t)rrp,
+                 MVFS_CD2CRED(cd));
 
     if (!error) {
         /*
@@ -421,7 +429,7 @@ mvfs_clnt_setattr_locked(
 		      rrp->vstat.fstat.ctime.tv_sec,
 		      rrp->vstat.fstat.ctime.tv_usec, wcred));
 #endif
-        (void) mfs_attrcache(vp, &rrp->vstat, 0, cred);
+        (void) mfs_attrcache(vp, &rrp->vstat, 0, MVFS_CD2CRED(cd));
 	/* Clear bits if we have sync'd (or set) the mtime */
 	if (rap->sattr.mask != 0)
 	    /* any change will have set the ctime in the reply */
@@ -443,11 +451,12 @@ mvfs_clnt_setattr_locked(
  */
 
 int
-mfs_clnt_readlink(vp, lnkbuf, lnklenp, cred)
-register VNODE_T *vp;
-char *lnkbuf;
-int *lnklenp;
-CRED_T *cred;
+mfs_clnt_readlink(
+    register VNODE_T *vp,
+    mfs_pn_char_t *lnkbuf,
+    int *lnklenp,
+    CALL_DATA_T *cd
+)
 {
     VNODE_T *vw;
     int error;
@@ -466,14 +475,15 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->fhandle = MFS_VFH(vp);
     rap->max_text_size = MAXPATHLEN;
     rrp->text = lnkbuf;
 
     error = mfs_vwcall(vw, vp->v_vfsp, VIEW_READLINK,
 		(xdrproc_t) xdr_view_readlink_req_t,   (caddr_t)rap, 
-		(xdrproc_t) xdr_view_readlink_reply_t, (caddr_t)rrp, cred);
+		(xdrproc_t) xdr_view_readlink_reply_t, (caddr_t)rrp,
+                MVFS_CD2CRED(cd));
 
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
@@ -498,15 +508,18 @@ CRED_T *cred;
  */
 
 int
-mfs_clnt_remove(dvp, nm, bhflag, sleep, cred)
-register VNODE_T *dvp;
-char *nm;
-int bhflag;
-int sleep;
-CRED_T *cred;
+mfs_clnt_remove(
+    register VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    int bhflag,
+    int sleep,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw;
+    mfs_mnode_t *mnp;
+    struct timeval dtm_save;
     HEAP_ALLOC2(view_remove_req_t,rap,view_remove_reply_t,rrp);
 
     vw = MFS_VIEW(dvp);
@@ -526,37 +539,61 @@ CRED_T *cred;
     if (bhflag == MFS_USE_NULLBH) {
 	rap->hdr.build_handle = mfs_null_bh;
     } else {
-        rap->hdr.build_handle = MFS_BH();
+        rap->hdr.build_handle = MFS_BH(cd);
     }
     rap->file.d_fhandle = MFS_VFH(dvp);
     rap->file.name = nm;
 
+    mnp = VTOM(dvp);
     if (sleep) {
-	MLOCK(VTOM(dvp));
+	MLOCK(mnp);
     } else {
-	if (!MLOCK_NOWAIT(VTOM(dvp))) {
+	if (!MLOCK_NOWAIT(mnp)) {
             HEAP_FREE(rap);
             HEAP_FREE(rrp);
 	    return EAGAIN;
         }
     }
 	
-    rap->dir_dtm = VTOM(dvp)->mn_vob.attr.fstat.mtime;
+    dtm_save = rap->dir_dtm = mnp->mn_vob.attr.fstat.mtime;
 
-    mfs_dncremove(dvp, nm, cred);	/* Remove NC ent before call to view */
+    mfs_dncremove(dvp, nm, MVFS_CD2CRED(cd));	/* Remove NC ent before call to view */
 
     error = mfs_vwcall(vw, dvp->v_vfsp, VIEW_REMOVE,
 		(xdrproc_t) xdr_view_remove_req_t,   (caddr_t)rap,
-		(xdrproc_t) xdr_view_remove_reply_t, (caddr_t)rrp, cred);
+		(xdrproc_t) xdr_view_remove_reply_t, (caddr_t)rrp,
+                 MVFS_CD2CRED(cd));
 
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
 	(void) mfs_attrcache(dvp, &rrp->dir_mod.dvstat, 
-			rrp->dir_mod.dir_dtm_valid, cred);
+			rrp->dir_mod.dir_dtm_valid, MVFS_CD2CRED(cd));
+        /* 
+         * When the directory modification time stamp changes due to the view
+         * RPC, rddir cache would normally get flushed as a side effect of 
+         * mfs_attrcache() call, via mfs_ac_modevents()->mvfs_rddir_cache_flush().
+         * As remove vnodeop renders the parent's rddir cache stale it is
+         * flushed here explicitly if mfs_attrcache() has not taken care of it.
+         * If rddir cache for this directory mnode has already been flushed due
+         * to the side effect mentioned above, then all the blocks including the
+         * first one are marked invalid and call to mvfs_rddir_cache_flush() is 
+         * unnecessary.  
+         */
+        if (mnp->mn_vob.rddir_cache &&
+                (mnp->mn_vob.rddir_cache->entries[0]).valid) {
+            mvfs_log(MFS_LOG_DEBUG,
+                    "remove:flushing rddir explicitly:vp=%"KS_FMT_PTR_T
+                    ", nm=%s; mtime: before view RPC=%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X" after view RPC=0x%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X"\n", dvp, nm, dtm_save.tv_sec, 
+                    dtm_save.tv_usec, rrp->dir_mod.dvstat.fstat.mtime.tv_sec,
+                    rrp->dir_mod.dvstat.fstat.mtime.tv_usec);
+            mvfs_rddir_cache_flush(mnp); 
+        }
     } else {
         MFS_CHK_STALE(error, dvp);
     }
-    MUNLOCK(VTOM(dvp));
+    MUNLOCK(mnp);
 
     HEAP_FREE(rap);
     HEAP_FREE(rrp);
@@ -568,11 +605,12 @@ CRED_T *cred;
  */
 
 int
-mfs_clnt_lookup(dvp, nm, vpp, cred)
-VNODE_T *dvp;
-char *nm;
-VNODE_T **vpp;
-CRED_T *cred;
+mfs_clnt_lookup(
+    VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+)
 {
     VNODE_T *vw;
     mfs_mnode_t *mnp;
@@ -582,7 +620,6 @@ CRED_T *cred;
     struct timeval mtime;
     int isdotdot = 0;
     int pri;
-    SPL_T s;
     u_int dncflags;
     int view_op = VIEW_LOOKUP;
     HEAP_ALLOC2(view_lookup_req_t,rap,view_lookup_reply_t,rrp);
@@ -658,7 +695,6 @@ CRED_T *cred;
 	hm_warp_opt = VIEW_HM_WARP_OPT_VERSION_WARP;
     }
 	
-
     /* 
      * Check for various cases.  
      * Optimize by only doing this if first char is "." 
@@ -693,19 +729,45 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->d_fhandle = MFS_VFH(dvp);
     rap->hm_warp_opt = hm_warp_opt;
     rap->residual_pname = "";	/* FIXME: Residual pathname, none for now ... */
+
+    /* RATLC01031475: Downrev view support.  For 7.1 clients to connect
+     * to 6.0 view_servers, the view_lookup RPC is the key difference.
+     * This change is accompanied by changes in libatriaview to allow setview 
+     * command to succeed.
+     */
+    if (VTOM(vw)->mn_view.downrev_view) 
+        view_op = VIEW_LOOKUP_V6;
 
     mnp=VTOM(dvp);
     MLOCK(mnp);
 
     error = mfs_vwcall(vw, dvp->v_vfsp, view_op,
 	(xdrproc_t) xdr_view_lookup_req_t,   (caddr_t)rap, 
-	(xdrproc_t) xdr_view_lookup_reply_t, (caddr_t)rrp, cred);
+	(xdrproc_t) xdr_view_lookup_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
 
-    /* FIXME:  (maybe) handle mismatch of VIEW_LOOKUP to an old view server? */
+    /* Downrev view support: RPC error that comes back from the unknown 
+     * RPC varies a bit between platforms.  
+     */
+    if (error) mvfs_log(MFS_LOG_DEBUG,"view_lookup RPC mismatch %s\n",mfs_strerr(error));  
+    if (error == EIO) {
+        /* Expect this error on the first lookup to a v6 view, and try v6
+         * lookup.  If it succeeds, set flag so subsequent calls will succeed 
+         * on their first RPC.  But if this also fails, treat as a true error.
+         */
+        error = mfs_vwcall(vw, dvp->v_vfsp, VIEW_LOOKUP_V6,
+            (xdrproc_t) xdr_view_lookup_req_t,   (caddr_t)rap,
+            (xdrproc_t) xdr_view_lookup_reply_t, (caddr_t)rrp, 
+            MVFS_CD2CRED(cd));
+        /* Error or not, fall through to normal processing.  */
+        if (!error) {
+            VTOM(vw)->mn_view.downrev_view = 1;
+            mvfs_log(MFS_LOG_INFO, "Marking v6 view %s\n", mfs_vw2nm(vw));
+        }
+    } 
 
     if (hm) {
 	ASSERT(rap->name != nm);
@@ -730,7 +792,7 @@ CRED_T *cred;
 		VN_HOLD(dvp);
 	        mfs_dncadd(dvp, 
                            rrp->bh_invariant ? MFS_DNC_BHINVARIANT : 0, 
-                           nm, *vpp, cred);
+                           nm, *vpp, MVFS_CD2CRED(cd));
 		MUNLOCK(mnp);
 		mvfs_log(MFS_LOG_INFO, 
 			"vw lookup: vw=%s vob=%s dbid=0x%x nm=%s hardlink to '.'!\n", 
@@ -787,7 +849,8 @@ CRED_T *cred;
             rrp->vstat.fstat.size += mfs_hmsuffix_len();
         }
 
-	error = mfs_makevobnode(&rrp->vstat, &rrp->lvut, vw, &rrp->fhandle, dvp->v_vfsp, cred, vpp);
+	error = mfs_makevobnode(&rrp->vstat, &rrp->lvut, vw, &rrp->fhandle,
+                                dvp->v_vfsp, MVFS_CD2CRED(cd), vpp);
 
         if (isdotdot) {	
 	    MLOCK(mnp);	/* Must relock the dir */
@@ -802,26 +865,26 @@ CRED_T *cred;
 		        MFS_TVEQ(mtime, mnp->mn_vob.attr.fstat.mtime)) {
 		    mfs_dncadd(dvp, 
                                rrp->bh_invariant ? MFS_DNC_BHINVARIANT : 0, 
-                               nm, *vpp, cred);
+                               nm, *vpp, MVFS_CD2CRED(cd));
 	        } else {
 		    /* Count this as an add race. */
-		    BUMPSTAT(mfs_dncstat.dnc_addunlock, s);
-                    BUMPVSTATV(vw,dncstat.dnc_addunlock, s);
+		    BUMPSTAT(mfs_dncstat.dnc_addunlock);
+                    BUMPVSTATV(vw,dncstat.dnc_addunlock);
 	        }
 	    }
 	} else {	/* Normal lookups */
             if (!error) {
 	        mfs_dncadd(dvp, 
                            rrp->bh_invariant ? MFS_DNC_BHINVARIANT : 0, 
-                           nm, *vpp, cred);
+                           nm, *vpp, MVFS_CD2CRED(cd));
 		switch (MVFS_GETVTYPE(*vpp)) {
 		case VDIR:
-		    BUMPSTAT(mfs_dncstat.dnc_missdir, s);
-                    BUMPVSTATV(vw,dncstat.dnc_missdir,s);
+		    BUMPSTAT(mfs_dncstat.dnc_missdir);
+                    BUMPVSTATV(vw,dncstat.dnc_missdir);
 		    break;
 		case VREG:
-		    BUMPSTAT(mfs_dncstat.dnc_missreg, s);
-                    BUMPVSTATV(vw,dncstat.dnc_missreg,s);
+		    BUMPSTAT(mfs_dncstat.dnc_missreg);
+                    BUMPVSTATV(vw,dncstat.dnc_missreg);
 		    break;
 		  default:
 		    break;
@@ -849,9 +912,9 @@ CRED_T *cred;
 	if ((rrp->name_state & VIEW_NAME_STATE_NOT_VISIBLE) ==
 	    VIEW_NAME_STATE_ENOTENT)
 	    dncflags |= MFS_DNC_NOTINDIR;
-	mfs_dncadd(dvp, dncflags, nm, NULL, cred);
-	BUMPSTAT(mfs_dncstat.dnc_missnoent, s);
-	BUMPVSTATV(vw,dncstat.dnc_missnoent,s);
+	mfs_dncadd(dvp, dncflags, nm, NULL, MVFS_CD2CRED(cd));
+	BUMPSTAT(mfs_dncstat.dnc_missnoent);
+	BUMPVSTATV(vw,dncstat.dnc_missnoent);
 	/* 
          * Log ENOENT lookup if debug, or at DEBUG level if
 	 * the underlying error is "no version selected"
@@ -879,16 +942,19 @@ CRED_T *cred;
  */
 
 int
-mfs_clnt_create(dvp, nm, va, vpp, cred)
-VNODE_T *dvp;
-char *nm;
-VATTR_T *va;
-VNODE_T **vpp;
-CRED_T *cred;
+mfs_clnt_create(
+    VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    VATTR_T *va,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+)
 {
     int error;
     int xerr;
     VNODE_T *vw;
+    mfs_mnode_t *mnp;
+    struct timeval dtm_save;
     HEAP_ALLOC2(view_create_req_t,rap,view_create_reply_t,rrp);
 
     ASSERT(MFS_ISVOB(VTOM(dvp)));
@@ -907,7 +973,7 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->create.d_fhandle = MFS_VFH(dvp);
     rap->create.name = nm;
 
@@ -921,23 +987,46 @@ CRED_T *cred;
     }
     rap->max_text_size = MAXPATHLEN;
 
-    MLOCK(VTOM(dvp));
-    rap->dir_dtm = VTOM(dvp)->mn_vob.attr.fstat.mtime;
+    mnp = VTOM(dvp);
+    MLOCK(mnp);
+    dtm_save = rap->dir_dtm = mnp->mn_vob.attr.fstat.mtime;
 
     error = mfs_vwcall(vw, dvp->v_vfsp, VIEW_CREATE,
 	(xdrproc_t) xdr_view_create_req_t,   (caddr_t)rap, 
-	(xdrproc_t) xdr_view_create_reply_t, (caddr_t)rrp, cred);
+	(xdrproc_t) xdr_view_create_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
 
     MFS_ATTRINVAL(dvp);
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
 	(void) mfs_attrcache(dvp, &rrp->dir_mod.dvstat, 
-			rrp->dir_mod.dir_dtm_valid, cred);
+			rrp->dir_mod.dir_dtm_valid, MVFS_CD2CRED(cd));
+        /* 
+         * When the directory modification time stamp changes due to the view
+         * RPC, rddir cache would normally get flushed as a side effect of 
+         * mfs_attrcache() call, via mfs_ac_modevents()->mvfs_rddir_cache_flush().
+         * As create vnodeop renders the parent's rddir cache stale it is
+         * flushed here explicitly if mfs_attrcache() has not taken care of it.
+         * If rddir cache for this directory mnode has already been flushed due
+         * to the side effect mentioned above, then all the blocks including the
+         * first one are marked invalid and call to mvfs_rddir_cache_flush() is 
+         * unnecessary.  
+         */
+        if (mnp->mn_vob.rddir_cache &&
+                (mnp->mn_vob.rddir_cache->entries[0]).valid) {
+            mvfs_log(MFS_LOG_DEBUG,
+                    "create:flushing rddir explicitly:vp=%"KS_FMT_PTR_T
+                    ", nm=%s; mtime: before view RPC=%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X" after view RPC=0x%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X"\n", dvp, nm, dtm_save.tv_sec, 
+                    dtm_save.tv_usec, rrp->dir_mod.dvstat.fstat.mtime.tv_sec,
+                    rrp->dir_mod.dvstat.fstat.mtime.tv_usec);
+            mvfs_rddir_cache_flush(mnp); 
+        }
         error = mfs_makevobnode(&rrp->vstat,0,vw,&rrp->fhandle,
-				dvp->v_vfsp, cred, vpp);
+				dvp->v_vfsp, MVFS_CD2CRED(cd), vpp);
 	if (!error) {
 	    /* Creates must be in view, and these are BH invariant */
-	    mfs_dncadd(dvp, MFS_DNC_BHINVARIANT, nm, *vpp, cred);
+	    mfs_dncadd(dvp, MFS_DNC_BHINVARIANT, nm, *vpp, MVFS_CD2CRED(cd));
 	    MLOCK(VTOM(*vpp));
 	    /* Creates can't be in VOB */
 	    VTOM(*vpp)->mn_vob.cleartext.isvob = 0;
@@ -951,7 +1040,7 @@ CRED_T *cred;
 	MFS_CHK_STALE(error, dvp);
     }
 
-    MUNLOCK(VTOM(dvp));
+    MUNLOCK(mnp);
 
     KMEM_FREE(rrp->text, MAXPATHLEN);
 
@@ -965,14 +1054,17 @@ CRED_T *cred;
  */
 
 int
-mfs_clnt_link(vp, tdvp, tnm, cred)
-register VNODE_T *vp;
-VNODE_T *tdvp;
-char *tnm;
-CRED_T *cred;
+mfs_clnt_link(
+    register VNODE_T *vp,
+    VNODE_T *tdvp,
+    mfs_pn_char_t *tnm,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw;
+    mfs_mnode_t *tdmnp;
+    struct timeval dtm_save;
     HEAP_ALLOC2(view_link_req_t,rap,view_link_reply_t,rrp);
 
     ASSERT(MFS_ISVOB(VTOM(vp)));
@@ -991,30 +1083,53 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->fhandle = MFS_VFH(vp);
     rap->to.d_fhandle = MFS_VFH(tdvp);
     rap->to.name = tnm;
 
-    MLOCK(VTOM(tdvp));
-    rap->dir_dtm = VTOM(tdvp)->mn_vob.attr.fstat.mtime;
+    tdmnp = VTOM(tdvp);
+    MLOCK(tdmnp);
+    dtm_save = rap->dir_dtm = tdmnp->mn_vob.attr.fstat.mtime;
 
     error = mfs_vwcall(vw, vp->v_vfsp, VIEW_LINK,
 	(xdrproc_t) xdr_view_link_req_t,   (caddr_t)rap, 
-	(xdrproc_t) xdr_view_link_reply_t, (caddr_t)rrp, cred);
+	(xdrproc_t) xdr_view_link_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
 
     MFS_ATTRINVAL(vp);		/* link count changed */
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
 	(void) mfs_attrcache(tdvp, &rrp->dir_mod.dvstat, 
-			rrp->dir_mod.dir_dtm_valid, cred);
+			rrp->dir_mod.dir_dtm_valid, MVFS_CD2CRED(cd));
+        /* 
+         * When the directory modification time stamp changes due to the view
+         * RPC, rddir cache would normally get flushed as a side effect of 
+         * mfs_attrcache() call, via mfs_ac_modevents()->mvfs_rddir_cache_flush().
+         * As link vnodeop renders the parent's rddir cache stale it is
+         * flushed here explicitly if mfs_attrcache() has not taken care of it.
+         * If rddir cache for this directory mnode has already been flushed due
+         * to the side effect mentioned above, then all the blocks including the
+         * first one are marked invalid and call to mvfs_rddir_cache_flush() is 
+         * unnecessary.  
+         */
+        if (tdmnp->mn_vob.rddir_cache &&
+                (tdmnp->mn_vob.rddir_cache->entries[0]).valid) {
+            mvfs_log(MFS_LOG_DEBUG,
+                    "link:flushing rddir explicitly:vp=%"KS_FMT_PTR_T
+                    ", nm=%s; mtime: before view RPC=%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X" after view RPC=0x%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X"\n", tdvp, tnm, dtm_save.tv_sec, 
+                    dtm_save.tv_usec, rrp->dir_mod.dvstat.fstat.mtime.tv_sec,
+                    rrp->dir_mod.dvstat.fstat.mtime.tv_usec);
+            mvfs_rddir_cache_flush(tdmnp); 
+        }
 	/* Link must be in view, and this is BH invariant */
-	mfs_dncadd(tdvp, MFS_DNC_BHINVARIANT, tnm, vp, cred);
+	mfs_dncadd(tdvp, MFS_DNC_BHINVARIANT, tnm, vp, MVFS_CD2CRED(cd));
     } else {
         MFS_CHK_STALE(error, vp);
         MFS_CHK_STALE(error, tdvp);
     }
-    MUNLOCK(VTOM(tdvp));
+    MUNLOCK(tdmnp);
 
     HEAP_FREE(rap);
     HEAP_FREE(rrp);
@@ -1026,15 +1141,19 @@ CRED_T *cred;
  */
 
 int
-mfs_clnt_rename(odvp, onm, tdvp, tnm, cred)
-VNODE_T *odvp;
-char *onm;
-VNODE_T *tdvp;
-char *tnm;
-CRED_T *cred;
+mfs_clnt_rename(
+    VNODE_T *odvp,
+    mfs_pn_char_t *onm,
+    VNODE_T *tdvp,
+    mfs_pn_char_t *tnm,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw;
+    mfs_mnode_t *tdmnp;
+    mfs_mnode_t *odmnp;
+    struct timeval odtm_save, tdtm_save;
     HEAP_ALLOC2(view_rename_req_t,rap,view_rename_reply_t,rrp);
 
     ASSERT(MFS_ISVOB(VTOM(odvp)));
@@ -1066,7 +1185,7 @@ CRED_T *cred;
     }
 	
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->from.d_fhandle = MFS_VFH(odvp);
     rap->from.name = onm;
     rap->to.d_fhandle = MFS_VFH(tdvp);
@@ -1075,36 +1194,74 @@ CRED_T *cred;
     /* We need to lock multiple objects.  To avoid deadlock
        enforce a known ordering on the locks. */
 
+    odmnp = VTOM(odvp);
+    tdmnp = VTOM(tdvp);
+
     if (odvp != tdvp) {
-        MLOCK2(VTOM(odvp), VTOM(tdvp));
+        MLOCK2(odmnp, tdmnp);
     } else {
-    	MLOCK(VTOM(odvp));
+    	MLOCK(odmnp);
     }
-    rap->dir_dtm = VTOM(tdvp)->mn_vob.attr.fstat.mtime;
+    tdtm_save = rap->dir_dtm = tdmnp->mn_vob.attr.fstat.mtime;
+    odtm_save = odmnp->mn_vob.attr.fstat.mtime;
 
     /* Dump name cache entries before we do the rename.
        Otherwise, we may inactivate an object that no longer
        exists when we do dump the name cache entries and the
        refcnt goes to zero (rename over an existing file) */
 
-    mfs_dncremove(odvp, onm, cred);
-    mfs_dncremove(tdvp, tnm, cred);
+    mfs_dncremove(odvp, onm, MVFS_CD2CRED(cd));
+    mfs_dncremove(tdvp, tnm, MVFS_CD2CRED(cd));
 
     error = mfs_vwcall(vw, odvp->v_vfsp, VIEW_RENAME, 
 	(xdrproc_t) xdr_view_rename_req_t,   (caddr_t)rap, 
-	(xdrproc_t) xdr_view_rename_reply_t, (caddr_t)rrp, cred);
+	(xdrproc_t) xdr_view_rename_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
 
     MFS_ATTRINVAL(odvp);	/* mod time changed */
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
 	(void) mfs_attrcache(tdvp, &rrp->dir_mod.dvstat, 
-				rrp->dir_mod.dir_dtm_valid, cred);
+                             rrp->dir_mod.dir_dtm_valid, MVFS_CD2CRED(cd));
+        /* 
+         * When the directory modification time stamp changes due to the view
+         * RPC, rddir cache would normally get flushed as a side effect of 
+         * mfs_attrcache() call, via mfs_ac_modevents()->mvfs_rddir_cache_flush().
+         * As rename vnodeop renders stale the rddir cache of the target parent 
+         * directory as well as the original parent directory, both are
+         * explicitly flushed here if mfs_attrcache() has not taken care of 
+         * them.  If rddir cache for the directory mnodes have already been 
+         * flushed due to the side effect mentioned above, then all the blocks
+         * including the first one are marked invalid and call to 
+         * mvfs_rddir_cache_flush() is unnecessary.  
+         */
+        if (tdmnp->mn_vob.rddir_cache &&
+                (tdmnp->mn_vob.rddir_cache->entries[0]).valid) {
+            mvfs_log(MFS_LOG_DEBUG,
+                    "rename:flushing target's rddir explicitly:vp=%"KS_FMT_PTR_T
+                    ", nm=%s; mtime: before view RPC=%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X" after view RPC=0x%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X"\n", tdvp, tnm, tdtm_save.tv_sec, 
+                    tdtm_save.tv_usec, rrp->dir_mod.dvstat.fstat.mtime.tv_sec,
+                    rrp->dir_mod.dvstat.fstat.mtime.tv_usec);
+            mvfs_rddir_cache_flush(tdmnp); 
+        }
+        if ((odvp != tdvp) && odmnp->mn_vob.rddir_cache &&
+                (odmnp->mn_vob.rddir_cache->entries[0]).valid) {
+            mvfs_log(MFS_LOG_DEBUG,
+                    "rename:flushing source rddir explicitly:vp=%"KS_FMT_PTR_T
+                    ", nm=%s; mtime: before view RPC=%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X" after view RPC=0x%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X"\n", odvp, onm, odtm_save.tv_sec, 
+                    odtm_save.tv_usec, odmnp->mn_vob.attr.fstat.mtime.tv_sec,
+                    odmnp->mn_vob.attr.fstat.mtime.tv_usec);
+            mvfs_rddir_cache_flush(odmnp); 
+        }
     } else {
         MFS_CHK_STALE(error, odvp);
         MFS_CHK_STALE(error, tdvp);
     }
-    if (odvp != tdvp) MUNLOCK(VTOM(tdvp));
-    MUNLOCK(VTOM(odvp));
+    if (odvp != tdvp) MUNLOCK(tdmnp);
+    MUNLOCK(odmnp);
 
     HEAP_FREE(rap);
     HEAP_FREE(rrp);
@@ -1115,15 +1272,18 @@ CRED_T *cred;
  */
 
 int
-mfs_clnt_mkdir(dvp, nm, va, vpp, cred)
-VNODE_T *dvp;
-char *nm;
-VATTR_T *va;
-VNODE_T **vpp;
-CRED_T *cred;
+mfs_clnt_mkdir(
+    VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    VATTR_T *va,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw;
+    mfs_mnode_t *mnp;
+    struct timeval dtm_save;
     HEAP_ALLOC2(view_mkdir_req_t,rap,view_mkdir_reply_t,rrp);
 
     ASSERT(MFS_ISVOB(VTOM(dvp)));
@@ -1144,7 +1304,7 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->create.d_fhandle = MFS_VFH(dvp);
     rap->create.name = nm;
 
@@ -1159,28 +1319,52 @@ CRED_T *cred;
     /* FIXME:  what about correct gid SysV.3 vs inherit from dir */
     mfs_vattr_to_sattr(va, &rap->iattr);
 
-    MLOCK(VTOM(dvp));
-    rap->dir_dtm = VTOM(dvp)->mn_vob.attr.fstat.mtime;
+    mnp = VTOM(dvp);
+    MLOCK(mnp);
+    dtm_save = rap->dir_dtm = mnp->mn_vob.attr.fstat.mtime;
 	
     error = mfs_vwcall(vw, dvp->v_vfsp, VIEW_MKDIR,
 	(xdrproc_t) xdr_view_mkdir_req_t,   (caddr_t)rap, 
-	(xdrproc_t) xdr_view_mkdir_reply_t, (caddr_t)rrp, cred);
+	(xdrproc_t) xdr_view_mkdir_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
 
     MFS_ATTRINVAL(dvp);	/* mod time changed */
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
 	(void) mfs_attrcache(dvp, &rrp->dir_mod.dvstat, 
-			rrp->dir_mod.dir_dtm_valid, cred);
-        error = mfs_makevobnode(&rrp->vstat,0,vw,&rrp->fhandle, dvp->v_vfsp, cred, vpp);
+			rrp->dir_mod.dir_dtm_valid, MVFS_CD2CRED(cd));
+        /* 
+         * When the directory modification time stamp changes due to the view
+         * RPC, rddir cache would normally get flushed as a side effect of 
+         * mfs_attrcache() call, via mfs_ac_modevents()->mvfs_rddir_cache_flush().
+         * As mkdir vnodeop renders the parent's rddir cache stale it is
+         * flushed here explicitly if mfs_attrcache() has not taken care of it.
+         * If rddir cache for this directory mnode has already been flushed due
+         * to the side effect mentioned above, then all the blocks including the
+         * first one are marked invalid and call to mvfs_rddir_cache_flush() is 
+         * unnecessary.  
+         */
+        if (mnp->mn_vob.rddir_cache &&
+                (mnp->mn_vob.rddir_cache->entries[0]).valid) {
+            mvfs_log(MFS_LOG_DEBUG,
+                    "mkdir:flushing rddir explicitly:vp=%"KS_FMT_PTR_T
+                    ", nm=%s; mtime: before view RPC=%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X" after view RPC=0x%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X"\n", dvp, nm, dtm_save.tv_sec, 
+                    dtm_save.tv_usec, rrp->dir_mod.dvstat.fstat.mtime.tv_sec,
+                    rrp->dir_mod.dvstat.fstat.mtime.tv_usec);
+            mvfs_rddir_cache_flush(mnp); 
+        }
+        error = mfs_makevobnode(&rrp->vstat,0,vw,&rrp->fhandle, dvp->v_vfsp,
+                                MVFS_CD2CRED(cd), vpp);
         if (!error) {
 	    /* Mkdir must be in view, and these are BH invariant */
-	    mfs_dncadd(dvp, MFS_DNC_BHINVARIANT, nm, *vpp, cred);
+	    mfs_dncadd(dvp, MFS_DNC_BHINVARIANT, nm, *vpp, MVFS_CD2CRED(cd));
         }
     } else {
         MFS_CHK_STALE(error, dvp);
     }
 
-    MUNLOCK(VTOM(dvp));
+    MUNLOCK(mnp);
 
     HEAP_FREE(rap);
     HEAP_FREE(rrp);
@@ -1192,13 +1376,16 @@ CRED_T *cred;
  */
 
 int
-mfs_clnt_rmdir(dvp, nm, cred)
-VNODE_T *dvp;
-char *nm;
-CRED_T *cred;
+mfs_clnt_rmdir(
+    VNODE_T *dvp,
+    mfs_pn_char_t *nm,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw; 
+    mfs_mnode_t *mnp;
+    struct timeval dtm_save;
     HEAP_ALLOC2(view_rmdir_req_t,rap,view_rmdir_reply_t,rrp);
 
     ASSERT(MFS_ISVOB(VTOM(dvp)));
@@ -1219,27 +1406,50 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->file.d_fhandle = MFS_VFH(dvp);
     rap->file.name = nm;
 
-    MLOCK(VTOM(dvp));
-    rap->dir_dtm = VTOM(dvp)->mn_vob.attr.fstat.mtime;
+    mnp = VTOM(dvp);
+    MLOCK(mnp);
+    dtm_save = rap->dir_dtm = mnp->mn_vob.attr.fstat.mtime;
 
-    mfs_dncremove(dvp, nm, cred);	/* Remove NC ent before call to view */
+    mfs_dncremove(dvp, nm, MVFS_CD2CRED(cd));    /* Remove NC ent before call to view */
 
     error = mfs_vwcall(vw, dvp->v_vfsp, VIEW_RMDIR, 
 	(xdrproc_t) xdr_view_rmdir_req_t,   (caddr_t)rap, 
-	(xdrproc_t) xdr_view_rmdir_reply_t, (caddr_t)rrp, cred);
+	(xdrproc_t) xdr_view_rmdir_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
 
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
 	(void) mfs_attrcache(dvp, &rrp->dir_mod.dvstat, 
-			rrp->dir_mod.dir_dtm_valid, cred);
+			rrp->dir_mod.dir_dtm_valid, MVFS_CD2CRED(cd));
+        /* 
+         * When the directory modification time stamp changes due to the view
+         * RPC, rddir cache would normally get flushed as a side effect of 
+         * mfs_attrcache() call, via mfs_ac_modevents()->mvfs_rddir_cache_flush().
+         * As rmdir vnodeop renders the parent's rddir cache stale it is
+         * flushed here explicitly if mfs_attrcache() has not taken care of it.
+         * If rddir cache for this directory mnode has already been flushed due
+         * to the side effect mentioned above, then all the blocks including the
+         * first one are marked invalid and call to mvfs_rddir_cache_flush() is 
+         * unnecessary.  
+         */
+        if (mnp->mn_vob.rddir_cache &&
+                (mnp->mn_vob.rddir_cache->entries[0]).valid) {
+            mvfs_log(MFS_LOG_DEBUG,
+                    "rmdir:flushing rddir explicitly:vp=%"KS_FMT_PTR_T
+                    ", nm=%s; mtime: before view RPC=%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X" after view RPC=0x%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X"\n", dvp, nm, dtm_save.tv_sec, 
+                    dtm_save.tv_usec, rrp->dir_mod.dvstat.fstat.mtime.tv_sec,
+                    rrp->dir_mod.dvstat.fstat.mtime.tv_usec);
+            mvfs_rddir_cache_flush(mnp); 
+        }
     } else {
         MFS_CHK_STALE(error, dvp);
     }
-    MUNLOCK(VTOM(dvp));
+    MUNLOCK(mnp);
 
     HEAP_FREE(rap);
     HEAP_FREE(rrp);
@@ -1251,16 +1461,19 @@ CRED_T *cred;
  */	
 
 int
-mfs_clnt_symlink(dvp, lnm, tva, tnm, vpp, cred)
-VNODE_T *dvp;
-char *lnm;
-VATTR_T *tva;
-char *tnm;
-VNODE_T **vpp;
-CRED_T *cred;
+mfs_clnt_symlink(
+    VNODE_T *dvp,
+    mfs_pn_char_t *lnm,
+    VATTR_T *tva,
+    mfs_pn_char_t *tnm,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw;
+    mfs_mnode_t *mnp;
+    struct timeval dtm_save;
     HEAP_ALLOC2(view_symlink_req_t,rap,view_symlink_reply_t,rrp);	
 
     vw = MFS_VIEW(dvp);
@@ -1277,35 +1490,60 @@ CRED_T *cred;
     }
 	
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->create.d_fhandle = MFS_VFH(dvp);
     rap->create.name = lnm;
     rap->text = tnm;
     mfs_vattr_to_sattr(tva, &rap->iattr);
 
-    MLOCK(VTOM(dvp));
-    rap->dir_dtm = VTOM(dvp)->mn_vob.attr.fstat.mtime;
+    mnp = VTOM(dvp);
+    MLOCK(mnp);
+    dtm_save = rap->dir_dtm = mnp->mn_vob.attr.fstat.mtime;
 
-    mfs_dncremove(dvp, lnm, cred);	/* Remove name in case ENOENT cached */
+    /* Remove name in case ENOENT cached */
+    mfs_dncremove(dvp, lnm, MVFS_CD2CRED(cd));
 
     error = mfs_vwcall(vw, dvp->v_vfsp, VIEW_SYMLINK,
 	(xdrproc_t) xdr_view_symlink_req_t,   (caddr_t)rap, 
-	(xdrproc_t) xdr_view_symlink_reply_t, (caddr_t)rrp, cred);
+	(xdrproc_t) xdr_view_symlink_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
 
     MFS_ATTRINVAL(dvp);	/* mod time chan ged */	
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
 	(void) mfs_attrcache(dvp, &rrp->dir_mod.dvstat, 
-			rrp->dir_mod.dir_dtm_valid, cred);
-        error = mfs_makevobnode(&rrp->vstat,0,vw,&rrp->fhandle, dvp->v_vfsp, cred, vpp);
+			rrp->dir_mod.dir_dtm_valid, MVFS_CD2CRED(cd));
+        /* 
+         * When the directory modification time stamp changes due to the view
+         * RPC, rddir cache would normally get flushed as a side effect of 
+         * mfs_attrcache() call, via mfs_ac_modevents()->mvfs_rddir_cache_flush().
+         * As symlink vnodeop renders the parent's rddir cache stale it is
+         * flushed here explicitly if mfs_attrcache() has not taken care of it.
+         * If rddir cache for this directory mnode has already been flushed due
+         * to the side effect mentioned above, then all the blocks including the
+         * first one are marked invalid and call to mvfs_rddir_cache_flush() is 
+         * unnecessary.  
+         */
+        if (mnp->mn_vob.rddir_cache &&
+                (mnp->mn_vob.rddir_cache->entries[0]).valid) {
+            mvfs_log(MFS_LOG_DEBUG,
+                    "symlink:flushing rddir explicitly:vp=%"KS_FMT_PTR_T
+                    ", tnm=%s,lnm=%s; mtime: before view RPC=%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X" after view RPC=0x%"KS_FMT_TV_SEC_T_X
+                    ".%"KS_FMT_TV_USEC_T_X"\n", dvp, tnm, lnm, dtm_save.tv_sec, 
+                    dtm_save.tv_usec, rrp->dir_mod.dvstat.fstat.mtime.tv_sec,
+                    rrp->dir_mod.dvstat.fstat.mtime.tv_usec);
+            mvfs_rddir_cache_flush(mnp); 
+        }
+        error = mfs_makevobnode(&rrp->vstat,0,vw,&rrp->fhandle, dvp->v_vfsp,
+                                MVFS_CD2CRED(cd), vpp);
         if (!error) {
 	    /* Create symlink must be in view, and these are BH invariant */
-	    mfs_dncadd(dvp, MFS_DNC_BHINVARIANT, lnm, *vpp, cred);
+	    mfs_dncadd(dvp, MFS_DNC_BHINVARIANT, lnm, *vpp, MVFS_CD2CRED(cd));
         }
     } else {
 	MFS_CHK_STALE(error, dvp);
     }
-    MUNLOCK(VTOM(dvp));
+    MUNLOCK(mnp);
 
     HEAP_FREE(rap);
     HEAP_FREE(rrp);
@@ -1325,11 +1563,12 @@ CRED_T *cred;
  * Note: Directory size is limited to 31 bits. 
  */
 int
-mfs_clnt_readdir(dvp, uiop, cred, eofp)
-VNODE_T *dvp;
-struct uio *uiop;
-CRED_T *cred;
-int *eofp;
+mfs_clnt_readdir(
+    VNODE_T *dvp,
+    struct uio *uiop,
+    CALL_DATA_T *cd,
+    int *eofp
+)
 {
     int error;
     register mfs_mnode_t *mnp;
@@ -1370,7 +1609,7 @@ int *eofp;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->d_fhandle = MFS_VFH(dvp);
 
     rap->offset = (u_long)MVFS_UIO_OFFSET(uiop);
@@ -1386,7 +1625,7 @@ int *eofp;
 
     error = mfs_vwcall(vw, dvp->v_vfsp, VIEW_READDIR,
 	(xdrproc_t) xdr_view_readdir_req_t,   (caddr_t)rap, 
-	(xdrproc_t) xdr_view_readdir_reply_t, (caddr_t)rrp, cred);
+	(xdrproc_t) xdr_view_readdir_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
 
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
@@ -1462,13 +1701,14 @@ static struct mfs_retryinfo inval_retry = {
 };
 
 int
-mfs_clnt_inval(vw, itype, voboidp, oidp, nm, cred)
-VNODE_T *vw;
-view_invalidate_type_t itype;
-A_CONST tbs_oid_t *voboidp;
-A_CONST tbs_oid_t *oidp;
-char *nm;
-CRED_T *cred;
+mfs_clnt_inval(
+    VNODE_T *vw,
+    view_invalidate_type_t itype,
+    A_CONST tbs_oid_t *voboidp,
+    A_CONST tbs_oid_t *oidp,
+    mfs_pn_char_t *nm,
+    CALL_DATA_T *cd
+)
 {
     int error = 0;              /* Initialize to avoid a compiler warning. */
     int no_retries;
@@ -1485,7 +1725,7 @@ CRED_T *cred;
     ASSERT(MFS_ISVIEW(VTOM(vw)));
 
     rap->hdr.view = mnp->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->type = itype;
     rap->vob_oid = *voboidp;
     rap->obj_oid = *oidp;
@@ -1497,7 +1737,8 @@ CRED_T *cred;
 
     if (mnp->mn_view.rpctime + mvfs_view_rebind_timeout < MDKI_CTIME()) {
         /* try to probe ALBD first, ignoring errors */
-        (void) mvfs_bindsvr_port(&VTOM(vw)->mn_view.svr, NULL, cred, vw);
+        (void) mvfs_bindsvr_port(&VTOM(vw)->mn_view.svr, NULL,
+                                 MVFS_CD2CRED(cd), vw);
     }
 
     /*
@@ -1509,8 +1750,9 @@ CRED_T *cred;
 
         error = mfscall(mfs_viewcall, VIEW_INVALIDATE_UUID, 0,
 	                &mnp->mn_view.svr, &inval_retry, 
-	                (xdrproc_t) xdr_view_invalidate_req_t,   (caddr_t)rap, 
-	                (xdrproc_t) xdr_view_invalidate_reply_t, (caddr_t)rrp, cred, vw);
+	                (xdrproc_t) xdr_view_invalidate_req_t, (caddr_t)rap, 
+	                (xdrproc_t) xdr_view_invalidate_reply_t, (caddr_t)rrp,
+                        MVFS_CD2CRED(cd), vw);
 
         /* 
          * Try rebind if TIMEOUT error
@@ -1528,7 +1770,7 @@ CRED_T *cred;
          * albd.
          */
 
-        error = mvfs_bindsvr_port(&mnp->mn_view.svr, NULL, cred, vw);
+        error = mvfs_bindsvr_port(&mnp->mn_view.svr, NULL, MVFS_CD2CRED(cd), vw);
 
         if (error != 0) {
             mvfs_log(MFS_LOG_ERR, "Views op %s failed rebind \n",
@@ -1553,33 +1795,34 @@ CRED_T *cred;
 }
 
 int
-mfs_clnt_choid(vp, opts, prevoidp, cred)
-VNODE_T *vp;
-view_change_oid_option_t opts;
-tbs_oid_t *prevoidp;
-CRED_T *cred;
+mfs_clnt_choid(
+    VNODE_T *vp,
+    view_change_oid_option_t opts,
+    tbs_oid_t *prevoidp,
+    CALL_DATA_T *cd
+)
 {
     int error;
 
     MLOCK(VTOM(vp));
-    error = mfs_clnt_choid_locked(vp, opts, prevoidp, cred);
+    error = mfs_clnt_choid_locked(vp, opts, prevoidp, cd);
     MUNLOCK(VTOM(vp));
     return(error);
 }
 
 int
-mfs_clnt_choid_locked(vp, opts, prevoidp, cred)
-register VNODE_T *vp;
-view_change_oid_option_t opts;
-tbs_oid_t *prevoidp;
-CRED_T *cred;
+mfs_clnt_choid_locked(
+    register VNODE_T *vp,
+    view_change_oid_option_t opts,
+    tbs_oid_t *prevoidp,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw;
     mfs_mnode_t *mnp;
     HEAP_ALLOC2(view_change_oid_req_t,rap,view_change_oid_reply_t,rrp);
 
-    
     mnp = VTOM(vp);
     ASSERT(MFS_ISVOB(mnp));
     ASSERT(MISLOCKED(mnp));
@@ -1592,7 +1835,7 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->fhandle = MFS_VFH(vp);
     rap->option = opts;
 
@@ -1603,13 +1846,14 @@ CRED_T *cred;
 	BCOPY(&mnp->mn_vob.attr.obj_oid, prevoidp, sizeof(tbs_oid_t));
 
     error = mfs_vwcall(vw, vp->v_vfsp, VIEW_CHANGE_OID,
-		(xdrproc_t) xdr_view_change_oid_req_t,  (caddr_t)rap, 
-		(xdrproc_t) xdr_view_change_oid_reply_t, (caddr_t)rrp, cred);
+		(xdrproc_t) xdr_view_change_oid_req_t, (caddr_t)rap, 
+		(xdrproc_t) xdr_view_change_oid_reply_t, (caddr_t)rrp,
+                MVFS_CD2CRED(cd));
 
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
 	/* Cache new attributes */
-	(void) mfs_attrcache(vp, &rrp->vstat, 0, cred);
+	(void) mfs_attrcache(vp, &rrp->vstat, 0, MVFS_CD2CRED(cd));
 	/* NOTE: cleartext may have changed... higher layer must handle! */
     } else {
 	MFS_CHK_STALE(error, vp);
@@ -1623,13 +1867,14 @@ CRED_T *cred;
 /* MFS_CLNT_BINDROOT - perform bindroot rpc */
 
 int
-mfs_clnt_bindroot(root, vw, vfsp, nm, vpp, cred)
-int root;
-VNODE_T *vw;
-VFS_T *vfsp;
-char *nm;
-VNODE_T **vpp;
-CRED_T *cred;
+mfs_clnt_bindroot(
+    int root,
+    VNODE_T *vw,
+    VFS_T *vfsp,
+    mfs_pn_char_t *nm,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+)
 {
     int error;
     register struct mfs_mntinfo *mmi;
@@ -1646,7 +1891,7 @@ CRED_T *cred;
     /* Build RPC request */
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->vob_root = mmi->mmi_voboid;
     rap->replica_root = mmi->mmi_vobuuid;
     rap->host_name = mmi->mmi_svr.host;
@@ -1656,10 +1901,11 @@ CRED_T *cred;
 
     MDKI_HRTIME(&start_time);
     error = mfs_vwcall(vw, vfsp, VIEW_REPLICA_ROOT,
-            (xdrproc_t) xdr_view_replica_root_req_t,   (caddr_t)rap,
-            (xdrproc_t) xdr_view_getattr_reply_t, (caddr_t)rrp, cred);
+            (xdrproc_t) xdr_view_replica_root_req_t, (caddr_t)rap,
+            (xdrproc_t) xdr_view_getattr_reply_t, (caddr_t)rrp,
+            MVFS_CD2CRED(cd));
     if (!error) {
-	MFS_TIME_DELTA(start_time, dtime, dummy);
+	MVFS_TIME_DELTA(start_time, dtime, dummy);
 	if (dtime.tv_sec > mvfs_max_rpcdelay) {
 	    mvfs_log(MFS_LOG_INFO,
 		    "replica root for VOB %s:%s took a long time!\n",
@@ -1685,7 +1931,8 @@ CRED_T *cred;
 
 	/* Now we can make the vnode */
 
-        error = mfs_makevobnode(&rrp->vstat, &rrp->lvut, vw, &rrp->fhandle, vfsp, cred, vpp);
+        error = mfs_makevobnode(&rrp->vstat, &rrp->lvut, vw, &rrp->fhandle,
+                                vfsp, MVFS_CD2CRED(cd), vpp);
     } else {
 	if (error == ENOENT) {
 	    if (rrp->hdr.status == TBS_ST_VIEW_NO_VER) {
@@ -1709,10 +1956,11 @@ CRED_T *cred;
  */
 
 int
-mfs_clnt_rebind_dir(dvp, vpp, cred)
-VNODE_T *dvp;
-VNODE_T **vpp;
-CRED_T *cred;
+mfs_clnt_rebind_dir(
+    VNODE_T *dvp,
+    VNODE_T **vpp,
+    CALL_DATA_T *cd
+)
 {
     mfs_mnode_t *mnp;
     VNODE_T *vw;
@@ -1733,7 +1981,7 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->fhandle = MFS_VFH(dvp);
 
     /* 
@@ -1743,11 +1991,12 @@ CRED_T *cred;
 
     MDKI_HRTIME(&start_time);
     error = mfs_vwcall(vw, dvp->v_vfsp, VIEW_REVALIDATE,
-		(xdrproc_t) xdr_view_revalidate_req_t,  (caddr_t)rap, 
-		(xdrproc_t) xdr_view_revalidate_reply_t, (caddr_t)rrp, cred);
+		(xdrproc_t) xdr_view_revalidate_req_t,(caddr_t)rap, 
+		(xdrproc_t) xdr_view_revalidate_reply_t, (caddr_t)rrp,
+                MVFS_CD2CRED(cd));
     if (!error) {
 	register struct mfs_mntinfo *mmi;
-	MFS_TIME_DELTA(start_time, dtime, dummy);
+	MVFS_TIME_DELTA(start_time, dtime, dummy);
 	if (dtime.tv_sec > mvfs_max_rpcdelay) {
 	    mmi = VFS_TO_MMI(dvp->v_vfsp);
 	    mvfs_log(MFS_LOG_INFO,
@@ -1766,8 +2015,9 @@ CRED_T *cred;
 	    *vpp = dvp;
 	    VN_HOLD(*vpp);
 	    MLOCK(VTOM(dvp));
-	    modflags = mvfs_ac_set_stat(VTOM(dvp), &rrp->vstat, FALSE, cred);
-	    mfs_ac_modevents(dvp, modflags, cred);
+	    modflags = mvfs_ac_set_stat(VTOM(dvp), &rrp->vstat, FALSE,
+                                        MVFS_CD2CRED(cd));
+	    mfs_ac_modevents(dvp, modflags, MVFS_CD2CRED(cd));
 	    MUNLOCK(VTOM(dvp));
             HEAP_FREE(rap);
             HEAP_FREE(rrp);
@@ -1781,7 +2031,8 @@ CRED_T *cred;
 	 * of the same dir.  SO... dvp must be unlocked!
          */
 
-        error = mfs_makevobnode(&rrp->vstat, 0, vw, &rrp->fhandle, dvp->v_vfsp, cred, vpp);
+        error = mfs_makevobnode(&rrp->vstat, 0, vw, &rrp->fhandle, dvp->v_vfsp,
+                                MVFS_CD2CRED(cd), vpp);
     } else {
 	MFS_CHK_STALE(error, dvp);
     }
@@ -1797,10 +2048,11 @@ CRED_T *cred;
  * current directory when its version has changed.
  */
 int
-mfs_clnt_gpath_elem(vp, nmp, cred)
-VNODE_T *vp;
-char **nmp;
-CRED_T *cred;
+mfs_clnt_gpath_elem(
+    VNODE_T *vp,
+    mfs_pn_char_t **nmp,
+    CALL_DATA_T *cd
+)
 {
     int error;
     VNODE_T *vw;
@@ -1813,7 +2065,7 @@ CRED_T *cred;
     vw = MFS_VIEW(vp);
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->fhandle = MFS_VFH(vp);		/* Fhandle of version */
     if (rap->fhandle.elem_dbid == MFS_UNK_DBID) {
 	mvfs_log(MFS_LOG_INFO, 
@@ -1843,8 +2095,8 @@ CRED_T *cred;
     }
 
     error = mfs_vwcall(vw, vp->v_vfsp, VIEW_GPATH,
-            (xdrproc_t) xdr_view_gpath_req_t,   (caddr_t)rap,
-            (xdrproc_t) xdr_view_gpath_reply_t, (caddr_t)rrp, cred);
+            (xdrproc_t) xdr_view_gpath_req_t, (caddr_t)rap,
+            (xdrproc_t) xdr_view_gpath_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
 
     if (!error) error = mfs_geterrno(rrp->hdr.status);
     if (!error) {
@@ -1909,9 +2161,10 @@ CRED_T *cred;
  */
 
 int
-mfs_clnt_cltxt_locked(vp, cred)
-VNODE_T *vp;
-CRED_T *cred;
+mfs_clnt_cltxt_locked(
+    VNODE_T *vp,
+    CALL_DATA_T *cd
+)
 {
 
     int error = 0;
@@ -1948,7 +2201,7 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->fhandle = MFS_VFH(vp);
     rap->max_text_size = MAXPATHLEN;
     rrp->text = (char *)KMEM_ALLOC(MAXPATHLEN, KM_NOSLEEP);
@@ -1962,11 +2215,12 @@ CRED_T *cred;
     MDKI_HRTIME(&start_time);
     error = mfs_vwcall(vw, vp->v_vfsp, VIEW_CLTXT,
 		(xdrproc_t) xdr_view_cltxt_req_t, (caddr_t)rap, 
-		(xdrproc_t) xdr_view_cltxt_reply_t,  (caddr_t)rrp, cred);
+		(xdrproc_t) xdr_view_cltxt_reply_t, (caddr_t)rrp,
+                MVFS_CD2CRED(cd));
 
     if (!error) {
 	register struct mfs_mntinfo *mmi;
-	MFS_TIME_DELTA(start_time, dtime, dummy);
+	MVFS_TIME_DELTA(start_time, dtime, dummy);
 	if (dtime.tv_sec > mvfs_max_rpcdelay) {
 	    mmi = VFS_TO_MMI(vp->v_vfsp);
 	    mvfs_log(MFS_LOG_INFO,
@@ -2010,18 +2264,18 @@ CRED_T *cred;
 }
 
 int
-mfs_clnt_change_mtype(vp, mtype, statusp, cred)
-register VNODE_T *vp;
-vob_mtype_t mtype;
-tbs_status_t *statusp;	/* Returned tbs_status */
-CRED_T *cred;
+mfs_clnt_change_mtype(
+    register VNODE_T *vp,
+    vob_mtype_t mtype,
+    tbs_status_t *statusp,	/* Returned tbs_status */
+    CALL_DATA_T *cd
+)
 {
     int error, xerror;
     VNODE_T *vw;
     mfs_mnode_t *mnp;
     HEAP_ALLOC2(view_change_mtype_req_t,rap,view_change_mtype_reply_t,rrp);
 
-    
     mnp = VTOM(vp);
     ASSERT(MFS_ISVOB(mnp));
 
@@ -2033,14 +2287,15 @@ CRED_T *cred;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
-    rap->hdr.build_handle = MFS_BH();
+    rap->hdr.build_handle = MFS_BH(cd);
     rap->fhandle = MFS_VFH(vp);
     rap->mtype = mtype;
 
     MLOCK(mnp);		/* Lock to prevent multiple change mtype races */
     error = mfs_vwcall(vw, vp->v_vfsp, VIEW_CHANGE_MTYPE,
-		(xdrproc_t) xdr_view_change_mtype_req_t,  (caddr_t)rap, 
-		(xdrproc_t) xdr_view_change_mtype_reply_t, (caddr_t)rrp, cred);
+		(xdrproc_t) xdr_view_change_mtype_req_t, (caddr_t)rap, 
+		(xdrproc_t) xdr_view_change_mtype_reply_t, (caddr_t)rrp,
+                MVFS_CD2CRED(cd));
 
     if (!error) {
 	*statusp = rrp->hdr.status;
@@ -2050,7 +2305,7 @@ CRED_T *cred;
 
     if (!error && *statusp == TBS_ST_OK) {
 	/* Cache new attributes */
-	(void) mfs_attrcache(vp, &rrp->vstat, 0, cred);
+	(void) mfs_attrcache(vp, &rrp->vstat, 0, MVFS_CD2CRED(cd));
     } else {
 	xerror = mfs_geterrno(rrp->hdr.status);
 	MFS_CHK_STALE(xerror, vp);
@@ -2060,4 +2315,36 @@ CRED_T *cred;
     HEAP_FREE(rrp);
     return(error);
 }
-static const char vnode_verid_mvfs_clnt_c[] = "$Id:  4ad5cc60.bf1b11dc.89dd.00:01:83:09:5e:0d $";
+
+/*
+ * MVFS_CLNT_PING_SERVER 
+ * Simple call to send a NULL RPC to the view server
+ * to check if it's alive. We do not pass in a view vnode
+ * for this call, to limit the overhead and the need to lock
+ * the view during the RPC call.
+ */
+int
+mvfs_clnt_ping_server(
+   struct mfs_svr *svr,
+   CRED_T *cred
+)
+{
+   struct mfs_retryinfo rinfo;
+
+   rinfo = VFS_TO_MMI(MDKI_VIEWROOT_GET_DATAP()->mfs_viewroot_vfsp)->mmi_retry;
+   rinfo.soft = 1;
+
+   return mfscall(mfs_viewcall,		/* trait */
+		  NULLPROC,		/* op */
+		  0,			/* xid */
+		  svr,			/* mfs svr info */
+		  &rinfo,		/* retry info */
+		  (xdrproc_t)xdr_void,	/* xdrargs */
+		  (void *)NULL,		/* args */
+		  (xdrproc_t)xdr_void,	/* xdrresp */
+		  (void *)NULL,		/* resp */
+		  cred,			/* cred */
+		  NULL			/* view vp */
+		 );
+}
+static const char vnode_verid_mvfs_clnt_c[] = "$Id:  650be613.dc5411df.9210.00:01:83:0a:3b:75 $";

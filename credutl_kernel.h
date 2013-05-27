@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2008. */
+/* * (C) Copyright IBM Corporation 1991, 2009. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_CREDUTL_KERNEL_H_)
 #define _CREDUTL_KERNEL_H_
 
@@ -31,6 +31,10 @@
  * to use #ifdef KERNEL to select the kernel only version.
  */
 #include <ks_base.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* The credentials structure encapsulates the POSIX notion of an
  * identity: the user ID, group ID, and group list.
@@ -44,6 +48,7 @@ typedef struct credutl_credentials_t {
     int ngroups;			/* number of groups in list */
     credutl_gid_t group_list[CREDUTL_NGROUPS_MAX];
 } credutl_credentials_t;
+
 
 /******************************************************************
  * credutl_unix_uid_to_sid
@@ -83,5 +88,9 @@ credutl_sid_to_unix_uid(const credutl_sid_t *sid_p);
 EXTERN credutl_gid_t
 credutl_sid_to_unix_gid(const credutl_sid_t *sid_p);
 
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
 #endif /*_CREDUTL_KERNEL_H_*/
-/* $Id: 0f25f89b.365711dd.8aaa.00:01:83:09:5e:0d $ */
+/* $Id: 40e3ad97.a23a11df.8bc7.00:01:84:7a:f2:e4 $ */

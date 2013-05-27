@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2005 IBM Corporation.
+ * Copyright (C) 1999, 2008 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -41,27 +41,17 @@
  * Note: This formula differs from that used by Solaris.  We need to reserve
  * two device numbers, one for /dev/mvfs and one for /view.
  * (mvfs_majdynmax + mvfs_majfixmax) * (number of minor devices) /2 - 2
- * For 2.4 kernels
- *   Device numbers are limited to 16 bits, 8 for the major, 8 for the minor.
- *   8 * 256 /2 -2 = 1022
- * For 2.6 kernels
- *   Device numbers are 32 bits.  12 for the major, 20 for the minor.
- *   But we limit the number of minor devices we use for mounting vobs
- *   so that we can use the rest of the bits for identifying views.
- *   mvfs_view_shift_bits is the number of bits reserved for vob mounts.
- *   2 * 1024 /2 -2 = 1022
+ * 
+ *  Device numbers are 32 bits.  12 for the major, 20 for the minor.
+ *  But we limit the number of minor devices we use for mounting vobs
+ *  so that we can use the rest of the bits for identifying views.
+ *  mvfs_view_shift_bits is the number of bits reserved for vob mounts.
+ *  2 * 1024 /2 -2 = 1022
  */
 
 int mvfs_major = 0;   /* Linux will pick one if we specify 0 */
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-int mvfs_majdynmax = 8;
-int mvfs_majfixmax = 0;
-u_int mvfs_view_shift_bits = 8;
-#else
 int mvfs_majdynmax = 2;
 int mvfs_majfixmax = 0;
 u_int mvfs_view_shift_bits = 10;
-
-#endif
-static const char vnode_verid_mvfs_param_c[] = "$Id:  a5700d14.636c11da.8655.00:01:83:a6:4c:63 $";
+static const char vnode_verid_mvfs_param_c[] = "$Id:  ad777f26.9c9311dd.9a62.00:01:83:29:c0:fc $";

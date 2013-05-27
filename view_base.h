@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(VIEW_BASE_H)
 #define VIEW_BASE_H
 
@@ -29,6 +29,10 @@
 #include <tbs_base.h>
 #include <credutl_kernel.h>
 #include <vob_mtype.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define _CFS_RULE_NUM_DEFINED
 
@@ -185,7 +189,7 @@ typedef struct view_dirent {	/* data from readdir() */
  */
 #define VIEW_DIRENT_NEXT_ENTRY(dirent) \
         ((view_dirent_t *) ((char *)(dirent) + \
-        VIEW_DIRENT_SIZE((dirent)->namlen)))
+        VIEW_DIRENT_SIZE((dirent)->d_namlen)))
 
 /****************************************************************************
  * view_readdir_ext types
@@ -337,5 +341,9 @@ typedef enum {
     VIEW_NUM_PROPS
 } view_prop_t;
 
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
 #endif /* VIEW_BASE_H */
-/* $Id: f002bbb4.637a11da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: ecf5aa2f.27b211e0.9830.00:14:5e:33:98:cc $ */

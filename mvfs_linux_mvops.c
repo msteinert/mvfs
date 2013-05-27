@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2008 IBM Corporation.
+ * Copyright (C) 1999, 2011 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -45,31 +45,16 @@
 #define POSIX_LOCK_FILE(FP, LOCKP, CMD) posix_lock_file(FP, LOCKP, \
                        (((CMD) == F_SETLKW)) ? 1 : 0)
 #endif /* else BITS_PER_LONG == 32 */
-#elif defined(SLES10SP2)
-#if BITS_PER_LONG == 32
-#define POSIX_LOCK_FILE(FP, LOCKP, CMD) (((CMD) == F_SETLKW) || \
-                       ((CMD) == F_SETLKW64)) ? \
-                       posix_lock_file_wait(FP, LOCKP) : \
-                       posix_lock_file(FP, LOCKP, NULL)
 #else
-#define POSIX_LOCK_FILE(FP, LOCKP, CMD) ((CMD) == F_SETLKW) ? \
-                       posix_lock_file_wait(FP, LOCKP) : \
-                       posix_lock_file(FP, LOCKP, NULL)
-#endif /* else BITS_PER_LONG == 32 */
-#else  /* Kernel Version >= 2.6.0 and not SLES10 SP2 or later. */
-#if BITS_PER_LONG == 32
-#define POSIX_LOCK_FILE(FP, LOCKP, CMD) (((CMD) == F_SETLKW) || \
-                       ((CMD) == F_SETLKW64)) ? \
-                       posix_lock_file_wait(FP, LOCKP) : \
-                       posix_lock_file(FP, LOCKP)
-#else
-#define POSIX_LOCK_FILE(FP, LOCKP, CMD) ((CMD) == F_SETLKW) ? \
-                       posix_lock_file_wait(FP, LOCKP) : \
-                       posix_lock_file(FP, LOCKP)
-#endif /* else BITS_PER_LONG == 32 */
+#define POSIX_LOCK_FILE(FP, LOCKP, CMD) posix_lock_file_wait(FP, LOCKP)
 #endif /* else LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0) */
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
 extern inline                    /* force inlining on all platforms */
+#else
+/* it needs to be static */
+static inline
+#endif
 int
 vnlayer_lookup_post(
     struct dentry *dentry,
@@ -183,7 +168,6 @@ mvop_linux_lookupvp(
     struct nameidata *nd
 )
 {
-    CRED_T *ocred;
     char   *pn;
     DENT_T *found = NULL;
     STACK_CHECK_DECL()
@@ -196,7 +180,6 @@ mvop_linux_lookupvp(
     int recursion = 0;
     int total_links;
 
-    ocred = NULL;
     *cvpp = NULL;
 
     if (segflg == UIO_USERSPACE) {
@@ -227,13 +210,13 @@ mvop_linux_lookupvp(
     }
     if (!error) {
 
-        /* Lookup has gotten a little simpler in 2.4.  We will start
+        /* Lookup has gotten a little simpler.  We will start
          * looking from the dentry in the nameidata structure.
          * Don't ASSERT on the locking conditions; they're done by the
          * kernel's lookup code called beneath path_walk().
          */
         memset(myndp, 0, sizeof(struct nameidata));
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0) && defined(IT_LOOKUP)
+#if defined(IT_LOOKUP)
         intent_init(&myndp->intent, IT_LOOKUP);
 #endif
         save_ids = vnlayer_fsuid_save(&saved_ids, cred);
@@ -241,35 +224,28 @@ mvop_linux_lookupvp(
         if (dvp) {
             myndp->flags = flags;
 	    CVN_SPINLOCK();
-            myndp->dentry = VNODE_DGET(CVN_TO_DENT(dvp));
-            myndp->mnt = MDKI_MNTGET(CVN_TO_VFSMNT(dvp));
+            MDKI_NAMEI_SET_DENTRY(myndp, VNODE_DGET(CVN_TO_DENT(dvp)));
+            MDKI_NAMEI_SET_MNT(myndp, MDKI_MNTGET(CVN_TO_VFSMNT(dvp)));
 	    CVN_SPINUNLOCK();
-            if (d_mountpoint(myndp->dentry)) {
+            if (d_mountpoint(MDKI_NAMEI_DENTRY(myndp))) {
                 MDKI_TRACE(TRACE_USERLOOKUP, "dvp %p, dent %p, mntpoint\n",
                           dvp, myndp->dentry);
                 /* XXX not sure we should ever get here? */
                 found = ERR_PTR(-EOPNOTSUPP);
-                VNODE_DPUT(myndp->dentry);
-                MDKI_MNTPUT(myndp->mnt);
+                VNODE_DPUT(MDKI_NAMEI_DENTRY(myndp));
+                MDKI_MNTPUT(MDKI_NAMEI_MNT(myndp));
             }
             MDKI_TRACE(TRACE_USERLOOKUP, "myndp->mnt %p\n", myndp->mnt);
         } else {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-            if (path_init(pn, flags, myndp) == 0) {
-                /* return of zero means don't do path_walk */
-                found = myndp->dentry;
-            }
-#else
             /* In Linux 2.6 path_lookup does all the work so found is either
             ** the found dentry or it is an error, never NULL (thus skipping
             ** the code below).
             */
             if ((error = path_lookup(pn, flags, myndp)) == 0) {
-                found = myndp->dentry;
+                found = MDKI_NAMEI_DENTRY(myndp);
             } else {
                 found = ERR_PTR(error);
             }
-#endif
         }
         STACK_CHECK();
         if (found == NULL) {
@@ -301,13 +277,18 @@ mvop_linux_lookupvp(
             /* Linux has added a global link count we don't want
              * to reset here.
              */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24) 
             found = ERR_PTR(path_walk(pn, myndp));
+#else
+            found = ERR_PTR(vfs_path_lookup(MDKI_NAMEI_DENTRY(myndp),
+                            MDKI_NAMEI_MNT(myndp), pn, myndp->flags, myndp));
+#endif
             STACK_CHECK();
             if (recursion)
                 current->link_count = recursion;
             current->total_link_count = total_links;
             if (!IS_ERR(found)) {
-                found = myndp->dentry;
+                found = MDKI_NAMEI_DENTRY(myndp);
             }
         }
         if (save_ids)
@@ -324,7 +305,7 @@ mvop_linux_lookupvp(
             error = vnlayer_errno_linux_to_unix(PTR_ERR(found));
             /* path_walk() has released myndp */
         } else {
-            error = vnlayer_lookup_post(dentry, found, cvpp, myndp->mnt);
+            error = vnlayer_lookup_post(dentry, found, cvpp, MDKI_NAMEI_MNT(myndp));
             /*
              * cleanup myndp, if either (1) it's private, or (2) we're
              * returning an error, in which case the caller doesn't
@@ -334,7 +315,7 @@ mvop_linux_lookupvp(
                 MDKI_TRACE(TRACE_DCACHE,
                            "%s: d_put %p cnt=%d--\n",
                            __func__, myndp->dentry, D_COUNT(myndp->dentry));
-                path_release(myndp);
+                MDKI_PATH_RELEASE(myndp);
                 STACK_CHECK();
             }
         }
@@ -389,9 +370,6 @@ vnlayer_linux_inode2vattr(
     SET(MODE_RIGHTS, mode);
     SET(UID, uid);
     SET(GID, gid);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    VATTR_SET_FSID(vattr, &inode->i_dev);
-#else
     /* We're only called with inodes representing some other file
     ** system's storage, so we trust their i_sb (although we probably
     ** should call the getattr method on the inode instead of copying
@@ -400,7 +378,6 @@ vnlayer_linux_inode2vattr(
     ** the i_dev field (see vnode_iop_getattr).
     */
     VATTR_SET_FSID(vattr, &(inode->i_sb->s_dev));
-#endif
     SET(RDEV, rdev);
     SET(NODEID, ino);
     SET(NLINK, nlink);
@@ -412,18 +389,9 @@ vnlayer_linux_inode2vattr(
 #endif
     SET(NBLOCKS, blocks);
 #undef SET
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define SET_TIME(time) \
-    vattr->va_ ## time.tv_sec = inode->i_ ## time
-    SET_TIME(atime);
-    SET_TIME(mtime);
-    SET_TIME(ctime);
-#undef SET_TIME
-#else
     VATTR_SET_ATIME_TS(vattr, &(inode->i_atime));
     VATTR_SET_MTIME_TS(vattr, &(inode->i_mtime));
     VATTR_SET_CTIME_TS(vattr, &(inode->i_ctime));
-#endif
     vattr->va_mask = AT_ALL;
 }
 
@@ -432,7 +400,7 @@ mvop_linux_access(
     VNODE_T *vp,
     int mode,
     int flags,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     nameidata_ctx *ctx
 )
 {
@@ -444,13 +412,13 @@ mvop_linux_access(
     ASSERT(MDKI_INOISCLRVN(VTOI(vp)));
     ASSERT(CVN_TO_INO(vp));
 
-    save_ids = vnlayer_fsuid_save(&saved_ids, cred);
+    save_ids = vnlayer_fsuid_save(&saved_ids, MVFS_CD2CRED(cd));
     /* permission() handles BKL */
     STACK_CHECK();
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    err = permission(CVN_TO_INO(vp), mode >> 6);
-#else
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     err = permission(CVN_TO_INO(vp), mode >> 6, (struct nameidata *)ctx);
+#else
+    err = inode_permission(CVN_TO_INO(vp), mode >> 6);
 #endif
     err = vnlayer_errno_linux_to_unix(err);
     STACK_CHECK();
@@ -470,11 +438,7 @@ mvop_linux_getattr(
     CRED_T *cred
 )
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    struct timeval tv;
-#else
     struct kstat *kstatp;
-#endif
     INODE_T *ip;
     int err;
     STACK_CHECK_DECL()
@@ -487,71 +451,45 @@ mvop_linux_getattr(
     /* Get attributes from inode, fill in vap */
     ip = CVN_TO_INO(vp);
     VATTR_NULL(vap);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    /* XXX take i_sem? won't keep some attributes from changing */
-    if (ip->i_op && ip->i_op->revalidate)
-        /* OK; revalidate may be called with i_sem either locked or unlocked */
-        err = (*ip->i_op->revalidate)(CVN_TO_DENT(vp));
-    else
-        err = 0;
-#else
     /* We have a kernel interface to do all the work.  This also has filled
     ** in the inode, so we can use the code below to copy the info into the
     ** vattr structure (except for the fsid, which we handle specially).
     */
     kstatp = KMEM_ALLOC(sizeof(*kstatp), KM_SLEEP);
-    err = vfs_getattr(VTOVFSMNT(vp), CVN_TO_DENT(vp), kstatp);
-#endif
+    if (kstatp == NULL)
+        err = ENOMEM;
+    else
+        err = vfs_getattr(VTOVFSMNT(vp), CVN_TO_DENT(vp), kstatp);
     STACK_CHECK();
 
     if (!err) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define GET(lll,UUU) VATTR_SET_ ## UUU(vap, ip->i_ ## lll)
-#else
 #define GET(lll,UUU) VATTR_SET_ ## UUU(vap, kstatp->lll)
-#endif
         VATTR_SET_TYPE(vap, vp->v_type);
         GET(uid,UID);
         GET(gid,GID);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-        VATTR_SET_FSID(vap, &ip->i_dev);
-        VATTR_SET_MODE_RIGHTS(vap, ip->i_mode);
-#else
         /* For 2.6 there is no i_dev field, so get it from the kstat. */
 	/* In fact, we will get everything from the kstat */
         VATTR_SET_FSID(vap, &(kstatp->dev));
         VATTR_SET_MODE_RIGHTS(vap, kstatp->mode);
-#endif
         GET(rdev,RDEV);
         GET(ino,NODEID);
         GET(nlink,NLINK);
         GET(size,SIZE);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define GET_TIME(lll, UUU)                      \
-    tv.tv_sec = ip->i_ ## lll;                  \
-    tv.tv_usec = 0;                             \
-    VATTR_SET_ ## UUU ## _TV(vap, &tv)
-#else
 #define GET_TIME(lll, UUU) VATTR_SET_ ## UUU ## _TS(vap, &kstatp->lll);
-#endif
         GET_TIME(atime,ATIME);
         GET_TIME(mtime,MTIME);
         GET_TIME(ctime,CTIME);
 #undef GET_TIME
-
         GET(blksize,BLKSIZE);
         GET(blocks,NBLOCKS);
 #undef GET
         vap->va_mask = AT_ALL;
-
         MDKI_TRACE(TRACE_GETATTR,
                    "%s cvp=%p ip=%p vap=%p sz=%"VNODE_FMT_VATTR_SIZE_T_D" err=0n",
                    __func__, vp, ip, vap, VATTR_GET_SIZE(vap));
     }
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    KMEM_FREE(kstatp, sizeof(*kstatp));
-#endif
+    if (kstatp != NULL)
+        KMEM_FREE(kstatp, sizeof(*kstatp));
     return vnlayer_errno_linux_to_unix(err);
 }
 
@@ -587,14 +525,12 @@ vnlayer_linux_vattr2iattr(
     GET(uid,UID);
     GET(gid,GID);
     GET(size,SIZE);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 #undef GET
 #define GET(lll, UUU)                                      \
     if (src->va_mask & AT_ ## UUU) {                       \
         VATTR_GET_ ## UUU ## _TS(src, &(dst->ia_ ## lll)); \
         dst->ia_valid |= ATTR_ ## UUU;                     \
     }
-#endif
     GET(atime,ATIME);
     GET(mtime,MTIME);
     GET(ctime,CTIME);
@@ -621,7 +557,7 @@ mvop_linux_setattr(
     VNODE_T *vp,
     VATTR_T *vap,
     int flags,
-    CRED_T *cred
+    CALL_DATA_T *cd
 )
 {
     struct iattr ia;
@@ -647,7 +583,7 @@ mvop_linux_setattr(
     vnlayer_linux_vattr2iattr(CVN_TO_INO(vp), vap, &ia);
     STACK_CHECK();
 
-    save_ids = vnlayer_fsuid_save(&saved_ids, cred);
+    save_ids = vnlayer_fsuid_save(&saved_ids, MVFS_CD2CRED(cd));
     STACK_CHECK();
     if (ia.ia_valid & ATTR_SIZE) {
         /* be paranoid and record the 'taken'ness in case the called
@@ -656,7 +592,9 @@ mvop_linux_setattr(
         /* XXX could this already be held? */
         LOCK_INODE(dent->d_inode);
     }
-#if defined SLES10SP2
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
     err = notify_change(dent, CVN_TO_VFSMNT(vp), &ia);
 #else
     err = notify_change(dent, &ia);
@@ -679,13 +617,13 @@ extern int
 mvop_linux_open(
     VNODE_T **vpp,
     int mode,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx
 )
 {
     int status;
     struct file *fp;
-    void *realfp;
+    void *realfp = NULL;
     VNODE_T *vp;                    /* the real dentry we want to open */
     STACK_CHECK_DECL()
 
@@ -707,7 +645,7 @@ mvop_linux_open(
     ASSERT(MDKI_INOISCLRVN(VTOI(vp)));
     VN_HOLD(vp);                    /* extra hold to avoid problems */
     status = mvop_linux_open_kernel(&vp, mode & (FWRITE|FREAD|FTRUNC|FAPPEND),
-                                    cred, &realfp);
+                                    MVFS_CD2CRED(cd), &realfp);
     STACK_CHECK();
     /*
      * linux_open either returned the same vnode, in which case
@@ -750,7 +688,6 @@ mvop_linux_close(
 {
     int status = 0;
     struct file *realfp;
-
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) && !defined(SLES10SP2)
     struct file *fp = (struct file *) ctx;
     fl_owner_t owner_id = NULL;
@@ -786,6 +723,7 @@ mvop_linux_close(
                      __func__, F_COUNT(fp), count, F_COUNT(realfp));
     }
 #endif
+
     /* We're being called as part of a filp_close(filp, id) on our file (fp).
     ** We need to do the same things for the cleartext file (realfp).  The
     ** sequence of calls in filp_close() is:
@@ -853,7 +791,7 @@ mvop_linux_rdwr(
     uio_rw_t rw,
     int ioflag,
     VATTR_T *vap,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx
 )
 {
@@ -869,19 +807,18 @@ mvop_linux_rdwr(
     realfp = REALFILE(fp);
     ASSERT(CVN_TO_DENT(vp) == realfp->f_dentry);
     realfp->f_pos = fp->f_pos;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    realfp->f_reada = fp->f_reada;
-    realfp->f_version = ++event;
-#else
     realfp->f_ra = fp->f_ra;    /* Copy struct file_ra_state */
     realfp->f_version = 0;      /* See default_llseek() in fs/read_write.c */
-#endif
     realfp->f_flags = (realfp->f_flags & ~COPIED_FLAGS) |
         (fp->f_flags & COPIED_FLAGS);
-    err = mvop_linux_rw_kernel(uiop, ioflag, realfp,
-                              rw == UIO_READ ?
-                              realfp->f_op->read : (rwfunc_t)realfp->f_op->write);
-    STACK_CHECK();
+    if (realfp->f_op != NULL) {
+        err = mvop_linux_rw_kernel(uiop, ioflag, realfp,
+                  rw == UIO_READ ?
+                  realfp->f_op->read : (rwfunc_t)realfp->f_op->write);
+        STACK_CHECK();
+    } else {
+        err = EIO;
+    }
     if (err == 0 && vap != NULL) {
         vnlayer_linux_inode2vattr(realfp->f_dentry->d_inode, vap);
         STACK_CHECK();
@@ -897,7 +834,7 @@ mvop_linux_ioctl(
     int cmd,
     caddr_t data,
     int flag,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     int *rvalp,
     VOPBD_T *vopbdp,
     MVFS_CALLER_INFO *callinfo
@@ -995,31 +932,37 @@ mvop_linux_lookup_storage_file(
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,9)
     memset(&nd, 0, sizeof(struct nameidata));
 #endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0) && defined(IT_LOOKUP)
+#if defined(IT_LOOKUP)
     /*
      * The intent_* stuff is part of support in SLES for Lustre clustering.
      */
     intent_init(&nd.intent, IT_LOOKUP);
 #endif
-    nd.dentry = dget(vnlayer_sysroot_dentry);
-    nd.mnt = MDKI_MNTGET(vnlayer_sysroot_mnt);
+    MDKI_NAMEI_SET_DENTRY(&nd, dget(vnlayer_sysroot_dentry));
+    MDKI_NAMEI_SET_MNT(&nd, MDKI_MNTGET(vnlayer_sysroot_mnt));
     nd.flags = LOOKUP_FOLLOW;
 
-    /* path_walk has a bogus interface.  It releases the nameidata on
-     * errors but not on success.
+    /* Both path_walk and vfs_path_lookup have a bogus interface.
+     * They release the nameidata on errors but not on success.
      */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
     error = path_walk(path, &nd);
+#else
+    error = vfs_path_lookup(MDKI_NAMEI_DENTRY(&nd),
+                    MDKI_NAMEI_MNT(&nd), path, nd.flags, &nd);
+#endif
     STACK_CHECK();
     error = vnlayer_errno_linux_to_unix(error);
     if (error == 0) {
-        if (nd.dentry->d_inode == 0) {
+        if (MDKI_NAMEI_DENTRY(&nd)->d_inode == 0) {
             /* path walk returned a negative dentry and no error.
              * Turn this into an error.
              */
             error = ENOENT;
             *vpp = NULL;
         } else {
-            *vpp = CVN_CREATE(nd.dentry, nd.mnt);
+            *vpp = CVN_CREATE(MDKI_NAMEI_DENTRY(&nd),
+                              MDKI_NAMEI_MNT(&nd));
             STACK_CHECK();
             if (*vpp == NULL) {
                 error = ENFILE;
@@ -1029,7 +972,7 @@ mvop_linux_lookup_storage_file(
                 ASSERT(!MDKI_INOISOURS(CVN_TO_INO(*vpp)));
             }
         }
-        path_release(&nd);
+        MDKI_PATH_RELEASE(&nd);
     }
 
     (void) vnlayer_swap_task_fs(current, temp_fs);
@@ -1045,9 +988,6 @@ mvop_linux_lookup_storage_file(
  * because in 2.6, path_walk now returns an error if not found.  This is
  * OK for ioctl lookups but for lookup component, we want the negative
  * dentry to use for create later on.
- *
- * We use it for 2.4 as well, since it works just as well as the old
- * lookupvp-based method, and is simpler.
  *
  * Note:  This function returns with the parent inode locked.
  */
@@ -1066,9 +1006,7 @@ mvop_linux_lookup_single(
     DENT_T *pdent;
     DENT_T *found = NULL;
     struct vfsmount *mnt;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,4,9)
     int saved_link_cnt;
-#endif
     struct nameidata *ndp;
     STACK_CHECK_DECL()
     
@@ -1085,16 +1023,17 @@ mvop_linux_lookup_single(
     CVN_SPINUNLOCK();
     STACK_CHECK();
     ASSERT(pdent->d_parent->d_inode != NULL); /* make sure autofs4 will be happy */
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,4,9)
     saved_link_cnt = current->total_link_count;
-#endif
     memset(ndp, 0, sizeof(*ndp));
-    ndp->dentry = pdent;
-    ndp->mnt = mnt;
+    MDKI_NAMEI_SET_DENTRY(ndp, pdent);
+    MDKI_NAMEI_SET_MNT(ndp, mnt);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
     error = path_walk(path, ndp);
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,4,9)
-    current->total_link_count += saved_link_cnt;
+#else
+    error = vfs_path_lookup(MDKI_NAMEI_DENTRY(ndp),
+                    MDKI_NAMEI_MNT(ndp), path, 0, ndp);
 #endif
+    current->total_link_count += saved_link_cnt;
     STACK_CHECK();
     /* If we succeeded, tell what we know. */
     /* But it is now more complicated now that we have replaced the call
@@ -1102,36 +1041,39 @@ mvop_linux_lookup_single(
      * get the locking right for autofs4 which may pend in revalidate.
      * Path_walk does not hold the parent inode semaphore when it calls
      * cached_lookup.  The other lookup functions (lookup_one_len, lookup_hash)
-     * do.  But the other functions will return a negative dentry if they
-     * are unsuccesful.  Path_walk just returns ENOENT and has done a 
-     * path_release on the nameidata so that the negative dentry that it 
-     * has just created has already been released.  So if we get ENOENT
-     * we will call lookup_one_len to get the cached dentry.  This should
-     * avoid the deadlocks because everything should be in place from
-     * path_walk.
+     * do.
+     * It used to be that on the ENOENT case, we redid the lookup by calling
+     * lookup_one_len and creating a CVP to connect the negative loopback
+     * dentry and the negative real dentry.  This had the unfortunate side
+     * effect of raising the d_count on the real dentry which caused it to
+     * stay around forever.  (Part of the problem is that we don't release
+     * the dentry pointer in the CVP until i_clear is called releasing the
+     * inode. Since negative dentries do not have an inode pointer, this 
+     * was never happening.  I have changed our d_delete function to 
+     * put the dummy inode pointer into the d_inode field on negative
+     * dentries so that i_clear does get called.
+     * While the d_delete change may have been sufficient, I have chosen to 
+     * not create a CVP for negative dentries. This will keep the counts 
+     * correct for lookups in calls such as stat without creating and 
+     * then immediately freeing a real negative dentry.
+     * Lookup_one_len or lookup_hash will need to be called at the point at 
+     * which a real negative dentry is required for file creation.  As long 
+     * as we cannot open shadow files, this is  only required for mkdir and 
+     * for rename.  This has the added advantage
+     * that the final lookup (at least in rename) is done under the real
+     * parent inode lock.
+     * As long as we only deal with loopback directories for view-extended
+     * path names, I do not expect a problem with delaying the final lookup
+     * causing the hangs described above.
      */
-    if (error && error != -ENOENT) {
+    if (error) {
         error = vnlayer_errno_linux_to_unix(error);
         /* No need to release nameidata because path_walk does it on error.*/
-    } else if (error == -ENOENT) {
-        /* Lock the parent. Deadlocks should be avoided because if the
-         * d_revalidate would wait, it would have done that in path_walk
-         * so we should be safe now.  At least as long as it is only 
-         * autofs4 that waits in d_revalidate.
-         */
-        LOCK_INODE(pdent->d_inode);
-        found = lookup_one_len(path, pdent, strlen(path));
-        UNLOCK_INODE(pdent->d_inode);
-        if (IS_ERR(found)) {
-            error = vnlayer_errno_linux_to_unix(PTR_ERR(found));
-        } else {
-            error = vnlayer_lookup_post(dentry, found, cvpp, ndp->mnt);
-        }
     } else {
-        found = ndp->dentry;
-        error = vnlayer_lookup_post(dentry, found, cvpp, ndp->mnt);
+        found = MDKI_NAMEI_DENTRY(ndp);
+        error = vnlayer_lookup_post(dentry, found, cvpp, MDKI_NAMEI_MNT(ndp));
         /* vnlayer_lookup_post() has dropped our reference on 'found' */
-        path_release(ndp);
+        MDKI_PATH_RELEASE(ndp);
     }
     STACK_CHECK();
     if (save_ids)
@@ -1442,6 +1384,9 @@ mvop_linux_open_kernel(
     STACK_CHECK_DECL()
     vnlayer_fsuid_save_t oldfsuid;
     mdki_boolean_t swap_ids;
+#if defined RATL_REDHAT && RATL_VENDOR_VER == 600
+    struct path path;
+#endif
 
 /*    ASSERT(flags == FREAD || flags == FWRITE || flags == (FWRITE|FTRUNC));*/
 
@@ -1488,7 +1433,11 @@ mvop_linux_open_kernel(
             put_write_access(ip);
             return vnlayer_errno_linux_to_unix(err);
         }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
         DQUOT_INIT(ip);
+#else
+        vfs_dq_init(ip);
+#endif
         STACK_CHECK();
         swap_ids = vnlayer_fsuid_save(&oldfsuid, cred);
         STACK_CHECK();
@@ -1502,7 +1451,6 @@ mvop_linux_open_kernel(
         if (err)
             return vnlayer_errno_linux_to_unix(err);
     }
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
       else { 
         /* NFS does not go over the wire on open in the 2.6 kernel.  It
          * assumes the validation was done during lookup.  Since we 
@@ -1511,12 +1459,15 @@ mvop_linux_open_kernel(
          * did a truncate, this is not necessary.
          */
         struct kstat *kp = KMEM_ALLOC(sizeof(*kp), KM_SLEEP);
-        err = vfs_getattr(VTOVFSMNT(cvp), CVN_TO_DENT(cvp), kp);
-        KMEM_FREE(kp, sizeof(*kp));
+        if (kp != NULL) {
+            err = vfs_getattr(VTOVFSMNT(cvp), CVN_TO_DENT(cvp), kp);
+            KMEM_FREE(kp, sizeof(*kp));
+        } else {
+            err = -ENOMEM;
+        }
         if (err)
 	    return vnlayer_errno_linux_to_unix(err);
     }
-#endif
     if (flags & FWRITE) {
         err = get_write_access(ip);
         if (err) {
@@ -1527,7 +1478,13 @@ mvop_linux_open_kernel(
     swap_ids = vnlayer_fsuid_save(&oldfsuid, cred);
     STACK_CHECK();
     /* Caller's credentials get attached to the file */
+#if defined RATL_REDHAT && RATL_VENDOR_VER == 600
+    path.mnt = MDKI_MNTGET((struct vfsmount *)cvp->v_vfsmnt);
+    path.dentry = VNODE_DGET(CVN_TO_DENT(cvp));
+    fp = alloc_file(&path, vnlayer_flags_to_fmode(flags), fops_get(ip->i_fop));
+#else
     fp = get_empty_filp();
+#endif
     if (swap_ids)
         vnlayer_fsuid_restore(&oldfsuid);
 
@@ -1546,15 +1503,16 @@ mvop_linux_open_kernel(
      */
 
     STACK_CHECK();
+    fp->f_flags = O_LARGEFILE;
+    /* the following is only needed when using get_empty_filp */
+#if !(defined RATL_REDHAT && RATL_VENDOR_VER == 600)
     fp->f_dentry = VNODE_DGET(CVN_TO_DENT(cvp));
     fp->f_mode = vnlayer_flags_to_fmode(flags);
     fp->f_op = fops_get(ip->i_fop);
-    fp->f_flags = O_LARGEFILE;
     fp->f_vfsmnt = MDKI_MNTGET(/* don't use CVN_TO_VFSMNT, it complains about the NULL case */(struct vfsmount *)cvp->v_vfsmnt);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     fp->f_mapping = fp->f_dentry->d_inode->i_mapping;
-    VNLAYER_RA_STATE_INIT(&fp->f_ra, fp->f_mapping->host->i_mapping);
 #endif
+    VNLAYER_RA_STATE_INIT(&fp->f_ra, fp->f_mapping->host->i_mapping);
     if (fp->f_vfsmnt == NULL) {
         /*
          * only happens if cvp->mnt is NULL, which shouldn't happen unless
@@ -1567,7 +1525,7 @@ mvop_linux_open_kernel(
         err = -EOPNOTSUPP;               /* XXX not the best choice of code */
     } else {
         STACK_CHECK();
-        if (fp->f_op->open)
+        if ((fp->f_op != NULL) && (fp->f_op->open != NULL))
             err = (*fp->f_op->open)(ip, fp);
         else
             err = 0;
@@ -1656,8 +1614,8 @@ mvop_linux_close_kernel(
         */
         MDKI_VFS_LOG(VFS_LOG_ERR,
                      "%s: Locks should be gone, continuing anyway. fp=%p vp=%p "
-                     "cnt=%d fcnt=%d po=%p pid=%d tgid=%d fl=%p flo=%p\n",
-                     __func__, fp, vp, count, F_COUNT(fp),
+                     "cnt=%d fcnt=%ld po=%p pid=%d tgid=%d fl=%p flo=%p\n",
+                     __func__, fp, vp, count, (long) F_COUNT(fp),
                      current->files, current->pid, current->tgid,
                      fp->f_dentry->d_inode->i_flock->fl_file,
                      fp->f_dentry->d_inode->i_flock->fl_owner);
@@ -1701,7 +1659,7 @@ mvop_linux_rw_kernel(
 
     if (uiop->uio_iovcnt != 1) {
         MDKI_VFS_LOG(VFS_LOG_DEBUG, "%s: iovcnt=%d, caller=%p\n",
-               __func__, uiop->uio_iovcnt, mdki_getmycaller());
+                     __func__, uiop->uio_iovcnt, mdki_getmycaller());
         return EINVAL;                  /* XXX */
     }
     if (funcp == NULL)
@@ -1743,10 +1701,10 @@ mvop_linux_read_kernel(
 
     if (!(fp->f_mode & FMODE_READ)) {
         MDKI_VFS_LOG(VFS_LOG_DEBUG, "%s: mode %o not FMODE_READ %o\n",
-               __func__, fp->f_mode, FMODE_READ);
+                     __func__, fp->f_mode, FMODE_READ);
         return EBADF;
     }
-    if (fp->f_op->read == NULL)
+    if ((fp->f_op == NULL) || (fp->f_op->read == NULL))
         return EIO;                 /* XXX */
 
     STACK_CHECK();
@@ -1770,10 +1728,10 @@ mvop_linux_write_kernel(
 
     if (!(fp->f_mode & FMODE_WRITE)) {
         MDKI_VFS_LOG(VFS_LOG_DEBUG, "%s: mode %o not FMODE_WRITE %o\n",
-               __func__, fp->f_mode, FMODE_WRITE);
+                     __func__, fp->f_mode, FMODE_WRITE);
         return EBADF;
     }
-    if (fp->f_op->write == NULL)
+    if ((fp->f_op == NULL) || (fp->f_op->write == NULL))
         return EIO;                 /* XXX */
 
     /* cast ...->write to a (rwfunc_t) since its (const char *) parameter
@@ -1799,7 +1757,7 @@ mdki_linux_createvp(
     vnlayer_fsuid_save_t oldfsuid;
     mdki_boolean_t swap_ids;
     struct fs_struct *temp_fs, *my_fs;
-    struct nameidata nd;
+    struct nameidata *nd_p;
 
     /* XXX locking? */
     /*
@@ -1807,59 +1765,61 @@ mdki_linux_createvp(
      * if it causes problems? XXX
      */
 
+    /* to save stack space */
+    nd_p = (struct nameidata *) KMEM_ALLOC(sizeof(*nd_p), KM_SLEEP);
+    if (nd_p == NULL) {
+        MDKI_VFS_LOG(VFS_LOG_ERR, "Failed to allocate %ld bytes\n", (long) sizeof(*nd_p));
+        return ENOMEM;
+    }
     /*
      * Swap in a totally new struct fs, to make sure we don't
      * interfere with lookups in another process sharing our struct.
      */
     my_fs = vnlayer_make_temp_fs_struct();
     if (my_fs == NULL) {
+        KMEM_FREE(nd_p, sizeof(*nd_p));
         return ENOMEM;
     }
+
     swap_ids = vnlayer_fsuid_save(&oldfsuid, cred);
     STACK_CHECK();
     temp_fs = vnlayer_swap_task_fs(current, my_fs);
 
     STACK_CHECK();
-    /* For 2.4 kernels, open_namei is no longer exported.  This means
-     * we have to do a lot of the work ourselves.
-     */
     /* Locking protocols are handled by path_* functions */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    if (path_init(path, LOOKUP_PARENT, &nd))
-        error = path_walk(path, &nd);
-#else
     /* path_lookup() now does all the work. */
 #ifdef IT_LOOKUP
-    intent_init(&nd.intent, IT_LOOKUP);
+    intent_init(&nd_p->intent, IT_LOOKUP);
 #endif
-    error = path_lookup(path, LOOKUP_PARENT, &nd);
-#endif
+    error = path_lookup(path, LOOKUP_PARENT, nd_p);
     STACK_CHECK();
     if (!error) {
 #ifdef NO_EXPORTED_LOOKUP_CREATE
-        LOCK_INODE(nd.dentry->d_inode);
-        error = vnlayer_lookup_create(&nd, 0, &dent);
+        LOCK_INODE(MDKI_NAMEI_DENTRY(nd_p)->d_inode);
+        error = vnlayer_lookup_create(nd_p, 0, &dent);
 #else
         /* lookup_create locks the parent inode */
-        dent = lookup_create(&nd, 0);
+        dent = lookup_create(nd_p, 0);
         if (IS_ERR(dent)) {
             error = PTR_ERR(dent);
             dent = NULL;
         }
 #endif
         STACK_CHECK();
-        if (!error) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-            error = vfs_create(nd.dentry->d_inode, dent, vap->va_mode);
-#else
-            error = vfs_create(nd.dentry->d_inode, dent, vap->va_mode, &nd);
+        if (!error)  {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,9)
+            /* nd_p->intent should be initialized by lookup_create */
+            nd_p->intent.open.flags |= FMODE_READ | O_CREAT;
+            nd_p->intent.open.create_mode = vap->va_mode;
 #endif
+            error = vfs_create(MDKI_NAMEI_DENTRY(nd_p)->d_inode, dent,
+                               vap->va_mode, nd_p);
             STACK_CHECK();
-            UNLOCK_INODE(nd.dentry->d_inode);
+            UNLOCK_INODE(MDKI_NAMEI_DENTRY(nd_p)->d_inode);
             if (error)
                 dput(dent);
             else {
-                *newdpp = CVN_CREATE(dent, nd.mnt);
+                *newdpp = CVN_CREATE(dent, MDKI_NAMEI_MNT(nd_p));
                 STACK_CHECK();
                 VNODE_DPUT(dent);  /* drop vfs_create()'s reference */
                 if (*newdpp == NULL) {
@@ -1867,12 +1827,12 @@ mdki_linux_createvp(
                 }
             }
         } else
-            UNLOCK_INODE(nd.dentry->d_inode);
+            UNLOCK_INODE(MDKI_NAMEI_DENTRY(nd_p)->d_inode);
 
         MDKI_TRACE(TRACE_DCACHE, "%s: d_put %p cnt=%d--\n",
-                  __func__, nd.dentry, D_COUNT(nd.dentry));
+                  __func__, nd_p->dentry, D_COUNT(nd_p->dentry));
         STACK_CHECK();
-        path_release(&nd);
+        MDKI_PATH_RELEASE(nd_p);
         STACK_CHECK();
     }
 
@@ -1883,7 +1843,7 @@ mdki_linux_createvp(
 
     if (swap_ids)
         vnlayer_fsuid_restore(&oldfsuid);
-
+    KMEM_FREE(nd_p, sizeof(*nd_p));
     STACK_CHECK();
 
     return vnlayer_errno_linux_to_unix(error);
@@ -1910,9 +1870,6 @@ mvop_linux_mknod(
     DENT_T *real_dentry;
     DENT_T *parent_dentry;
     DENT_T *new;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    struct nameidata nd;
-#endif
     struct create_ctx *context = acontext;
     STACK_CHECK_DECL()
 
@@ -1930,7 +1887,6 @@ mvop_linux_mknod(
     real_parent = parent_dentry->d_inode;
 
     STACK_CHECK();
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     LOCK_INODE(real_parent);
     /* There would be a possibility of a deadlock here if we are in an
      * autofs4 filesystem.  That is because autofs4 may pend in revalidate
@@ -1945,29 +1901,6 @@ mvop_linux_mknod(
 	real_dentry = NULL;
         UNLOCK_INODE(real_parent);
     }
-#else
-    memset(&nd, 0, sizeof(struct nameidata));
-    nd.dentry = VNODE_DGET(parent_dentry);
-
-    /* We already know the parent's vfsmnt pointer, so use that and get a
-    ** reference on it, which we (or path_walk) release after the call.
-    */
-    nd.mnt = MDKI_MNTGET(CVN_TO_VFSMNT(dvp));
-    err = path_walk(new->d_name.name, &nd);
-    STACK_CHECK();
-    if (!err) {
-        real_dentry = nd.dentry;
-        /*
-         * keep nd.mnt until we're done with nd.dentry, to avoid
-         * unmount race conditions
-         */
-        LOCK_INODE(real_parent);
-    } else {
-        /* no need to release, path_walk() did it. */
-        real_dentry = NULL;
-        nd.mnt = NULL;  /* null it out so we don't release it again */
-    }
-#endif
     if (!err) {
         /*
          * We don't link up the new dentry to the real dentry,
@@ -1979,7 +1912,9 @@ mvop_linux_mknod(
 	}
 #endif
         STACK_CHECK();
-#if defined(SLES10SP2)
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
         err = vfs_mknod(real_parent, real_dentry, CVN_TO_VFSMNT(dvp),
                         mode, context->dev);
 #else
@@ -2004,9 +1939,6 @@ mvop_linux_mknod(
     }
     VNODE_DPUT(real_dentry);
     /* Note that lookup dentry dputs the parent_dentry */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    MDKI_MNTPUT(nd.mnt);       /* release the reference from above. */
-#endif
     STACK_CHECK();
 
     return vnlayer_errno_linux_to_unix(err);
@@ -2020,7 +1952,7 @@ mvop_linux_create(
     enum vcexcl excl,
     int mode,
     VNODE_T **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     create_ctx *acontext
 )
 {
@@ -2041,7 +1973,8 @@ mvop_linux_create(
     if (VATTR_GET_TYPE(vap) == VCHR || VATTR_GET_TYPE(vap) == VBLK ||
         VATTR_GET_TYPE(vap) == VFIFO || VATTR_GET_TYPE(vap) == VSOCK)
     {
-        return mvop_linux_mknod(dvp, nm, vap, excl, mode, vpp, cred, acontext);
+        return mvop_linux_mknod(dvp, nm, vap, excl, mode, vpp,
+                                MVFS_CD2CRED(cd), acontext);
     }
 
 #ifdef HAVE_SHADOW_FILES
@@ -2074,7 +2007,7 @@ mvop_linux_create(
     real_dentry = REALDENTRY_LOCKED(dentry, &cvp);
     STACK_CHECK();
     VNODE_DGET(real_dentry);             /* hold inode, if any */
-    if ((real_dentry == NULL) || (DENT_HASH_IS_EMPTY(real_dentry))) {
+    if ((real_dentry == NULL) || (d_unhashed(real_dentry))) {
         /* Someone nuked the real dentry on us.  Time to go. */
         err = -ENOENT;
     } else {
@@ -2088,12 +2021,8 @@ mvop_linux_create(
 #endif
         if (!real_dentry->d_inode) {
             STACK_CHECK();
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-            err = vfs_create(real_parent, real_dentry, mode);
-#else
             /* NFSD passes a null nameidata to vfs_create, so we will too. */
             err = vfs_create(real_parent, real_dentry, mode, NULL);
-#endif
             STACK_CHECK();
         }
     }
@@ -2176,12 +2105,7 @@ vnlayer_do_linux_link(
     STACK_CHECK();
     real_parent = CVN_TO_INO(tdvp);
     /* Now verify that this link doesn't cross file systems */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    if (real_parent->i_dev != rold->d_inode->i_dev)
-#else
-    if (real_parent->i_sb->s_dev != rold->d_inode->i_sb->s_dev)
-#endif
-    {
+    if (real_parent->i_sb->s_dev != rold->d_inode->i_sb->s_dev) {
         err = -EXDEV;
         goto out;
     }
@@ -2201,9 +2125,7 @@ vnlayer_do_linux_link(
      * on the next lookup.
      */
     if (!err) {
-        if (rnew->d_inode == NULL ||
-            DENT_HASH_IS_EMPTY(rnew))
-        {
+        if (rnew->d_inode == NULL || d_unhashed(rnew)) {
             d_drop(rnew);           /* XXX should be d_drop(newdent)? */
             STACK_CHECK();
             iput(shadow_inode);
@@ -2242,7 +2164,7 @@ mvop_linux_link(
     VNODE_T *tdvp, /* use this to find the real parent */
     VNODE_T *vp, /* ignore it, use ctx instead */
     char *tnm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     link_ctx *context
 )
 {
@@ -2263,7 +2185,7 @@ mvop_linux_remove(
     VNODE_T *dvp,
     VNODE_T *vp,                        /* ignore, use dentry */
     char *nm,                           /* ignore, use dentry */
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     unlink_ctx *ctx
 )
 {
@@ -2272,9 +2194,7 @@ mvop_linux_remove(
     VNODE_T *cvp;
     struct unlink_ctx *uctx = ctx;
     int err = 0;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     INODE_T *rinode = NULL;
-#endif
     STACK_CHECK_DECL()
 
     uctx->done = TRUE;
@@ -2298,51 +2218,37 @@ mvop_linux_remove(
      * may already have broken our connection with the real dentry.
      * In that case, just skip the call to vfs_unlink.
      */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    /* XXX Actually this d_delete may not belong here on any version.
-     * vfs_unlink will do the d_delete later.  It is just that in
-     * the 2.6 kernel it becomes a problem because vfs_delete will try to 
-     * access the inode from the dentry (to release the inode i_sem lock)
-     * after we return.  If we d_delete first, that causes a panic.
+    /* You might ask why we don't clear the realdentry field
+     * and dput the real dentry before we call vfs_unlink.  It
+     * turns out that this won't work.  In the case of an unlink
+     * of an open file, the extra count caused by the real dentry
+     * mimics the bump in the count caused by the lookup if the
+     * file were not shadowed.  Thus, if the file is open, the
+     * count on the dentry will be 2 which will keep it from getting
+     * dropped by the unlink.  Otherwise, we drop it here and
+     * panic when we close the file because the file structure
+     * contains a pointer to a negative dentry.
      */
-    if (!rdent) {
-        d_delete(dent);
-    } else {
-#endif
-        /* You might ask why we don't clear the realdentry field
-         * and dput the real dentry before we call vfs_unlink.  It
-         * turns out that this won't work.  In the case of an unlink
-         * of an open file, the extra count caused by the real dentry
-         * mimics the bump in the count caused by the lookup if the
-         * file were not shadowed.  Thus, if the file is open, the
-         * count on the dentry will be 2 which will keep it from getting
-         * dropped by the unlink.  Otherwise, we drop it here and
-         * panic when we close the file because the file structure
-         * contains a pointer to a negative dentry.
-         */
 
-        /* WARNING: this vfs_unlink may release rdent->d_inode.
-         * We do not want to bump the ref count on rdent, because that will
-         * yield NFS silly-renames when the file is not really in use.
-         */
-        LOCK_INODE(rdir);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-        err = vfs_unlink(rdir, rdent);
-#else
-        /* For those filetypes which we don't shadow, we will need to
-	 * release the inode semaphore before we call vfs_unlink.  Since
-	 * both our dentry and the real dentry point to the same inode,
-	 * if we don't do this we create a deadlock, since the vfs_unlink
-	 * that called us originally already locked the inode.  This should
-	 * be ok because creates and deletes already hold the locks on 
-	 * the parents as well.  The only exception is link() which should
-	 * still be ok because it will still be properly serialized.
-	 */
-	switch (rdent->d_inode->i_mode & S_IFMT) {
-	  case S_IFCHR:
-          case S_IFBLK:
-	  case S_IFIFO:
-	  case S_IFSOCK:
+    /* WARNING: this vfs_unlink may release rdent->d_inode.
+     * We do not want to bump the ref count on rdent, because that will
+     * yield NFS silly-renames when the file is not really in use.
+     */
+    LOCK_INODE(rdir);
+    /* For those filetypes which we don't shadow, we will need to
+     * release the inode semaphore before we call vfs_unlink.  Since
+     * both our dentry and the real dentry point to the same inode,
+     * if we don't do this we create a deadlock, since the vfs_unlink
+     * that called us originally already locked the inode.  This should
+     * be ok because creates and deletes already hold the locks on 
+     * the parents as well.  The only exception is link() which should
+     * still be ok because it will still be properly serialized.
+     */
+    switch (rdent->d_inode->i_mode & S_IFMT) {
+        case S_IFCHR:
+        case S_IFBLK:
+        case S_IFIFO:
+        case S_IFSOCK:
             ASSERT(rdent->d_inode == dent->d_inode);
             /* Save the inode before vfs_unlink d_deletes the dentry */
 	    rinode = rdent->d_inode;
@@ -2350,25 +2256,20 @@ mvop_linux_remove(
 	    break;
 	  default:
 	    break;
-	}
-#if defined(SLES10SP2)
-	err = vfs_unlink(rdir, rdent, CVN_TO_VFSMNT(cvp));
-#else
-	err = vfs_unlink(rdir, rdent);
-#endif
-	if (rinode) {
-	    LOCK_INODE(rinode);
-	}
-#endif
-        STACK_CHECK();
-        UNLOCK_INODE(rdir);
-        REALDENTRY_UNLOCK(dent, cvp);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-        if (!err) {
-            d_delete(dent);
-        }
     }
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
+    err = vfs_unlink(rdir, rdent, CVN_TO_VFSMNT(cvp));
+#else
+    err = vfs_unlink(rdir, rdent);
 #endif
+    if (rinode) {
+        LOCK_INODE(rinode);
+    }
+    STACK_CHECK();
+    UNLOCK_INODE(rdir);
+    REALDENTRY_UNLOCK(dent, cvp);
     STACK_CHECK();
     return vnlayer_errno_linux_to_unix(err);
 }
@@ -2380,7 +2281,7 @@ mvop_linux_symlink(
     VATTR_T *vap,
     char *targname,
     VNODE_T **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     symlink_ctx *context
 )
 {
@@ -2420,7 +2321,7 @@ mvop_linux_symlink(
     LOCK_INODE(real_parent);
 
     real_dentry = REALDENTRY_LOCKED(new, &cvp);
-    if (!real_dentry || DENT_HASH_IS_EMPTY(real_dentry)) {
+    if (!real_dentry || d_unhashed(real_dentry)) {
         /* Someone did in the real dentry on us.  Time to go. */
         UNLOCK_INODE(real_parent);
         iput(shadow_inode);
@@ -2442,22 +2343,24 @@ mvop_linux_symlink(
         return EEXIST;
     }
     STACK_CHECK();
-#if defined(SLES10SP2)
-    err = vfs_symlink(real_parent, real_dentry, CVN_TO_VFSMNT(dvp), targname
+
+#if defined(SLES10SP2) || LINUX_VERSION_CODE == KERNEL_VERSION(2,6,24)
+    err = vfs_symlink(real_parent, real_dentry, CVN_TO_VFSMNT(dvp), targname,
+                      ctx->mode);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32) || \
+      LINUX_VERSION_CODE < KERNEL_VERSION(2,6,7)
+    err = vfs_symlink(real_parent, real_dentry, targname);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
+    err = vfs_symlink(real_parent, real_dentry, CVN_TO_VFSMNT(dvp), targname);
 #else
-    err = vfs_symlink(real_parent, real_dentry, targname
+    err = vfs_symlink(real_parent, real_dentry, targname, ctx->mode);
 #endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,7)
-                      , ctx->mode
-#endif
-                     );
+
     STACK_CHECK();
     UNLOCK_INODE(real_parent);
     if (!err) {
         /* see comments below about NFS and mkdir */
-        if (real_dentry->d_inode == NULL ||
-            DENT_HASH_IS_EMPTY(real_dentry))
-        {
+        if ((real_dentry->d_inode == NULL) || d_unhashed(real_dentry)) {
             /* XXX Should we do anything different if it's hashed but
              * has a NULL inode (negative dentry)?
              */
@@ -2495,7 +2398,7 @@ mvop_linux_mkdir(
     char *nm,
     VATTR_T *vap,
     VNODE_T **vpp,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     mkdir_ctx *ctx                           /* new dentry */
 )
 {
@@ -2504,9 +2407,6 @@ mvop_linux_mkdir(
     DENT_T *real_dentry;
     DENT_T *parent_dentry;
     struct mkdir_ctx *mkctx = ctx;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    struct nameidata nd;
-#endif
     int err = 0;
     VATTR_MODE_T mode;
     STACK_CHECK_DECL()
@@ -2519,7 +2419,6 @@ mvop_linux_mkdir(
     real_parent = parent_dentry->d_inode;
 
     STACK_CHECK();
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     LOCK_INODE(real_parent);
     /* There would be a possibility of a deadlock here if we are in an
      * autofs4 filesystem.  That is because autofs4 may pend in revalidate
@@ -2534,27 +2433,6 @@ mvop_linux_mkdir(
 	real_dentry = NULL;
         UNLOCK_INODE(real_parent); /* An error, so unlock. */
     }
-#else
-    memset(&nd, 0, sizeof(struct nameidata));
-    nd.dentry = VNODE_DGET(parent_dentry);
-    /* We already know the parent's vfsmnt pointer, so use that and get a
-    ** reference on it, which we (or path_walk) release after the call.
-    */
-    nd.mnt = MDKI_MNTGET(CVN_TO_VFSMNT(advp));
-    err = path_walk(new->d_name.name, &nd);
-    STACK_CHECK();
-    if (!err) {
-        real_dentry = nd.dentry;
-        /*
-         * keep nd.mnt until we're done with nd.dentry, to avoid
-         * unmount race conditions
-         */
-        LOCK_INODE(real_parent); /* Success, so lock. */
-    } else {
-        /* no need to release, path_walk() did it. */
-        real_dentry = NULL;
-    }
-#endif
     if (err) {
         /* The real_parent semaphore is not held in this case. */
         return vnlayer_errno_linux_to_unix(err);
@@ -2570,7 +2448,9 @@ mvop_linux_mkdir(
         mode &= ~mdki_get_ucmask();
     }
 #endif
-#if defined(SLES10SP2)
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
     err = vfs_mkdir(real_parent, real_dentry, CVN_TO_VFSMNT(advp), mode);
 #else
     err = vfs_mkdir(real_parent, real_dentry, mode);
@@ -2586,9 +2466,7 @@ mvop_linux_mkdir(
          * (The theory is that callers should tolerate this behavior
          * because NFS does it.)
          */
-        if (real_dentry->d_inode == NULL ||
-            DENT_HASH_IS_EMPTY(real_dentry))
-        {
+        if (real_dentry->d_inode == NULL || d_unhashed(real_dentry)) {
             /* XXX Should we do anything different if it's hashed but
              * has a NULL inode (negative dentry)?
              */
@@ -2618,9 +2496,6 @@ mvop_linux_mkdir(
             (*vpp)->v_flag |= VDOOMED;
     }
     VNODE_DPUT(real_dentry);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    MDKI_MNTPUT(nd.mnt);       /* release the reference from above. */
-#endif
     STACK_CHECK();
     return vnlayer_errno_linux_to_unix(err);
 }
@@ -2630,7 +2505,7 @@ mvop_linux_rmdir(
     VNODE_T *advp,
     char *nm,
     VNODE_T *cdir,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     dent_ctx *ctx
 )
 {
@@ -2671,7 +2546,9 @@ mvop_linux_rmdir(
      */
     LOCK_INODE(real_parent);
     STACK_CHECK();
-#if defined(SLES10SP2)
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
     err = vfs_rmdir(real_parent, real_dentry, CVN_TO_VFSMNT(advp));
 #else
     err = vfs_rmdir(real_parent, real_dentry);
@@ -2692,7 +2569,7 @@ mvop_linux_rename(
     char *onm,
     VNODE_T *tdvp,
     char *tnm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     rename_ctx *context
 )
 {
@@ -2703,10 +2580,9 @@ mvop_linux_rename(
     DENT_T *real_ndent;
     DENT_T *odent, *ndent;
     VNODE_T *odentcvp, *ndentcvp;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    DENT_T *real_opdent, *real_npdent;
+    DENT_T *real_opdent;
     DENT_T *test;
-#endif
+    DENT_T *real_npdent;
     struct rename_ctx *ctx = context;
     STACK_CHECK_DECL()
 
@@ -2716,7 +2592,6 @@ mvop_linux_rename(
     odent = ctx->odentry;
     ndent = ctx->ndentry;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     /*
      * First, verify that targets are on the same file system.
      * (2.6 doesn't do this for us anymore)
@@ -2725,55 +2600,82 @@ mvop_linux_rename(
         return EXDEV;
     }
     real_opdent = CVN_TO_DENT(odvp);		/* old parent dentry */
-    real_odir = real_opdent->d_inode;
+
     real_npdent = CVN_TO_DENT(tdvp);		/* new parent dentry */
-    real_ndir = real_npdent->d_inode;
-#else
     real_odir = CVN_TO_DENT(odvp)->d_inode;
     real_ndir = CVN_TO_DENT(tdvp)->d_inode;
-#endif
 
-    /* locking OK?  don't need to hold real_odent/real_ndent? */
+    /* We need to get the parent locks and then verify that the dentries
+     * are good.  This is done at the higher level by doing the final
+     * lookups with the parents locked. If we don't have a target, we 
+     * look it up now.  We verify the source under the lock before we 
+     * call vfs_rename so that the locking semantics match and the files 
+     * are known good.
+     */
+    test = lock_rename(real_npdent, real_opdent);
     real_odent = REALDENTRY_LOCKED(odent, &odentcvp);
-    if (real_odent == NULL)
-        return ENOENT;
-
-    real_ndent = REALDENTRY_LOCKED(ndent, &ndentcvp);
-    if (real_ndent == NULL) {
-        REALDENTRY_UNLOCK(odent, odentcvp);
-        return ENOENT;
+    if (real_odent == NULL) {
+        err = -ENOENT;
+        goto out_unlock1;
     }
-
-    ASSERT(REALVFSMNT(ndent));
-
-    STACK_CHECK();
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    double_down(&real_ndir->i_sem, &real_odir->i_sem);
-    err = vfs_rename(real_odir, real_odent, real_ndir, real_ndent);
-    STACK_CHECK();
-    double_up(&real_ndir->i_sem, &real_odir->i_sem);
-#else
-    /* No more double_*, they are replaced by lock_rename and unlock_rename.
-     * Lock rename returns the child of a common parent if there is one.  The
+    /* We now lookup the real new dentry and check it against the one
+     * pointed to by our loopback dentry.  If they don't match we 
+     * replace the old one.  
+     */
+    real_ndent = lookup_one_len(ndent->d_name.name, real_npdent,
+                                ndent->d_name.len);
+    if (IS_ERR(real_ndent)) {
+        err = PTR_ERR(real_ndent);
+        real_ndent = NULL;
+        REALDENTRY_UNLOCK(odent, odentcvp);
+        goto out_unlock1;
+    }
+    /* See if it matches.  */
+    if ((ndentcvp = REALCVN(ndent)) == NULL) {
+        /* No CVP, create one and link up the dentries */
+        ndentcvp = CVN_CREATE(real_ndent, CVN_TO_VFSMNT(tdvp));
+        SET_REALCVN(ndent, ndentcvp);
+        REALDENTRY_LOCKED(ndent, &ndentcvp);
+    } else {
+        REALDENTRY_LOCKED(ndent, &ndentcvp);
+        /* Replace the real dentry if it has changed*/ 
+        if ((DENT_T *)ndentcvp->v_dent != real_ndent) {
+            VNODE_DPUT((DENT_T *)ndentcvp->v_dent);
+            ndentcvp->v_dent = (void *)VNODE_DGET(real_ndent);
+        }
+    }
+    /* Lock rename returns the child of a common parent if there is one.  The
      * check below is to prevent either file from being a parent of the other.
      * See namei.c:do_lookup for details.
      */
-    test = lock_rename(real_npdent, real_opdent);
     if ((test == real_ndent) || (test == real_odent)) {
-        err = EINVAL;
-    } else {
-#if defined(SLES10SP2)
-        err = vfs_rename(real_odir, real_odent, CVN_TO_VFSMNT(odvp),
-                         real_ndir, real_ndent, CVN_TO_VFSMNT(tdvp));
-#else
-        err = vfs_rename(real_odir, real_odent, real_ndir, real_ndent);
-#endif
-        STACK_CHECK();
+        err = -EINVAL;
+        goto out_unlock;
     }
-    unlock_rename(real_npdent, real_opdent);
+    ASSERT(REALVFSMNT(ndent));
+
+    /* If the source dentries have gone bad on us, return an error. */
+    if ((real_odent->d_inode == NULL) || d_unhashed(real_odent)) {
+        err = -ENOENT;
+        goto out_unlock;
+    }
+    STACK_CHECK();
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
+    err = vfs_rename(real_odir, real_odent, CVN_TO_VFSMNT(odvp),
+                     real_ndir, real_ndent, CVN_TO_VFSMNT(tdvp));
+#else
+    err = vfs_rename(real_odir, real_odent, real_ndir, real_ndent);
 #endif
+    STACK_CHECK();
+out_unlock:
+    /* Drop the count from the lookup */
+    VNODE_DPUT(real_ndent);
     REALDENTRY_UNLOCK(odent, odentcvp);
     REALDENTRY_UNLOCK(ndent, ndentcvp);
+out_unlock1:
+    unlock_rename(real_npdent, real_opdent);
     STACK_CHECK();
     return vnlayer_errno_linux_to_unix(err);
 }
@@ -2798,11 +2700,7 @@ vnlayer_internal_llseek(
     }
     STACK_CHECK();
     file_p->f_pos = real_file->f_pos;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    file_p->f_reada = real_file->f_reada;
-#else
     file_p->f_ra = real_file->f_ra; /* Copy struct file_ra_state */
-#endif
     file_p->f_version = real_file->f_version;
 
     return(err);
@@ -2832,7 +2730,7 @@ extern int
 mvop_linux_fsync(
     VNODE_T *vp,
     int datasync,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx
 )
 {
@@ -2908,7 +2806,7 @@ mvop_linux_lockctl(
     VNODE_T *vp,
     void *ld,
     int cmd,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx
 )
 {
@@ -2923,7 +2821,7 @@ mvop_linux_lockctl(
     VNODE_T *vp,
     void *ld,
     int cmd,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     file_ctx *ctx
 )
 {
@@ -2949,18 +2847,28 @@ mvop_linux_lockctl(
     ** lock, and unlocking in the reverse order.  We'll always use the status
     ** from the cleartext lock as the return value
     **
-    ** The file_lock structure contains a copy of the file pointer.  So, when
-    ** we lock the cleartext we need to switch that, too.  NB: the Linux kernel
-    ** code (2.4.x) does not utilize reference counts on the file pointers in
-    ** the lock structure.  It doesn't do it in 2.6.x either.  If they did we
+    ** We used to reuse the lock_p passed in to do locking on both the MVFS
+    ** file and the cleartext.  We discovered that the NFS code would add 
+    ** callbacks for nlmclnt operations to the lock structure and that they
+    ** remained in place for subsequent MVFS operations.  There is no sign
+    ** that this caused any problems but we changed the SETLK code to allocate
+    ** and initialize a separate lock structure to prevent any possible 
+    ** problems.
+    **
+    ** NB: the Linux kernel code does not utilize reference counts on the file 
+    ** pointers in the lock structure.  If they did we
     ** would need F_COUNT_INC(realfp) and F_COUNT_DEC(realfp) calls around the
     ** places where we "switch" the lock_p->fl_file fields between our fp and
     ** the realfp below.  Note that these lock structures are copied one more
-    ** time before they are queued up, so we don't need to worry about this
-    ** same lock structure being attached to two different files.
+    ** time before they are queued up, so we don't need to worry about them
+    ** being freed before the locks are released.
     */
     realfp = REALFILE(fp);
-    ASSERT(realfp);
+    /* This check is a proxy for a check of the mnode class done in 
+     * mvfs_lockctl_ctx which we no longer call.
+     */
+    if (realfp == NULL)
+        return ENXIO;
 
     origfp = lock_p->fl_file;
     ASSERT(origfp == fp);
@@ -3000,7 +2908,6 @@ mvop_linux_lockctl(
         else {
             cfl = posix_test_lock(realfp, lock_p);
         }
-
         /* This is set correctly in the non-error case, but we need to set it
         ** for the error cases, and it's OK to repeat the setting.
         */
@@ -3015,23 +2922,23 @@ mvop_linux_lockctl(
                 memcpy(lock_p, cfl, sizeof(*lock_p));
             }
         }
-#elif defined(SLES10SP2)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) || defined(SLES10SP2)
         /* SLES 10.2 does the copying inside of posix_test_lock */
         else {
             posix_test_lock(realfp, lock_p);
         }
 #else /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18) */
         else {
-            /* posix_test_lock copies the content of file_lock it finds,
-             * when walking over i_lock list, instead of returning the pointer.
-             * The former posix_test_lock used to return the actual pointer
-             * found in the file inode i_lock list. So, now we have to
-             * pass a struct file_lock * to receive file_lock data.
-             * As stack is a scarse resource, we prefer to use KMEM_ALLOC.
+            /* posix_test_lock copies the content of the file_lock it finds
+             * when walking over the i_lock list instead of returning the
+             * pointer.  The former posix_test_lock used to return the actual
+             * pointer found in the file inode i_lock list.  So, now we have to
+             * pass a struct file_lock * to receive file_lock data.  As stack
+             * is a scarce resource, we prefer to use KMEM_ALLOC.
              */
             cfl = KMEM_ALLOC(sizeof(*cfl), KM_SLEEP);
             if (cfl) {
-                /* posix_test_lock return looks boolean */
+                /* posix_test_lock return looks like a boolean */
                 if (posix_test_lock(realfp, lock_p, cfl) != 0) {
                     /* Copy the cleartext lock info into our lock so fcntl_getlk()
                     ** in the Linux vfs layer can copy them into the user's
@@ -3055,35 +2962,41 @@ mvop_linux_lockctl(
       case F_SETLK64:
       case F_SETLKW64:
 #endif
+        /* use a copy of the original lock_p so that we don't
+         * get nlmclnt callbacks added to our lock structure. 
+         */
+        cfl = KMEM_ALLOC(sizeof(*cfl), KM_SLEEP);
+        if (cfl == NULL) {
+            err = -ENOMEM;
+            break;
+        }
+        locks_init_lock(cfl);
+        locks_copy_lock(cfl, lock_p);
+        cfl->fl_file = realfp;
+
         if (lock_p->fl_type == F_UNLCK) {
             /* Unlock our file first. */
-
             err = POSIX_LOCK_FILE(fp, lock_p, cmd);
             if (err != 0) {
                 MDKI_VFS_LOG(VFS_LOG_WARN, "%s: err=%d unlocking mvfs fp=%p\n",
                              __func__, -err, fp);
             }
             /* Unlock the cleartext file next.  We ignore any error above. */
-            lock_p->fl_file = realfp;
-
             if (realfp->f_op && realfp->f_op->lock) {
-                err = realfp->f_op->lock(realfp, cmd, lock_p);
+                err = realfp->f_op->lock(realfp, cmd, cfl);
             } else {
-                err = POSIX_LOCK_FILE(realfp, lock_p, cmd);
+                err = POSIX_LOCK_FILE(realfp, cfl, cmd);
             }
-            /* Put the lock file back to ours. */
-            lock_p->fl_file = origfp;
         } else {
+            /* we don't want it going away while we are in the middle of something */
+            get_file(realfp);
             /* This is the F_RDLCK or F_WRLCK case, go in the reverse order. */
-            lock_p->fl_file = realfp;
-
             if (realfp->f_op && realfp->f_op->lock) {
-                err = realfp->f_op->lock(realfp, cmd, lock_p);
+                err = realfp->f_op->lock(realfp, cmd, cfl);
             } else {
                 err = POSIX_LOCK_FILE(realfp, lock_p, cmd);
             }
-            /* Put the lock file back to ours. */
-            lock_p->fl_file = origfp; /* Remember, origfp should equal fp. */
+            fput(realfp);
 
             if (err == 0) {
                 err = POSIX_LOCK_FILE(fp, lock_p, cmd);
@@ -3098,6 +3011,7 @@ mvop_linux_lockctl(
                 err = 0;
             }
         }
+        KMEM_FREE(cfl, sizeof(*cfl));
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
         /* This is the setlock case so we need to save the owner of this lock
         ** because at exit time __exit_files() is going to set current->files =
@@ -3124,13 +3038,13 @@ mvop_linux_lockctl(
 
     return vnlayer_errno_linux_to_unix(err);
 }
-#endif
+#endif /* else !(defined(RATL_SUSE) && RATL_VENDOR_VER == 900) */
 
 extern int
 mvop_linux_readdir(
     VNODE_T *advp,
     struct uio *uiop,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     int *eofp,
     readdir_ctx *ctx
 )
@@ -3151,8 +3065,7 @@ mvop_linux_readdir(
     realfp = REALFILE(file_p);
     ASSERT(realfp);
     ASSERT(realfp->f_dentry);
-    ASSERT(realfp->f_op);
-    if (realfp->f_op->readdir) {
+    if (realfp->f_op && realfp->f_op->readdir) {
         COPY_FILE_STRUCT(file_p, realfp);
         STACK_CHECK();
         err = (*realfp->f_op->readdir)(realfp, uiop->uio_buff,
@@ -3178,7 +3091,7 @@ mvop_linux_mmap(
     VNODE_T *vp,
     u_int sharing,
     u_int rwx,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     mmap_ctx *ctx
 )
 {
@@ -3196,45 +3109,6 @@ mvop_linux_mmap(
 
     realfp = REALFILE(fp);
     ASSERT(realfp);
-    ASSERT(realfp->f_op && realfp->f_op->mmap);
-
-#if 0 /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,0) */
-
-    /* This strategy doesn't work because the NFS client file system
-     * can't handle i_mapping-related calls to it with a file pointer
-     * from some other file system.
-     */
-    INODE_T *clrip = CVN_TO_INO(vp);
-    INODE_T *mnip = fp->f_dentry->d_inode;
-
-    /* Set up i_mapping to point to cltxt file */
-
-    ASSERT(realfp->f_dentry == CVN_TO_DENT(vp));
-
-    ASSERT(mnip->i_mapping == &mnip->i_data ||
-           mnip->i_mapping == clrip->i_mapping);
-
-    if (mnip->i_mapping == &mnip->i_data)
-        mnip->i_mapping = clrip->>i_mapping;
-    else if (mnip->i_mapping != clrip->i_mapping) {
-        MDKI_VFS_LOG(VFS_LOG_ERR,
-                 "%s: inode mapping inconsistency ip=%p"
-                 " clrip=%p i_mapping=%p clrip->i_mapping=%p\n",
-                 __func__, mnip, clrip, mnip->i_mapping,
-                 clrip->i_mapping);
-        err = -ENXIO;
-        break;
-    }
-    /* XXX is it safe to call the underlying mmap routine
-     * *AND* generic_file_mmap()?  I think so for NFS and
-     * for ext2.   But we have to pass the "realfp" to the underlying
-     * FS's call.  We want to call it for any special validation it
-     * might do.
-     */
-    err = (*realfp->f_op->mmap)(realfp, mem_p);
-    if (!err)
-        err = generic_file_mmap(fp, mem_p);
-#else
 
     /*
      * Pass the buck to the cleartext.  Beware of adjusting counts
@@ -3281,7 +3155,10 @@ mvop_linux_mmap(
     }
 
     STACK_CHECK();
-    err = (*realfp->f_op->mmap)(realfp, mem_p);
+    if (realfp->f_op && realfp->f_op->mmap)
+        err = (*realfp->f_op->mmap)(realfp, mem_p);
+    else
+        err = -EIO
     STACK_CHECK();
 
     /*
@@ -3307,7 +3184,6 @@ mvop_linux_mmap(
         F_COUNT_DEC(realfp);
     } else if (dump_fp)
         fput(fp);              /* done with it for now */
-#endif
     return vnlayer_errno_linux_to_unix(err);
 }
 
@@ -3337,12 +3213,16 @@ mvop_linux_print(
                CVN_TO_DENT(vp)->d_inode, CVN_TO_DENT(vp)->d_name.name);
 }
 
+/* The calls marked direct call in the dispatch table below are used but
+ * are not dispatched through this table because we need a different 
+ * call sequence than provided by the default VOP interface.
+ */
 struct vnodeops mvop_cltxt_vnops = {
     .vop_open =         &mvop_linux_open,
-    .vop_close =        &mvop_linux_close,
+    .vop_close =        (vop_close_fn_t)&vnlayer_bogus_vnop, /* direct call */
     .vop_rdwr =         &mvop_linux_rdwr,
     .vop_ioctl =        &mvop_linux_ioctl,
-    .vop_getattr =      &mvop_linux_getattr,
+    .vop_getattr =      (vop_getattr_fn_t)&vnlayer_bogus_vnop, /*direct call*/
     .vop_setattr =      &mvop_linux_setattr,
     .vop_access =       &mvop_linux_access,
     .vop_lookup =       (vop_lookup_fn_t)&vnlayer_bogus_vnop, /* not used */
@@ -3362,7 +3242,7 @@ struct vnodeops mvop_cltxt_vnops = {
     .vop_cmp =          &mvop_linux_cvpcmp,
     .vop_mmap =         &mvop_linux_mmap,
     .vop_seek =         &mvop_linux_seek,
-    .vop_lockctl =      &mvop_linux_lockctl,
+    .vop_lockctl =      (vop_lockctl_fn_t)&vnlayer_bogus_vnop, /* not used */
     .vop_print =        &mvop_linux_print
 };
 
@@ -3393,4 +3273,4 @@ VFS_T vnlayer_cltxt_vfs = {
     .vfs_op =     &vnlayer_linux_cltxt_vfsop
     /* initialize vfs_sb at runtime */
 };
-static const char vnode_verid_mvfs_linux_mvops_c[] = "$Id:  d71dce33.541d11dd.90ce.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_linux_mvops_c[] = "$Id:  21aac7c2.32d111e0.9ded.00:09:6b:4f:fe:99 $";

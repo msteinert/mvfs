@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2005. */
+/* * (C) Copyright IBM Corporation 1991, 2008. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,10 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* credutl_kernel.c */
+
 #include "mvfs_systm.h"
 #include "mvfs.h"
 #include <credutl_kernel.h>

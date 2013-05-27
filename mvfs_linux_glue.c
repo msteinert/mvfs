@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003, 2008 IBM Corporation.
+ * Copyright (C) 2003, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,6 +23,11 @@
 
 #include "vnode_linux.h"
 
+
+#ifndef MANDATORY_LOCK
+# define MANDATORY_LOCK(X) mandatory_lock(X)
+#endif
+
 /**********************************************************************
  * Reimplement truncate an inode.
  */
@@ -42,10 +47,6 @@ vnlayer_truncate_inode(
         return -EINVAL;
     }
     inp = dentry->d_inode;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    down_write(&inp->i_alloc_sem);
-#endif
 
     LOCK_INODE(inp);
 
@@ -71,11 +72,13 @@ vnlayer_truncate_inode(
         status = notify_change(dentry, &iat);
     }
 #else
-#if defined(SLES10SP2)
+#if defined(SLES10SP2) || \
+    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
     status = notify_change(dentry, mnt, &iat);
 #else
     status = notify_change(dentry, &iat);
-#endif /* end if defined(SLES10SP2) */
+#endif /* end if SLES10SP2 or kernel between 2.6.24 and 2.6.31 */
 #endif /* end  KERNEL_VERSION >= (2,6,5) && defined(ATTR_FROM_OPEN) */
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,5) && LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13)
@@ -85,10 +88,6 @@ vnlayer_truncate_inode(
 #endif
 
     UNLOCK_INODE(inp);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    up_write(&inp->i_alloc_sem);
-#endif
 
     return status;
 }
@@ -142,10 +141,14 @@ vnlayer_lookup_create(
     nd->flags &= ~LOOKUP_PARENT;
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,9)
+    nd->intent.open.flags = O_EXCL;
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
     d = lookup_hash(&nd->last, nd->dentry);
 #else
-    d = lookup_one_len(nd->last.name, nd->dentry, nd->last.len);
+    d = lookup_one_len(nd->last.name, MDKI_NAMEI_DENTRY(nd), nd->last.len);
 #endif
 
     if (IS_ERR(d)) {
@@ -174,11 +177,13 @@ vnlayer_ra_state_init(
 )
 {
 	ra->ra_pages = mapping->backing_dev_info->ra_pages;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
-	ra->prev_page = -1;
-#else
-	ra->average = ra->ra_pages / 2;
-#endif
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24)
+        ra->prev_pos = -1;
+# elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
+        ra->prev_page = -1;
+# else
+        ra->average = ra->ra_pages / 2;
+# endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) */
 }
 #endif
 
@@ -202,11 +207,11 @@ vnlayer_set_fs_root(
 
     write_lock(&fs->lock);
 
-    old_root = fs->root;
-    old_rootmnt = fs->rootmnt;
+    old_root = MDKI_FS_ROOTDENTRY(fs);
+    old_rootmnt = MDKI_FS_ROOTMNT(fs);
 
-    fs->root = dget(dent);
-    fs->rootmnt = mntget(mnt);
+    MDKI_FS_SET_ROOTDENTRY(fs, dget(dent));
+    MDKI_FS_SET_ROOTMNT(fs, mntget(mnt));
 
     write_unlock(&fs->lock);
 
@@ -273,4 +278,4 @@ mdki_xdr_opaque(
         return FALSE;
     }
 }
-static const char vnode_verid_mvfs_linux_glue_c[] = "$Id:  da0dcec3.541d11dd.90ce.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_linux_glue_c[] = "$Id:  f9f72456.d6d511df.8121.00:01:83:0a:3b:75 $";

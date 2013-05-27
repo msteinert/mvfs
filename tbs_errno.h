@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1999, 2005 */
+/* * (C) Copyright IBM Corporation 1999, 2005. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,13 +19,17 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_TBS_ERRNO_H_)
 #define _TBS_ERRNO_H_
 
 #include <linux/types.h>
 #include "tbs_base.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* The tbs_errno set of routines are those tbs error reporting
  * routines that are also compiled for the kernel.
@@ -57,5 +61,9 @@ tbs_status2errno (P1(tbs_status_t status));
 EXTERN tbs_status_t
 tbs_errno2status (P1(int st_errno));
 
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
 #endif /* _TBS_ERRNO_H_ */
-/* $Id: dfa2a894.637911da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: a36119c6.9c1d11dd.9a62.00:01:83:29:c0:fc $ */

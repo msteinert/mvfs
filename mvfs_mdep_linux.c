@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1999, 2008.  All rights reserved */
+/* * (C) Copyright IBM Corporation 1999, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,10 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_mdep_linux.c */
+
 #include "mvfs_systm.h"
 #include "mvfs.h"
 #include <ks_base.h>
@@ -32,6 +33,10 @@
 #include "view_rpc_kernel.h"
 #include "mvfs_transtype.h"
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
+#error pre-2.6 kernels not supported
+#endif
+
 /* mdep types/decls for this file */
 
 int
@@ -39,14 +44,14 @@ mvfs_linux_mmap_ctx(
     VNODE_T *vp,
     u_int sharing,
     u_int rwx,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_MMAP_CTX_T *ctxp
 );
 
 int
 mvfs_linux_inactive(
     VNODE_T *vp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 
 int
@@ -57,7 +62,7 @@ mvfs_linux_lookup_wrapper(
     struct pathname *pnp,
     int flags,
     ROOTDIR_T *rdir,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_LOOKUP_CTX_T *ctxp
 );
 
@@ -65,7 +70,7 @@ int
 mvfs_linux_open_wrapper(
     VNODE_T **vpp,
     int mode,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_OPEN_CTX_T *ctxp
 );
 
@@ -76,7 +81,7 @@ mvfs_linux_rdwr_wrapper(
     UIO_RW_T rw,
     int ioflag,
     VATTR_T *vap,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_RDWR_CTX_T *ctxp
 );
 
@@ -85,7 +90,7 @@ mvfs_linux_remove_wrapper(
     VNODE_T *advp,
     VNODE_T *avp,
     char *nm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_REMOVE_CTX_T *ctxp
 );
 
@@ -137,7 +142,7 @@ mvfs_linux_getattr_wrapper(
     VNODE_T *avp,
     VATTR_T *vap,
     int flag,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 
 EXTERN int 
@@ -145,7 +150,7 @@ mvfs_linux_setattr_wrapper(
     VNODE_T *avp,
     VATTR_T *vap,
     int flag,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 
 EXTERN int
@@ -182,7 +187,7 @@ struct vnodeops mvfs_vnodeops = {
     .vop_readlink = &mfs_readlink,
     .vop_fsync = &mvfs_fsync_ctx,
     .vop_inactive = &mvfs_linux_inactive,
-    .vop_fid = &mfs_vfid,
+    .vop_fid = (vop_fid_fn_t) &mfs_vfid,
     .vop_realvp = &mvfs_linux_realvp,
     .vop_cmp = &mfs_cmp,
     .vop_mmap = &mvfs_linux_mmap_ctx,
@@ -197,7 +202,7 @@ struct vfsops mvfs_vfsops = {
     .vfs_sync = &mvfs_linux_vsync_wrapper,
     .vfs_mount = &mvfs_linux_mount_wrapper,
     .vfs_unmount = &mvfs_linux_umount_wrapper,
-    .vfs_vget = &mfs_vget,
+    .vfs_vget = (vfs_vget_fn_t) &mvfs_vget_cd,
     .vfs_init = &mvfs_linux_init,
     .vfs_log =  &mvfs_linux_log
 };
@@ -515,7 +520,7 @@ retry:
             }
         }
         MUNLOCK(mnp);
-        mfs_mnrele(mnp, vfsp);  /* Drop extra mnode refcount */
+        mfs_mnrele(mnp);  /* Drop extra mnode refcount */
         MDB_VFSLOG((MFS_VGET,"vfsp=%lx mnp=%lx vp=%lx attached\n", vfsp, mnp, vp));
         return(0);
     }
@@ -532,7 +537,7 @@ retry:
         VFS_LOG(vfsp, VFS_LOG_ERR,
                 "attempt to set unimplemented file type %o\n", vtype);
         MUNLOCK(mnp);
-        mfs_mnrele(mnp, vfsp);          /* drop */
+        mfs_mnrele(mnp);          /* drop */
         return ENOSYS;
     } /* end switch(vtype) */
 
@@ -553,7 +558,7 @@ retry:
     } else {
         /* We ran out of inodes */
         MUNLOCK(mnp);
-        mfs_mnrele(mnp, vfsp);          /* drop */
+        mfs_mnrele(mnp);          /* drop */
         return ENFILE;
     }
 
@@ -590,8 +595,8 @@ retry:
              * mode at least.
              */
             ip->i_atime = ip->i_mtime = ip->i_ctime = CURRENT_TIME;
-            ip->i_uid = current->fsuid;
-            ip->i_gid = current->fsgid;
+            ip->i_uid = MDKI_GET_CURRENT_FSUID();
+            ip->i_gid = MDKI_GET_CURRENT_FSGID();
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
             ip->i_blksize = VFSTOSB(vfsp)->s_blocksize;
 #else
@@ -805,9 +810,9 @@ mvfs_linux_update_attrs(
 {
     mfs_mnode_t *mnp;
     VATTR_T va;
-    CRED_T *cred;
     int error;
     CLR_VNODE_T *cvp = NULL;
+    CALL_DATA_T cd;
 
     mnp = VTOM(vp);
     ASSERT(MISLOCKED(mnp));
@@ -832,12 +837,16 @@ mvfs_linux_update_attrs(
       case MFS_NTVWCLAS:
         /* All these types can get attributes locally (without an RPC) */
         /* XXX safe to hold mnode lock over this call? */
-        cred = MDKI_GET_UCRED();
-        if ((error = mfs_getattr(vp, &va, 0, cred)) != 0) {
+        /* It is ugly to have to call this here, but we would have to 
+         * rototill a lot of code to pass in the cd here.  I hope this
+         * does not eliminate all of our performance gains.
+         */
+        mdki_linux_init_call_data(&cd);
+        if ((error = mfs_getattr(vp, &va, 0, &cd)) != 0) {
             mvfs_log(MFS_LOG_DEBUG,"getattr failed on update vp=%p err=%d\n",
                      vp, error);
         }
-        MDKI_CRFREE(cred);
+        mdki_linux_destroy_call_data(&cd);
         if (mnp->mn_hdr.mclass == MFS_VIEWCLAS && cvp != NULL) {
             mnp->mn_hdr.realvp = NULL;
             CVN_RELE(cvp);
@@ -871,15 +880,14 @@ mvfs_linux_mmap_ctx(
     VNODE_T *vp,
     u_int sharing,
     u_int rwx,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_MMAP_CTX_T *ctxp
 )
 {
     int err = 0;
     CLR_VNODE_T *cvp = NULL;
-    mvfs_thread_t *mth;
 
-    BUMPSTAT(mfs_vnopcnt[MFS_VMAP], NULL);
+    BUMPSTAT(mfs_vnopcnt[MFS_VMAP]);
 
     if (!MFS_ISVOB(VTOM(vp))) {
         /* Not seen in the wild yet, just defensive programming. */
@@ -887,18 +895,16 @@ mvfs_linux_mmap_ctx(
         return ENXIO;
     }
 
-    mth = mvfs_enter_fs();
-    if ((err = mvfs_mmap_getcvp(vp, &cvp, sharing, rwx, cred)) != 0)
+    if ((err = mvfs_mmap_getcvp(vp, &cvp, sharing, rwx, cd)) != 0)
         goto out;
-    err = MVOP_MMAP(cvp, sharing, rwx, cred, ctxp);
+    err = MVOP_MMAP(cvp, sharing, rwx, cd, ctxp);
     CVN_RELE(cvp);
 
     if (!err)
-        mvfs_mmap_no_audit(vp, sharing, rwx, cred);
+        mvfs_mmap_no_audit(vp, sharing, rwx, cd);
   out:
     MDB_VLOG((MFS_VMAP, "%s: vp=%p, cvp=%p, sharing=%x, rwx=%x, cred=%p, ctxp=%p, err=%d\n",
-              __func__, vp, cvp, sharing, rwx, cred, ctxp, err));
-    mvfs_exit_fs(mth);
+              __func__, vp, cvp, sharing, rwx, MVFS_CD2CRED(cd), ctxp, err));
     return err;
 }
 
@@ -910,7 +916,7 @@ mvfs_linux_lookup_wrapper(
     struct pathname *pnp,
     int flags,
     ROOTDIR_T *rdir,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_LOOKUP_CTX_T *ctxp
 )
 {
@@ -924,50 +930,39 @@ mvfs_linux_lookup_wrapper(
        some auditing things.  Key off the flag parameter. */
     if ((flags & VNODE_LF_AUDIT) != 0) {
         ASSERT(*vpp);
-        mth = mvfs_enter_fs();
+        mth = MVFS_CD2THREAD(cd);
         if (mth->thr_auditon && !mth->thr_auditinh) {
             ASSERT(MFS_VPISMFS(dvp));
             if (MFS_ISVOBRT(VTOM(dvp))) {
-                dvp = mfs_bindroot(dvp, cred, &error);
+                dvp = mfs_bindroot(dvp, cd, &error);
                 /* returns same object in error, i.e. unbound root */
             } else if (MFS_ISVOB(VTOM(dvp)))
-                mfs_rebind_vpp(0, &dvp, cred);
+                mfs_rebind_vpp(0, &dvp, cd);
 
             if (vp != NULL) {
                 if (MFS_ISVOB(VTOM(vp)))
-                    mfs_rebind_vpp(0, &vp, cred);
-                MFS_AUDIT(MFS_AR_LOOKUP, dvp, nm, NULL, NULL, vp, cred);
+                    mfs_rebind_vpp(0, &vp, cd);
+                MFS_AUDIT(MFS_AR_LOOKUP, dvp, nm, NULL, NULL, vp, cd);
             }
             if (advp != dvp)
                 VN_RELE(dvp);
             if (vp != *vpp)
                 VN_RELE(vp);
         }
-        if (MFS_ISVOBRT(VTOM(advp))) {
-            /* make sure it has some valid attributes */
-            vap = VATTR_ALLOC();
-	    if (vap == NULL) {
-                mvfs_exit_fs(mth);
-                return ENOMEM;
-            }
-            (void) VOP_GETATTR(advp, vap, GETATTR_FLAG_PULLUP_ATTRS, cred);
-            VATTR_FREE(vap);
-        }
-        mvfs_exit_fs(mth);
         return 0;
     } else
-        return mvfs_lookup_ctx(advp, nm, vpp, pnp, flags, rdir, cred, ctxp);
+        return mvfs_lookup_ctx(advp, nm, vpp, pnp, flags, rdir, cd, ctxp);
 }
 
 int
 mvfs_linux_open_wrapper(
     VNODE_T **vpp,
     int mode,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_OPEN_CTX_T *ctxp
 )
 {
-    return mvfs_openv_ctx(vpp, mode, cred, TRUE /* do_vop */, ctxp);
+    return mvfs_openv_ctx(vpp, mode, cd, TRUE /* do_vop */, ctxp);
 }
 
 int
@@ -977,11 +972,11 @@ mvfs_linux_rdwr_wrapper(
     UIO_RW_T rw,
     int ioflag,
     VATTR_T *vap,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_RDWR_CTX_T *ctxp
 )
 {
-    return mvfs_rdwr_ctx(vp, uiop, rw, ioflag, vap, cred, ctxp);
+    return mvfs_rdwr_ctx(vp, uiop, rw, ioflag, vap, cd, ctxp);
 }
 
 int 
@@ -989,17 +984,17 @@ mvfs_linux_remove_wrapper(
     VNODE_T *advp,
     VNODE_T *avp,
     char *nm,
-    CRED_T *cred,
+    CALL_DATA_T *cd,
     MVFS_REMOVE_CTX_T *ctxp
 )
 {
-    return mvfs_remove_ctx(advp, avp, nm, cred, ctxp);
+    return mvfs_remove_ctx(advp, avp, nm, cd, ctxp);
 }
 
 int
 mvfs_linux_inactive(
     VNODE_T *vp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 )
 {
     /* Modeled on  mfs_std_inactive() */
@@ -1021,7 +1016,7 @@ mvfs_linux_inactive(
 
     mnp = VTOM(vp);
     if (mnp->mn_hdr.cached_pages) {
-	(void) PVN_FLUSHINACTIVE(vp, MFS_PVN_FLUSH, cred);
+	(void) PVN_FLUSHINACTIVE(vp, MFS_PVN_FLUSH, MVFS_CD2CRED(cd));
     }
 
     /*
@@ -1032,7 +1027,7 @@ mvfs_linux_inactive(
 
     MLOCK(mnp);
 
-    error = mfs_inactive_common(vp, MFS_INACTIVE_SLEEP, cred);
+    error = mfs_inactive_common(vp, MFS_INACTIVE_SLEEP, cd);
 
     /*
      * Do actual deactivation of the vnode/mnode
@@ -1049,7 +1044,7 @@ mvfs_linux_inactive(
         vp->v_data = NULL;
         mdki_inactive_finalize(vp);
         MUNLOCK(mnp);
-        mfs_mnrele(mnp, vp->v_vfsp);
+        mfs_mnrele(mnp);
     } else {
         MUNLOCK(mnp);
     }
@@ -1239,7 +1234,7 @@ mvfs_linux_realvp(
      * We get called to get the realvp of loopback directories so we need
      * to return real data in that case.
      */
-    BUMPSTAT(mfs_vnopcnt[MFS_VREALVP], s);
+    BUMPSTAT(mfs_vnopcnt[MFS_VREALVP]);
     if ((vp->v_flag & (VLOOP | VLOOPROOT)) != 0) {
 	cvp = MFS_CLRVP(vp);
         if (cvp != NULL) {
@@ -1264,7 +1259,7 @@ mvfs_linux_realcvp(
      * (We have to implement it because MVOP_REALCVP() will come here
      * in some cases.)
      */
-    BUMPSTAT(mfs_vnopcnt[MFS_VREALVP], s);
+    BUMPSTAT(mfs_vnopcnt[MFS_VREALVP]);
     return(EINVAL);
 }
 
@@ -1273,17 +1268,15 @@ mvfs_linux_getattr_wrapper(
     VNODE_T *avp,
     VATTR_T *vap,
     int flag,
-    CRED_T *cred
+    CALL_DATA_T *cd
 )
 {
     int err;
-    mvfs_thread_t *mth = mvfs_enter_fs();
-    if (mth->thr_threadid.no_bindroot) {
+    if ((MVFS_MYTHREAD(cd))->thr_threadid.no_bindroot) {
         flag |= MVFS_GETATTR_NO_BINDROOT;
     }
-    mvfs_exit_fs(mth);
 
-    err = mfs_getattr(avp, vap, flag, cred);
+    err = mfs_getattr(avp, vap, flag, cd);
 
     if (err == 0 && (flag & GETATTR_FLAG_PULLUP_ATTRS) != 0)
         switch (VTOM(avp)->mn_hdr.mclass) {
@@ -1309,10 +1302,10 @@ mvfs_linux_setattr_wrapper(
     VNODE_T *avp,
     VATTR_T *vap,
     int flag,
-    CRED_T *cred
+    CALL_DATA_T *cd
 )
 {
-    return(mvfs_changeattr(avp, vap, flag, cred, NULL));
+    return(mvfs_changeattr(avp, vap, flag, cd, NULL));
 }
 
 int
@@ -1365,22 +1358,30 @@ mvfs_setup_id_strings(void)
     len = STRLEN(mvfs_rcsID) + STRLEN(mvfs_vnode_tag) +
         STRLEN(mdki_vnode_build_time);
     mvfs_linux_rcsid_string = mdki_linux_kmalloc(len+1, KM_SLEEP);
-    ASSERT(mvfs_linux_rcsid_string);
-    STRCPY(mvfs_linux_rcsid_string, mvfs_rcsID);
-    STRCPY(mvfs_linux_rcsid_string + STRLEN(mvfs_rcsID), mvfs_vnode_tag);
-    STRCPY(mvfs_linux_rcsid_string + STRLEN(mvfs_rcsID) +
-           STRLEN(mvfs_vnode_tag),
-           mdki_vnode_build_time);
+    if (mvfs_linux_rcsid_string != NULL) {
+        ASSERT(mvfs_linux_rcsid_string);
+        STRCPY(mvfs_linux_rcsid_string, mvfs_rcsID);
+        STRCPY(mvfs_linux_rcsid_string + STRLEN(mvfs_rcsID), mvfs_vnode_tag);
+        STRCPY(mvfs_linux_rcsid_string + STRLEN(mvfs_rcsID) +
+               STRLEN(mvfs_vnode_tag),
+               mdki_vnode_build_time);
+    } else {
+        printk("mvfs_setup_id_strings: Failed to alloc %d bytes for mvfs_linux_rcsid_string\n", len);
+    }
 
     len = STRLEN(mvfs_sccsID) + STRLEN(mvfs_vnode_tag) +
         STRLEN(mdki_vnode_build_time);
     mvfs_linux_sccsid_string = mdki_linux_kmalloc(len+1, KM_SLEEP);
-    ASSERT(mvfs_linux_sccsid_string);
-    STRCPY(mvfs_linux_sccsid_string, mvfs_sccsID);
-    STRCPY(mvfs_linux_sccsid_string + STRLEN(mvfs_sccsID), mvfs_vnode_tag);
-    STRCPY(mvfs_linux_sccsid_string + STRLEN(mvfs_sccsID) +
-           STRLEN(mvfs_vnode_tag),
-           mdki_vnode_build_time);
+    if (mvfs_linux_sccsid_string != NULL) {
+        ASSERT(mvfs_linux_sccsid_string);
+        STRCPY(mvfs_linux_sccsid_string, mvfs_sccsID);
+        STRCPY(mvfs_linux_sccsid_string + STRLEN(mvfs_sccsID), mvfs_vnode_tag);
+        STRCPY(mvfs_linux_sccsid_string + STRLEN(mvfs_sccsID) +
+               STRLEN(mvfs_vnode_tag),
+               mdki_vnode_build_time);
+    } else {
+        printk("mvfs_setup_id_strings: Failed to alloc %d bytes for mvfs_linux_sccsid_string\n", len);
+    }
 }
 
 static void
@@ -1515,6 +1516,8 @@ static struct rpc_stat albd_rpc_stats;
  * routines use.
  */
 #define RPC_BUFSZ(type) (MAX(sizeof(type##_req_t),sizeof(type##_reply_t))<<2)
+#define RPC_REQ_BUFSZ(type) (sizeof(type##_req_t)<<2)
+#define RPC_REP_BUFSZ(type) (sizeof(type##_reply_t)<<2) 
 
 /* The struct rpc_rqst changes based on kernel version, and we can't
 ** test for that in the macro below, so set it up here.
@@ -1579,6 +1582,16 @@ mvfs_linux_xdr_decode_##type(                                           \
    return 0 /* MVFS_RPC_SUCCESS */;                                     \
 }
 
+STATIC int
+mvfs_linux_xdr_void(
+    struct rpc_rqst *rq,
+    u32 *data,
+    void *obj
+)
+{
+    return 0 /* MVFS_RPC_SUCCESS */;
+}
+
 #define VIEW_XDR_FUNCS(type) XDR_RPC_FUNCS(view_##type)
 #define ALBD_XDR_FUNCS(type) XDR_RPC_FUNCS(albd_##type)
 
@@ -1593,34 +1606,37 @@ mvfs_linux_xdr_decode_##type(                                           \
  * a retry if the data received over the wire is longer than what is 
  * specified here.
  */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define MVFS_RPC_PROCINFO(proc, type) #type,    \
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+# define MVFS_RPC_PROCINFO(proc, type) proc,    \
     (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
     (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
     RPC_BUFSZ(type),                            \
     0
-#define MVFS_RPC_PROCINFO_SZ(proc, type, size)  \
-    #type,                                      \
-    (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
-    (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
-    (size),                                     \
-    0
-#else
-#define MVFS_RPC_PROCINFO(proc, type) proc,     \
-    (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
-    (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
-    RPC_BUFSZ(type),                            \
-    0
-#define MVFS_RPC_PROCINFO_SZ(proc, type, size)  \
+# define MVFS_RPC_PROCINFO_SZ(proc, type, size) \
     proc,                                       \
     (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
     (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
     (size),                                     \
     0
+#else
+# define MVFS_RPC_PROCINFO(proc, type) proc,    \
+    (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
+    (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
+    RPC_REQ_BUFSZ(type),                        \
+    RPC_REP_BUFSZ(type),                        \
+    0
+# define MVFS_RPC_PROCINFO_SZ(proc, type, size) \
+    proc,                                       \
+    (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
+    (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
+    (size),                                     \
+    (size),                                     \
+    0
 #endif
 
 #define MVFS_VIEW_PROCINFO(proc,type) MVFS_RPC_PROCINFO(VIEW_##proc,view_##type)
-#define MVFS_VIEW_PROCINFO_SZ(proc,type,size) MVFS_RPC_PROCINFO_SZ(VIEW_##proc,view_##type,size)
+#define MVFS_VIEW_PROCINFO_SZ(proc,type,size) \
+                             MVFS_RPC_PROCINFO_SZ(VIEW_##proc,view_##type,size)
 #define MVFS_ALBD_PROCINFO(proc,type) MVFS_RPC_PROCINFO(ALBD_##proc,albd_##type)
 
 /* MFS_MAXRPCDATA is defined in mvfs_base.h which is not included by
@@ -1655,7 +1671,15 @@ VIEW_XDR_FUNCS(symlink);
 /* This table's order must match the view RPC order in <view_rpc_kernel.h> */
 static struct rpc_procinfo view_v4_procinfo[VIEW_NUM_PROCS] = {
     /* name, rpc-encode-func, rpc-decode-func, bufsiz, call count(?) */
-    {/*NULL*/},
+    /*
+     * NULLPROC is special, it's always slot zero, and we don't have
+     * albd XDR routines for it
+     */
+    {NULLPROC,
+     (kxdrproc_t) mvfs_linux_xdr_void,
+     (kxdrproc_t) mvfs_linux_xdr_void,
+     8, /* just in case we need spare space */
+     0},
     {/*MVFS_VIEW_PROCINFO(CONTACT, contact)*/},
     {/*MVFS_VIEW_PROCINFO(SERVER_EXIT, server_exit)*/},
     {MVFS_VIEW_PROCINFO(SETATTR, setattr)},
@@ -1676,7 +1700,7 @@ static struct rpc_procinfo view_v4_procinfo[VIEW_NUM_PROCS] = {
     {MVFS_VIEW_PROCINFO(CHANGE_MTYPE, change_mtype)},
     {MVFS_VIEW_PROCINFO(INVALIDATE_UUID, invalidate)},
     {MVFS_VIEW_PROCINFO(LINK, link)},
-    {/*MVFS_VIEW_PROCINFO(LOOKUP_V6, lookup_v6)*/},
+    {MVFS_VIEW_PROCINFO(LOOKUP_V6, lookup)},
     {MVFS_VIEW_PROCINFO(GETATTR, getattr)},
     {MVFS_VIEW_PROCINFO(REPLICA_ROOT, replica_root)},
     {/*MVFS_VIEW_PROCINFO(lookup_ext)*/},
@@ -1787,6 +1811,8 @@ struct rpc_program mvfs_view_program = {
     &view_rpc_stats
 };
 
+ALBD_XDR_FUNCS(find_server_v70);
+
 ALBD_XDR_FUNCS(find_server);
 
 static struct rpc_procinfo albd_v3_procinfo[ALBD_NUM_PROCS] = {
@@ -1794,6 +1820,74 @@ static struct rpc_procinfo albd_v3_procinfo[ALBD_NUM_PROCS] = {
     {/*NULL*/},
     {/*MVFS_ALBD_PROCINFO(CONTACT, contact)*/},
     {/*MVFS_ALBD_PROCINFO(REGISTER_SERVER, register_server)*/},
+    {MVFS_ALBD_PROCINFO(FIND_SERVER_V70,find_server_v70)},
+    {/*ALBD_SERVER_IDLE,*/},
+    {/*ALBD_SERVER_BUSY,*/},
+    {/*ALBD_UNUSED_6,*/},
+    {/*ALBD_UNUSED_7,*/},
+    {/*ALBD_UNUSED_8,*/},
+    {/*ALBD_UNUSED_9,*/},
+    {/*ALBD_UNUSED_10,*/},
+    {/*ALBD_SCHED_INFO,*/},
+    {/*ALBD_UNUSED_12,*/},
+    {/*ALBD_REGISTRY_GET_ID,*/},
+    {/*ALBD_REGISTRY_FINDBYSTRING,*/},
+    {/*ALBD_REGISTRY_FINDBYUUID,*/},
+    {/*ALBD_REGISTRY_GET,*/},
+    {/*ALBD_REGISTRY_ADD,*/},
+    {/*ALBD_REGISTRY_REMOVE,*/},
+    {/*ALBD_SERVER_ALTERNATE_UUID,*/},
+    {/*ALBD_REGISTRY_CHK_ACCESS,*/},
+    {/*ALBD_REGISTRY_GET_DTM,*/},
+    {/*ALBD_LIST_SERVERS_V70,*/},
+    {/*ALBD_GET_LOCAL_PATH,*/},
+    {/*ALBD_CLNT_LIST_LOOKUP_V70,*/},
+    {/*ALBD_LICENSE_GET_PRODUCT,*/},
+    {/*ALBD_CLNT_LIST_GET_V70,*/},
+    {/*ALBD_HOSTINFO,*/},
+    {/*ALBD_CLNT_LIST_REGISTER,*/},
+    {/*ALBD_REGISTRY_GET_DB_LIST,*/},
+    {/*ALBD_REGISTRY_CLNT_CONF,*/},
+    {/*ALBD_REGISTRY_SVR_CONF,*/},
+    {/*ALBD_REGISTRY_GET_BACKUP,*/},
+    {/*ALBD_REGISTRY_SET_BACKUP,*/},
+    {/*ALBD_REGISTRY_FINDBYATTR,*/},
+    {/* ALBD_UNUSED_35,*/},
+    {/* ALBD_SCHED_GET_JOBS,*/},
+    {/* ALBD_SCHED_HAS_INFO_CHANGED,*/},
+    {/* ALBD_SCHED_GET_TASKS,*/},
+    {/* ALBD_SCHED_GET_ACL,*/},
+    {/* ALBD_SCHED_SET_ACL,*/},
+    {/* ALBD_SCHED_JOB_CREATE,*/},
+    {/* ALBD_SCHED_JOB_DELETE,*/},
+    {/* ALBD_SCHED_JOB_LOOKUP_BY_ID,*/},
+    {/* ALBD_SCHED_JOB_GET_PROPERTIES,*/},
+    {/* ALBD_SCHED_JOB_SET_PROPERTIES,*/},
+    {/* ALBD_SCHED_JOB_HAS_INFO_CHANGED,*/},
+    {/* ALBD_SCHED_RJOB_GET_HANDLE,*/},
+    {/* ALBD_SCHED_RJOB_GET_COMPLETION_INFO,*/},
+    {/* ALBD_SCHED_RJOB_RUN_JOB,*/},
+    {/* ALBD_SCHED_RJOB_TERMINATE,*/},
+    {/* ALBD_SCHED_JOB_LOOKUP_BY_NAME,*/},
+    {/* ALBD_SCHED_TASK_EXISTS,*/},
+    {/* ALBD_SCHED_TASK_NAME_TO_ID,*/},
+    {/* ALBD_SCHED_CHECK_ACC,*/},
+    {/* ALBD_SCHED_TASK_ID_TO_NAME,*/},
+    {/* ALBD_SCHED_GET_APP_PERMS,*/},
+    {/* ALBD_LICENSE_CLEARCASE_AUTHENTICATED_URL,*/},
+    {/* ALBD_SCHED_GET_TIME,*/},
+    {/* ALBD_SCHED_CONTACT,*/},
+    {/* ALBD_REMOTE_BUILD_HI,*/},
+    {/* ALBD_LICENSE_CHECK_SID,*/},
+    {/* ALBD_LICENSE_SID_STATS,*/},
+    {/* ALBD_LICENSE_REVOKE_SID,*/},
+    {/* ALBD_ELCC_FIND_SERVER_V70,*/},
+    {/* ALBD_ELCC_IS_ELCC,*/},
+    {/* ALBD_TZINFO,*/},
+    {/* ALBD_TOGGLE_SERVER_RESTART,*/},
+    {/* ALBD_SCHED_JOB_CREATE_UTC,*/},
+    {/* ALBD_SCHED_JOB_GET_PROPERTIES_UTC,*/},
+    {/* ALBD_SCHED_JOB_SET_PROPERTIES_UTC,*/},
     {MVFS_ALBD_PROCINFO(FIND_SERVER,find_server)},
     /* Don't need any of the rest */
 };
@@ -1830,12 +1924,13 @@ struct rpc_program mvfs_albd_program = {
  * There do not appear to be any locking protocols needed for RPC
  * client stuff.  RPC code handles internal structure locking itself
  */
-CLIENT *
+int
 mvfs_linux_clntkudp_create(
-    struct sockaddr_in *addr,
+    struct sockaddr *addr,
     struct mfs_callinfo *trait,
     int retrans_count,
-    bool_t intr
+    bool_t intr,
+    CLIENT **cl_pp
 )
 {
     struct rpc_program *prog;
@@ -1851,11 +1946,11 @@ mvfs_linux_clntkudp_create(
         mvfs_log(MFS_LOG_ERR,
                  "RPC: can't talk to anybody but view or albd,"
                  " asked for program %d!\n", trait->proto);
-        return NULL;
+        return EINVAL;
     }
 
     return mdki_linux_clntkudp_create(addr, trait->version, prog,
-                                      retrans_count, intr);
+                                      retrans_count, intr, cl_pp);
 }
 
 #define MVFS_XDR_INTEGRAL_TYPE_OBJ(type,objtype)                        \
@@ -1943,6 +2038,29 @@ xdr_string(
 /*     mdki_linux_printf("xdr_string rval=%d new data=%lx, packed=%d\n", */
 /*            val, x->x_public, (u8 *)x->x_public - odata); */
     return val;
+}
+
+extern bool_t
+xdr_void(
+    XDR *xdrs,
+    void *cp
+)
+{
+    return TRUE;
+}
+
+extern void
+mvfs_linux_clnt_get_servaddr(
+    CLIENT *cl,
+    char *saddr
+)
+{
+    /* Needs updating once the kernel RPC code handles IPv6 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+    *((struct sockaddr_in *)saddr) = cl->cl_xprt->addr;
+#else
+    memcpy(saddr, &cl->cl_xprt->addr, sizeof(struct sockaddr_in));
+#endif
 }
 
 void
@@ -2037,21 +2155,21 @@ mvfs_linux_lookup_ioctl(
     int opt,
     VNODE_T **dvpp,
     CLR_VNODE_T **vpp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 )
 {
     int oldprog;
-    mvfs_thread_t *mth = mvfs_enter_fs();
+    mvfs_thread_t *mth = MVFS_CD2THREAD(cd);
     int rv;
-
+    
     oldprog = mth->thr_threadid.no_bindroot;
     if (opt & MVFS_NB_LOOKUP)
         mth->thr_threadid.no_bindroot = TRUE;
 
-    rv = mvop_linux_lookup_ioctl(path, segflag, follow, dvpp, vpp, cred);
+    rv = mvop_linux_lookup_ioctl(path, segflag, follow, dvpp, vpp, 
+                                 MVFS_CD2CRED(cd));
 
     mth->thr_threadid.no_bindroot = oldprog;
-    mvfs_exit_fs(mth);
     return rv;
 }
 
@@ -2110,18 +2228,27 @@ mvfs_linux_save_fl_owner(void *fl_owner)
 {
     mvfs_thread_t *mth = mvfs_enter_fs();
     ASSERT(mth->thr_proc != NULL);
+    /* We should never set the fl_owner to NULL */
+    if (fl_owner == NULL) {
+        mvfs_log(MFS_LOG_WARN,
+                 "Attempting to set file lock owner %p to NULL\n",
+                 mth->thr_proc->mp_fl_owner);
+        goto err_exit;
+    }
 
     /* If we're changing owners, then that's bad because we will lose track of
     ** the current one.  This shouldn't ever happen if I understand things
     ** correctly, so at least log it.
     */
     if (mth->thr_proc->mp_fl_owner != NULL &&
-        mth->thr_proc->mp_fl_owner != fl_owner) {
+        mth->thr_proc->mp_fl_owner != fl_owner)
+    {
         mvfs_log(MFS_LOG_ERR,
                  "file lock owner (fl_owner) changing from %p to %p\n",
                  mth->thr_proc->mp_fl_owner, fl_owner);
     }
     mth->thr_proc->mp_fl_owner = fl_owner;
+err_exit:
     mvfs_exit_fs(mth);
 }
 
@@ -2136,39 +2263,45 @@ mvfs_linux_find_fl_owner(void)
     mvfs_exit_fs(mth);
     return fl_owner;
 }
-#endif /* #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) */
+#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) */
 
-/* This routine is a lot like mfs_bumptime(), but it uses its own spinlock since
-** we don't need the general mfs_statlock anywhere else.
-*/
-void
-mvfs_linux_bumptime(
-    timestruc_t *stp,
-    timestruc_t *dtp,
-    timestruc_t *tvp
-)
+/* Routines called from mvfs_linux_mdki.c to manipulate the thread
+ * structures placed in the cred structures.  These functions
+ * are declared in mvfs_mdki.h
+ */
+
+extern struct mvfs_thread *
+mvfs_get_thread_ptr(void)
 {
-    static spinlock_t mvfs_bumptime_lock = SPIN_LOCK_UNLOCKED;
+    if (mvfs_init_state == MVFS_INIT_COMPLETE)
+        return((struct mvfs_thread *)mvfs_enter_fs());
+    else
+        return(NULL);
+}
 
-    /* Compute the difference between the start time and now. */
-    MDKI_HRTIME(dtp);
-    if ((dtp->tv_nsec -= stp->tv_nsec) < 0) {
-        dtp->tv_nsec += 1000000000;
-        dtp->tv_sec--;
-    }
-    dtp->tv_sec -= stp->tv_sec;
-
-    /* Now we've computed the difference, "atomically" update the target
-    ** structure, handling overflows, which is why it's hard.
-    */
-    spin_lock(&mvfs_bumptime_lock);
-    if ((tvp->tv_nsec += dtp->tv_nsec) >= 1000000000) {
-        tvp->tv_nsec -= 1000000000;
-        tvp->tv_sec++;
-    }
-    tvp->tv_sec += dtp->tv_sec;
-    spin_unlock(&mvfs_bumptime_lock);
-
+extern void
+mvfs_release_thread_ptr(struct mvfs_thread *thr)
+{
+    mvfs_exit_fs(thr);
     return;
 }
-static const char vnode_verid_mvfs_mdep_linux_c[] = "$Id:  40b03ea6.7aa111dd.871a.00:01:83:09:5e:0d $";
+
+/*
+ * This function replaces the default implementation of MVFS_STAT_ZERO.
+ * See mvfs_mdep_linux.h.
+ */
+void
+mvfs_linux_stat_zero(struct mvfs_statistics_data *sdp)
+{
+    BZERO(sdp, sizeof(*sdp));
+    sdp->mfs_clntstat.version = MFS_CLNTSTAT_VERS;
+    sdp->mfs_mnstat.version = MFS_MNSTAT_VERS;
+    sdp->mfs_clearstat.version = MFS_CLEARSTAT_VERS;
+    sdp->mfs_rvcstat.version = MFS_RVCSTAT_VERS;
+    sdp->mfs_dncstat.version = MFS_DNCSTAT_VERS;
+    sdp->mfs_acstat.version = MFS_ACSTAT_VERS;
+    sdp->mfs_rlstat.version = MFS_RLSTAT_VERS;
+    sdp->mfs_austat.version = MFS_AUSTAT_VERS;
+    sdp->mfs_viewophist.version = MFS_RPCHIST_VERS;
+}
+static const char vnode_verid_mvfs_mdep_linux_c[] = "$Id:  69cbe733.dc5411df.9210.00:01:83:0a:3b:75 $";

@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2006. */
+/* * (C) Copyright IBM Corporation 1990, 2007. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_KS_BASE_H_)
 #define _KS_BASE_H_
 
@@ -34,6 +34,7 @@
  *			function prototypes, but not necessarily full ANSI C.
  */
 
+
 /* ANSI C implies function prototypes (but not necessarily vice versa) */
 
 /****************************************************************************
@@ -45,6 +46,10 @@
 #include <linux/param.h>
 #include <linux/types.h>
 #include <linux/stat.h>
+#include <linux/socket.h>
+
+#include "linux/in.h"
+#include "linux/in6.h"
 
 /* Mount table definitions */
 
@@ -63,6 +68,20 @@
 
 #define KS_INVALID_SOCKET (-1)
 typedef int ks_socket_t;
+
+/****************************************************************************
+ * A type big enough to hold socket addresses for supported protocols,
+ * and convenient for passing them around when you don't know/care
+ * about the family. This structure should be used in place of the 
+ * protocol specific sockaddr structs when  allocating storage for a 
+ * sockaddr or defining one on the stack. Use "ks_sockaddr_storage_t" 
+ * instead of sockaddr, sockaddr_in, and sockaddr_in6.
+ */
+typedef union ks_sockaddr_storage_s {
+    struct sockaddr ks_ss_s;
+    struct sockaddr_in ks_ss_sin4;
+    struct sockaddr_in6 ks_ss_sin6;
+} ks_sockaddr_storage_t;
 
 /****************************************************************************
  * Some newer operating systems have changed the Berkeley "int" arguments
@@ -117,10 +136,6 @@ typedef int ks_boolean_t;
  * Machine dependent data types
  *
  */
-
- 
-
- 
 
 #if defined (__i386__)
 #define KNOWN_ARCH
@@ -197,22 +212,16 @@ typedef ks_int64_t ks_off64_t;
 #define XDR_KS_U_INT32 xdr_u_int
 #define XDR_KS_INT32 xdr_int
 
+
 #if defined(ATRIA_TIME_T_LONG)
-#define KS_LONG_OR_INT_TIME_T(alt_if_long,alt_if_int) alt_if_long
 #define KS_FMT_TIME_T_D "ld"
 #define KS_FMT_TIME_T_X "lx"
-#elif defined(ATRIA_TIME_T_INT) || defined(ATRIA_TIME_T_UINT)
-#define KS_LONG_OR_INT_TIME_T(alt_if_long,alt_if_int) alt_if_int
+#elif defined(ATRIA_TIME_T_INT)
 #define KS_FMT_TIME_T_D "d"
 #define KS_FMT_TIME_T_X "x"
-#elif defined(ATRIA_TIME_T_INT64) || defined(ATRIA_TIME_T_UINT64)
-/*
- * KS_LONG_OR_INT_TIME_T needs to be removed and the appropriate
- * format string needs to be used.
- */
-#define KS_LONG_OR_INT_TIME_T(alt_if_long,alt_if_int) alt_if_int
-#define KS_FMT_TIME_T_D "%I64u"
-#define KS_FMT_TIME_T_X "%I64x"
+#elif defined(ATRIA_TIME_T_INT64)
+#define KS_FMT_TIME_T_D "I64d"
+#define KS_FMT_TIME_T_X "I64x"
 #else
 #error "ks_base.h: size of time_t unknown"
 #endif /* ATRIA_TIME_T_LONG */
@@ -234,11 +243,9 @@ typedef ks_int64_t ks_off64_t;
 #define KS_FMT_TV_SEC_T_X "x"
 #endif
 #if defined(ATRIA_TIMEVAL_T_LONG)
-#define KS_LONG_OR_INT_TIMEVAL_T(alt_if_long,alt_if_int) alt_if_long
 #define KS_FMT_TV_USEC_T_D "ld"
 #define KS_FMT_TV_USEC_T_X "lx"
 #elif defined(ATRIA_TIMEVAL_T_INT)
-#define KS_LONG_OR_INT_TIMEVAL_T(alt_if_long,alt_if_int) alt_if_int
 #define KS_FMT_TV_USEC_T_D "d"
 #define KS_FMT_TV_USEC_T_X "x"
 #else
@@ -573,13 +580,51 @@ typedef char credutl_sid_str_t[CREDUTL_MAX_SID_STR + 1];
 #define CREDUTL_SID_IS_NOBODY(sid)   ((sid)->type == CREDUTL_SID_TYPE_NOBODY)
 #define CREDUTL_SID_IS_DONTCARE(sid) ((sid)->type == CREDUTL_SID_TYPE_DONTCARE)
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 IMPORT_DATA
 const
+
 credutl_sid_t CREDUTL_SID_NOBODY, CREDUTL_SID_DONTCARE;
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #ifndef KS_MODE_MASK
 #define KS_MODE_MASK 0x00000fff
 #endif
 
+
+/*
+ * General macro for statically allocated arrays e.g.
+ * TCHAR Mystring[MAX_LENGTH];
+ * It returns the number of ELEMENTS in the array, not total byte size.
+*/
+#define KS_NUMELEMENTS(arr) (sizeof(arr)/sizeof(arr[0]))
+
+/* The names associated with ks_addrfamily_t
+ */
+KS_EXPORT_DATA char *ks_addrfamily_names[];
+
+/*
+ * We need our own definitions of address families: the values will be
+ * transferred by RPC and need to be the same on all OS platforms.
+ */
+typedef enum ks_addrfamily {
+    KS_AF_UNKNOWN,
+    KS_AF_IPV4,
+    KS_AF_IPV6,
+    KS_AF_END
+} ks_addrfamily_t;
+
+/*
+ * See also albd_rpc_kernel.h, xdr_ks.c, albd_clnt.h (places that
+ * use an array based on KS_NUM_ADDRESS_FAMILIES)
+ */
+#define KS_NUM_ADDRESS_FAMILIES 2
+
 #endif /* _KS_BASE_H_ */
-/* $Id: 5bd36534.66ba11dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: a9a0f7ee.9c1c11dd.9a62.00:01:83:29:c0:fc $ */

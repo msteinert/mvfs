@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2006. */
+/* * (C) Copyright IBM Corporation 1990, 2009. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_H_
 #define MVFS_H_
 
@@ -39,9 +39,9 @@ extern mvfs_vfs_data_t mvfs_vfs_data_var;
 extern mvfs_mnode_data_t mvfs_mnode_data_var;
 extern mvfs_dnlc_data_t mvfs_dnlc_data_var;
 extern mvfs_viewroot_data_t mvfs_viewroot_data_var;
-extern mvfs_stats_data_t mvfs_stats_data_var;
+extern mvfs_stats_data_t **mvfs_stats_data_ptr_percpu;
 extern mvfs_audit_data_t mvfs_audit_data_var;
 /* more data to be added */
 
 #endif /* MVFS_H_ */
-/* $Id: 76036894.66ba11dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: 656913fd.b44911de.8ddb.00:01:83:29:c0:fc $ */

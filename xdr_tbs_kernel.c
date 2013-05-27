@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2005. */
+/* * (C) Copyright IBM Corporation 1990, 2008. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* xdr_tbs_kernel.c */
 /*LINTLIBRARY*/
 /*
@@ -75,17 +75,16 @@ EZ_XDR_ROUTINE(size_t)
 #endif
 }
 
+
 #undef xdr_time_t
 EZ_XDR_ROUTINE(time_t)
 {
 #if defined(ATRIA_TIME_T_INT)
     return xdr_int(xdrs, (int *)objp);
-#elif defined(ATRIA_TIME_T_UINT)
-    return xdr_u_int(xdrs, (int *)objp);
 #elif defined(ATRIA_TIME_T_LONG)
     return xdr_long(xdrs, (long *)objp);
-#elif defined(ATRIA_TIME_T_UINT64)
- return xdr_uint64(xdrs, (unsigned __int64 *)objp);
+#elif defined(ATRIA_TIME_T_INT64)
+    return atria_xdr_int64(xdrs, (__int64 *)objp EZ_XDR_ARG);
 #else
 #error "xdr_tbs.c: no code for xdr_time_t"
 #endif 
@@ -108,6 +107,7 @@ EZ_XDR_ROUTINE(tbs_uuid_t)
     ks_uint32_t l1,l2,l3;
     int i; 
     ks_uint32_t ulong_time_low;
+
 
     if (xdrs->x_op == XDR_FREE)
 	return TRUE;
@@ -221,6 +221,38 @@ EZ_XDR_ROUTINE(vob_mtype_t)
 {
     return xdr_enum(xdrs, (enum_t *)objp);
 }
+
+#if defined(ATRIA_TIME_T_INT64)
+bool_t
+atria_xdr_int64(
+    XDR *xdrs,
+    __int64 *objp
+    EZ_XDR_ARGDECL
+)
+{
+    int local_int;
+
+    if (xdrs->x_op == XDR_ENCODE) {
+        ASSERT(*objp >= INT_MIN && *objp <= INT_MAX);
+        if (!(*objp >= INT_MIN && *objp <= INT_MAX)) {
+            return(FALSE);              /* out of range; force encoding error */
+        }
+        local_int = (int)(*objp & 0xffffffff);
+        return (xdr_int(xdrs, &local_int));
+    }
+    else if (xdrs->x_op == XDR_DECODE) {
+        if (!xdr_int(xdrs, &local_int)) {
+            return(FALSE);
+        }
+        *objp = (__int64) local_int;
+        return(TRUE);
+    }
+    else if (xdrs->x_op == XDR_FREE) {
+        return (TRUE);
+    }
+    return (FALSE);
+}
+#endif /* ATRIA_TIME_T_INT64 */
 
 #if defined(ATRIA_SIZE_T_UINT64)
 bool_t

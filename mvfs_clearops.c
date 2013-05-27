@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2008. */
+/* * (C) Copyright IBM Corporation 1990, 2011. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_clearops.c */
 /*
  * Description:
@@ -44,8 +44,11 @@ mvfs_translate_path(
     char **replacement_p
 );
 
-STATIC void mfs_clear_closevp(P1(VNODE_T *)
-	      PN(CRED_T *));
+STATIC void
+mfs_clear_closevp(
+    VNODE_T *vp,
+    CRED_T *cred
+);
 
 #ifdef MVFS_DEBUG
 int mvfs_cltxt_creds_enabled = 1;       /* not STATIC, so it's patchable */
@@ -281,7 +284,19 @@ size_t text_size;
 	}
 	cp = (char *) MFS_STRBUFPN_PAIR_GET_KPN(&(mmi->mmi_svr.lpn)).s;
     } else {
-	cp = (char *) MFS_STRBUFPN_PAIR_GET_KPN(&(VTOM(mnp->mn_hdr.viewvp)->mn_view.svr.lpn)).s;
+#ifdef ATRIA_NT_60
+        /* Windows only, Vista and above platforms
+         *
+         * If we attached to the view storage via a mup enabled name, use that
+         * instead of the local pathname to the view storage.
+         */
+        if (((cp = VTOM(mnp->mn_hdr.viewvp)->mn_view.svr.net_pn) == NULL))
+            cp = (char *) MFS_STRBUFPN_PAIR_GET_KPN(
+                 &(VTOM(mnp->mn_hdr.viewvp)->mn_view.svr.lpn)).s;
+#else
+        cp = (char *) MFS_STRBUFPN_PAIR_GET_KPN(
+             &(VTOM(mnp->mn_hdr.viewvp)->mn_view.svr.lpn)).s;
+#endif 
     }
     cplen = STRLEN(cp);
     ASSERT(cp);
@@ -402,9 +417,10 @@ VNODE_T *vp;
 /* MFS_CLEAR_RELE - release cleartext vnode ptr */
 
 void
-mfs_clear_rele(vp,cred)
-VNODE_T *vp;
-CRED_T *cred;
+mfs_clear_rele(
+    VNODE_T *vp,
+    CRED_T *cred
+)
 {
     register struct mfs_mnode *mnp;
     VNODE_T *cvp;
@@ -547,7 +563,8 @@ mvfs_clearattr(
                  * NOTE: mfs_mnclean must free the cleartext vattr data.
                  */
                 VATTR_SET_MASK(&mnp->mn_vob.cleartext.va, AT_ALL);
-                error = MVOP_GETATTR(MVFS_CVP_TO_VP(cvp), cvp, &mnp->mn_vob.cleartext.va, 0, cred);
+                error = MVOP_GETATTR(MVFS_CVP_TO_VP(cvp), cvp, 
+                                     &mnp->mn_vob.cleartext.va, 0, cred);
             }
         } else {
             /*
@@ -557,7 +574,8 @@ mvfs_clearattr(
              * NOTE: mfs_mnclean must free the cleartext vattr data.
              */
             VATTR_SET_MASK(&mnp->mn_vob.cleartext.va, AT_ALL);
-            error = MVOP_GETATTR(MVFS_CVP_TO_VP(cvp), cvp, &mnp->mn_vob.cleartext.va, 0, cred);
+            error = MVOP_GETATTR(MVFS_CVP_TO_VP(cvp), cvp,
+                                 &mnp->mn_vob.cleartext.va, 0, cred);
         }
 	if (!error) {
 	    /* Sync with wrapper (if required) */
@@ -603,10 +621,11 @@ mvfs_clearattr(
  */
 
 int
-mfs_clearowner(vp, mask, cred)
-VNODE_T *vp;
-u_long mask;		/* AT_xxx mask for attr's to probe */
-CRED_T *cred;
+mfs_clearowner(
+    VNODE_T *vp,
+    u_long mask,		/* AT_xxx mask for attr's to probe */
+    CALL_DATA_T *cd
+)
 {
     int error;
     VATTR_T *xvap;
@@ -646,10 +665,13 @@ CRED_T *cred;
      * NOTE: mfs_mnclean must free the cleartext vattr data.
      */
     VATTR_SET_MASK(&mnp->mn_vob.cleartext.va, AT_ALL);
-    error = MVOP_GETATTR(MFS_REALVP(vp), MFS_CLRVP(vp), &mnp->mn_vob.cleartext.va, 0, cred);
+    error = MVOP_GETATTR(MFS_REALVP(vp), MFS_CLRVP(vp), 
+                         &mnp->mn_vob.cleartext.va, 0, MVFS_CD2CRED(cd));
     if (!error) {
-	xvap = (VATTR_T *)KMEM_ALLOC(sizeof(VATTR_T), KM_SLEEP);
+        xvap = MVFS_VATTR_ALLOC();
+
 	if (xvap == NULL) return(ENOMEM);
+
 	VATTR_NULL(xvap);
 	/* For now, we only support uid/gid/mode */
 	if (mask & AT_UID) {
@@ -668,17 +690,17 @@ CRED_T *cred;
 	}
         if (!error) {
             VATTR_SET_MASK(xvap, mask & (AT_UID|AT_GID|AT_MODE));
-            error = MVOP_SETATTR(MFS_CVP(vp), xvap, 0, cred, NULL);
+            error = MVOP_SETATTR(MFS_CVP(vp), xvap, 0, cd, NULL);
             /* Normal setuid hack! */
-            if (error == EPERM && MDKI_CR_IS_SETUID_ROOT(cred)) 
+            if (error == EPERM && MDKI_CR_IS_SETUID_ROOT(MVFS_CD2CRED(cd))) 
             { 
-                MDKI_CR_SET_E2RUID(cred);
-                error = MVOP_SETATTR(MFS_CVP(vp), xvap, 0, cred, NULL);
-                MDKI_CR_SET_E2ROOTUID(cred);
+                MDKI_CR_SET_E2RUID(MVFS_CD2CRED(cd));
+                error = MVOP_SETATTR(MFS_CVP(vp), xvap, 0, cd, NULL);
+                MDKI_CR_SET_E2ROOTUID(MVFS_CD2CRED(cd));
             }
         }
         MVFS_FREE_VATTR_FIELDS(xvap);
-	KMEM_FREE(xvap, sizeof(VATTR_T));
+        MVFS_VATTR_FREE(xvap);
     }
 
     return(error);
@@ -691,13 +713,14 @@ CRED_T *cred;
  */
 
 int
-mfs_getcleartext_nm(vp, cred)
-VNODE_T *vp;
-CRED_T *cred;
+mfs_getcleartext_nm(
+    VNODE_T *vp,
+    CALL_DATA_T *cd
+)
 {
     int error;
 
-    error = mfs_clnt_cltxt_locked(vp, cred);
+    error = mfs_clnt_cltxt_locked(vp, cd);
     if (!error) {
 	ASSERT(VTOM(vp)->mn_vob.cleartext.nm);
     }
@@ -711,7 +734,6 @@ mvfs_new_cltxt(
 )
 {
     register struct mfs_mnode *mnp = VTOM(vp);
-    SPL_T s;
 
     /* Must prevent paging while dropping realvp */
     MVFS_PVN_INH_PAGING(vp);
@@ -872,17 +894,17 @@ mvfs_prod_parent_dir_cache(
  */
 
 int
-mfs_getcleartext(vp, cvpp, cred)
-VNODE_T *vp;
-CLR_VNODE_T **cvpp;
-CRED_T *cred;
+mfs_getcleartext(
+    VNODE_T *vp,
+    CLR_VNODE_T **cvpp,
+    CALL_DATA_T *cd
+)
 {
     int error = 0;
     register struct mfs_mnode *mnp;
     CLR_VNODE_T *cvp = NULL;	/* Set to known value for Asserts */
     timestruc_t stime;	/* For statistics */
     timestruc_t dtime;
-    SPL_T s;
     int clookup_retries = 0;	/* Clookup retries */
     tbs_boolean_t record_creds = TRUE;
     CRED_T *fcred;
@@ -914,6 +936,7 @@ CRED_T *cred;
      *     (4) Everything missed - go to the view.
      */
 
+
     if (mnp->mn_hdr.realvp != NULL) {
         /*
          * Verify that this caller has permissions to look up the cleartext
@@ -923,15 +946,16 @@ CRED_T *cred;
          */
         if (DO_CLTXT_CREDS()) {
 	    MCILOCK(mnp);
-            fcred = mvfs_find_cred(mnp->mn_vob.cleartext.ok_creds, cred);
+            fcred = mvfs_find_cred(mnp->mn_vob.cleartext.ok_creds,
+                                   MVFS_CD2CRED(cd));
 	    MCIUNLOCK(mnp);
             if (fcred == NULL) {
                 /* needs to run a lookup */
-                BUMPSTAT(mfs_clearstat.cleargetlkup, s);
+                BUMPSTAT(mfs_clearstat.cleargetlkup);
                 goto findit;
             } else {
                 MDB_XLOG((MDB_CLEAROPS, "mnp %"KS_FMT_PTR_T" found cred %"KS_FMT_PTR_T" as %"KS_FMT_PTR_T"\n",
-                          mnp, cred, fcred));
+                          mnp, MVFS_CD2CRED(cd), fcred));
                 record_creds = FALSE;       /* found them */
             }
         }
@@ -953,7 +977,7 @@ CRED_T *cred;
 			MDKI_CTIME() + 3600 + (mnp->mn_hdr.mnum & 0xff);
 	    error = 0;
 	    if (mnp->mn_vob.cleartext.used == 0) {
-		BUMPSTAT(mfs_clearstat.clearreclaim, s);
+		BUMPSTAT(mfs_clearstat.clearreclaim);
 	    }
 	    goto out;
 	} else {
@@ -975,10 +999,11 @@ CRED_T *cred;
             VATTR_SET_MASK(&mnp->mn_vob.cleartext.va, AT_ALL);
 	    error = MVOP_GETATTR(MVFS_CVP_TO_VP(mnp->mn_hdr.realvp),
                                  mnp->mn_hdr.realvp, 
-			&mnp->mn_vob.cleartext.va, 0, cred);
+			         &mnp->mn_vob.cleartext.va, 0, 
+                                 MVFS_CD2CRED(cd));
 	    if (!error) {
 		if (mnp->mn_vob.cleartext.used == 0) {
-		    BUMPSTAT(mfs_clearstat.clearreclaim, s);
+		    BUMPSTAT(mfs_clearstat.clearreclaim);
 		}
 		goto out;	/* Cleartext validated OK */
 	    }
@@ -1006,8 +1031,8 @@ CRED_T *cred;
      * count that as a miss.
      */
     if (mnp->mn_vob.cleartext.hadonce) {
-	BUMPSTAT(mfs_clearstat.clearreclaim, s);
-	BUMPSTAT(mfs_clearstat.clearreclaimmiss, s);
+	BUMPSTAT(mfs_clearstat.clearreclaim);
+	BUMPSTAT(mfs_clearstat.clearreclaimmiss);
     }
 
   findit:
@@ -1016,7 +1041,7 @@ CRED_T *cred;
      * that required any lookups
      */
 	
-    BUMPSTAT(mfs_clearstat.clearget, s);
+    BUMPSTAT(mfs_clearstat.clearget);
 
     /*
      * If there is a cleartext pname still cached, then try to
@@ -1034,8 +1059,8 @@ CRED_T *cred;
 	/* Keep time stats over lookup ops only */
         MDKI_HRTIME(&stime);
 	error = LOOKUP_STORAGE_FILE(MFS_CLRTEXT_RO(mnp),
-			mnp->mn_vob.cleartext.nm, NULL, &cvp, cred);
-	MFS_BUMPTIME(stime, dtime, mfs_clearstat.clearget_time);
+			mnp->mn_vob.cleartext.nm, NULL, &cvp, MVFS_CD2CRED(cd));
+	MVFS_BUMPTIME(stime, dtime, mfs_clearstat.clearget_time);
         if (mnp->mn_hdr.realvp != NULL) {
             /* we were looking up to check this caller's permissions */
             if (!error) {
@@ -1061,7 +1086,7 @@ CRED_T *cred;
                         mnp->mn_vob.cleartext.ostale_logged = 0; 
                         mnp->mn_vob.cleartext.atime_pushed = 0;
                         /* Make sure we have valid stats */
-                        error = mvfs_clearattr(vp, NULL, cred);
+                        error = mvfs_clearattr(vp, NULL, MVFS_CD2CRED(cd));
                         MDB_XLOG((MDB_CLEAROPS, "idle ctxt rebind %s\n", mnp->mn_vob.cleartext.nm));
                     } else {
                         mfs_clear_mark_purge(vp);
@@ -1071,9 +1096,9 @@ CRED_T *cred;
                 } else {  
                     /* cvp matched, just make sure we have valid stats */
                     if (mnp->mn_vob.cleartext.used == 0) {
-                        BUMPSTAT(mfs_clearstat.clearreclaim, s);
+                        BUMPSTAT(mfs_clearstat.clearreclaim);
                     }
-                    error = mvfs_clearattr(vp, NULL, cred);
+                    error = mvfs_clearattr(vp, NULL, MVFS_CD2CRED(cd));
                 }
                 CVN_RELE(cvp); /* release the hold from the lookup */
                 goto out;
@@ -1122,7 +1147,7 @@ CRED_T *cred;
 	    mnp->mn_vob.cleartext.ostale_logged = 0; /* log again if needed */
 	    mnp->mn_vob.cleartext.atime_pushed = 0;   
 	    /* Make sure we have valid stats */
-	    error = mvfs_clearattr(vp, NULL, cred);
+	    error = mvfs_clearattr(vp, NULL, MVFS_CD2CRED(cd));
 	    goto out;
 	} else {
 	    /* Dump bogus cleartext pathname we have.  (No creds around since
@@ -1134,7 +1159,7 @@ CRED_T *cred;
     /* Fetch the correct cleartext pathname (possibly constructing it
        as a side effect) */
 
-    error = mfs_getcleartext_nm(vp, cred);
+    error = mfs_getcleartext_nm(vp, cd);
     if (!error) {
         /* Keep stats over lookup operations only */
 
@@ -1145,7 +1170,7 @@ CRED_T *cred;
 	 * didn't work or because the name wasn't known.
 	 */
 
-	BUMPSTAT(mfs_clearstat.cleargetmiss, s);
+	BUMPSTAT(mfs_clearstat.cleargetmiss);
 
         MDKI_HRTIME(&stime);
 
@@ -1163,7 +1188,7 @@ CRED_T *cred;
 	for (clookup_retries=0; clookup_retries < 3; clookup_retries++) {
 	    error = LOOKUP_STORAGE_FILE(MFS_CLRTEXT_RO(mnp),
 					mnp->mn_vob.cleartext.nm, 
-					NULL, &cvp, cred);
+					NULL, &cvp, MVFS_CD2CRED(cd));
 	    if (!error) {
                 MVFS_CTXT_VN_DUP(vp, cvp);
 	        mnp->mn_hdr.realvp = cvp;
@@ -1193,7 +1218,7 @@ CRED_T *cred;
                  * if we got ENOENT, try poking the NFS cache to find
                  * the entry which is supposed to be there.
                  */
-                if (MVFS_PROD_PARENT_DIR_CACHE(mnp, cred) != 0) {
+                if (MVFS_PROD_PARENT_DIR_CACHE(mnp, MVFS_CD2CRED(cd)) != 0) {
                     MDKI_USECDELAY(400000);	/* Sleep for .4 sec */
                 }
 	    }
@@ -1207,7 +1232,7 @@ CRED_T *cred;
 	     * Never return error with a bad pname still cached in the mnode.
              */
 	    mfs_clear_mark_name_purge(vp);
-	    mfs_clear_rele(vp, cred);
+	    mfs_clear_rele(vp, MVFS_CD2CRED(cd));
 
 	    /* 
 	     * FIXME: want some code here to correct automatically
@@ -1230,7 +1255,7 @@ CRED_T *cred;
 	    if (error == ENOENT) error = ENXIO;
 	} else {
 	    /* Keep stats only for good lookups (even if took retries!) */
-	    MFS_BUMPTIME(stime, dtime, mfs_clearstat.clearget_time);
+	    MVFS_BUMPTIME(stime, dtime, mfs_clearstat.clearget_time);
 	}
     } else {
 	/*
@@ -1252,7 +1277,7 @@ CRED_T *cred;
 
     if (!error) {
 	ASSERT(mnp->mn_hdr.realvp);
-	error = mvfs_clearattr(vp, NULL, cred);
+	error = mvfs_clearattr(vp, NULL, MVFS_CD2CRED(cd));
     }
 
 out:
@@ -1265,7 +1290,7 @@ out:
 	    CVN_HOLD(*cvpp);
 	}
 
-        MVFS_RECORD_CREDLIST(mnp, record_creds, cred);
+        MVFS_RECORD_CREDLIST(mnp, record_creds, MVFS_CD2CRED(cd));
 
 	/*
 	 * Update next revalidate time to 1 hr from now.
@@ -1321,7 +1346,7 @@ mfs_clear_create(
     VNODE_T *vp,
     VATTR_T *vap,
     CLR_VNODE_T **cvpp,
-    CRED_T  *cred,
+    CALL_DATA_T  *cd,
     int flag
 )
 {
@@ -1333,7 +1358,6 @@ mfs_clear_create(
     timestruc_t stime;
     timestruc_t dtime;
     VNODE_T *urdir = NULL;
-    SPL_T s;
 
     mnp = VTOM(vp);
 
@@ -1356,7 +1380,7 @@ mfs_clear_create(
      */
 
     if (mnp->mn_vob.cleartext.nm == NULL) { 
-    	error = mfs_clnt_cltxt_locked(vp, cred);
+    	error = mfs_clnt_cltxt_locked(vp, cd);
     } else {
 	error = 0;
     }
@@ -1374,10 +1398,11 @@ mfs_clear_create(
 
         /* Time around cleartext create */
 
-        BUMPSTAT(mfs_clearstat.clearcreate, s);
+        BUMPSTAT(mfs_clearstat.clearcreate);
         MDKI_HRTIME(&stime);
 
-   	error = MVFS_CREATEVP(mnp->mn_vob.cleartext.nm, vap, &cvp, cred, flag);
+   	error = MVFS_CREATEVP(mnp->mn_vob.cleartext.nm, vap, &cvp,
+                              MVFS_CD2CRED(cd), flag);
 
 	/* Handle errors in cleartext creations */
         if (error) {
@@ -1389,7 +1414,7 @@ mfs_clear_create(
 	     * bad cleartext name to be cached.
 	     */
 	    mfs_clear_mark_name_purge(vp);
-	    mfs_clear_rele(vp, cred);
+	    mfs_clear_rele(vp, MVFS_CD2CRED(cd));
 	} else {
 	    if (mnp->mn_hdr.realvp == NULL) {
                 MVFS_CTXT_VN_DUP(vp, cvp);
@@ -1402,14 +1427,14 @@ mfs_clear_create(
   		mnp->mn_vob.cleartext.purge_cvp = 0;
   		mnp->mn_vob.cleartext.ostale_logged = 0;
   		mnp->mn_vob.cleartext.atime_pushed = 0;
-                MVFS_RECORD_CREDLIST(mnp, TRUE, cred);
+                MVFS_RECORD_CREDLIST(mnp, TRUE, MVFS_CD2CRED(cd));
 	    } else {
 		CVN_RELE(cvp);
                 cvp = NULL;
-		BUMPSTAT(mfs_clearstat.clearcreatraces, s);
+		BUMPSTAT(mfs_clearstat.clearcreatraces);
 	    }
-	    error = mvfs_clearattr(vp, NULL, cred); /* Get clear attrs */
-	    MFS_BUMPTIME(stime, dtime, mfs_clearstat.clearcreat_time);
+	    error = mvfs_clearattr(vp, NULL, MVFS_CD2CRED(cd)); /* Get clear attrs */
+	    MVFS_BUMPTIME(stime, dtime, mfs_clearstat.clearcreat_time);
 
             /* Successful create (cvp is stored in realvp), return held vnode
             ** to caller if he wants it (and we didn't release it above) and we
@@ -1466,7 +1491,6 @@ CRED_T *cred;
 	goto errout;
     }
         
-
 #ifdef NFSV4_SHADOW_VNODE
     /* NFSv4 Compliance: RATLC01011478: NFSv4 introduces the concept of shadow
      * vnodes. Refer mvfs_openv_ctx() and the CR for the considerations and 
@@ -1545,9 +1569,10 @@ errout:
 /* MFS_CLEAR_CLOSEVP - close cleartext vnode ptr */
 
 STATIC void
-mfs_clear_closevp(vp, cred )
-VNODE_T *vp;
-CRED_T *cred;
+mfs_clear_closevp(
+    VNODE_T *vp,
+    CRED_T *cred
+)
 {
 	register struct mfs_mnode *mnp;
 	CLR_VNODE_T *cvp;
@@ -1564,6 +1589,7 @@ CRED_T *cred;
 	cvp = mnp->mn_hdr.realvp;
 	wcount= mnp->mn_vob.open_wcount; 
 	count = (mnp->mn_vob.open_count - wcount);
+
 
 	while ( wcount--  > 0 ) {
 		MVOP_CLOSE(cvp, FREAD|FWRITE, MVFS_LASTCLOSE_COUNT, 0, cred, NULL);
@@ -1652,9 +1678,17 @@ mvfs_record_cred(
     CRED_T *fcred;
     ks_uint32_t crhash;
     SPL_T s;
-    mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP(); 
+    mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
 
-    clist = (mvfs_clr_creds_t *) MVFS_CLR_CRED_ALLOC();
+    if ((clist = (mvfs_clr_creds_t *)MVFS_CLR_CRED_ALLOC()) == NULL) {
+        /* System resources are low so don't record this cred.  This
+        ** should be OK.
+        */
+        MDB_XLOG((MDB_CLEAROPS,
+                  "MVFS_CLR_CRED_ALLOC() failed for %"KS_FMT_PTR_T"\n",
+                  cred));
+        return;
+    }
     crhash = MVFS_HASH_CRED(cred);
 
     SPLOCK(mcdp->cred.mvfs_sys_credlist_lock, s);
@@ -1666,8 +1700,18 @@ mvfs_record_cred(
 
     if (mcdp->cred.mvfs_free_creds == NULL) {
         SPUNLOCK(mcdp->cred.mvfs_sys_credlist_lock, s);
-        sys_clist = (mvfs_clr_creds_t *) MVFS_CLR_CRED_ALLOC();
 
+        if ((sys_clist = (mvfs_clr_creds_t *)MVFS_CLR_CRED_ALLOC()) == NULL) {
+            MDB_XLOG((MDB_CLEAROPS,
+                      "MVFS_CLR_CRED_ALLOC() failed for sys "
+                      "credlist cred=%"KS_FMT_PTR_T"\n",
+                      cred));
+
+            /* Clean up the previous memory allocation
+            */
+            MVFS_CLR_CRED_FREE((caddr_t)clist, sizeof(mvfs_clr_creds_t));
+            return;
+        }
         SPLOCK(mcdp->cred.mvfs_sys_credlist_lock, s);
         sys_clist->next = mcdp->cred.mvfs_free_creds;
         sys_clist->cred = NULL;
@@ -1766,4 +1810,4 @@ mvfs_flush_credlists(
         mvfs_clear_release_credlist(clist);
     }
 }
-static const char vnode_verid_mvfs_clearops_c[] = "$Id:  8704c8f6.b22411dd.931e.00:01:83:9c:f6:11 $";
+static const char vnode_verid_mvfs_clearops_c[] = "$Id:  a1384c37.393411e0.8be9.00:1e:37:56:f9:bc $";

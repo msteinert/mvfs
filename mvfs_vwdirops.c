@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2007. */
+/* * (C) Copyright IBM Corporation 1991, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_vwdirops.c */
 #include "mvfs_systm.h"
 #include "mvfs.h"
@@ -100,8 +100,6 @@ int *num;		/* returned slot used */
     return(error);
 }
 
-    
-
 /* MFS_RAMDIR_REMOVE - remove a ramdir link to a vnode.
    Returns the vnode "removed" without affecting the hold
    count (the hold count the ramdir used to have is transferred to the
@@ -153,8 +151,6 @@ VNODE_T **vpp;
         MVFS_RM_DCACHE(*vpp);
     return(error);
 }
-
-    
 
 /* 
  * MFS_RAMDIR_PURGEVP - remove all ramdir links to a vnode.
@@ -356,8 +352,8 @@ char *hostnm;
          * try to release this vp but since hostname (viewserver) details
          * not filled yet, causes BSOD
          */
-        mnp->mn_view.svr.host = hostnm;
-        mnp->mn_view.viewname = PN_STRDUP(nm);	/* View tag name copy */
+        mnp->mn_view.svr.host = PN_STRDUP(hostnm);  /* Host name copy */
+        mnp->mn_view.viewname = PN_STRDUP(nm);      /* View tag name copy */
         mnp->mn_view.usedtime = MDKI_CTIME();
         mnp->mn_view.ctime.tv_sec = MDKI_CTIME();
         MVFS_COPY_UID_TO_VIEW(mnp, cred, &error);
@@ -488,7 +484,7 @@ VNODE_T *vw;
 
     MLOCK(mnp);
     MLOCK(vwmnp);
-    if (vwmnp->mn_view.exid != -1) {
+    if (vwmnp->mn_view.exid != (u_int) -1) {
         /* if nobody raced us to deactivate, then
            we deactivate it here. */
         ASSERT(mnp->mn_ramdir.export_hwm >= vwmnp->mn_view.exid);
@@ -532,7 +528,7 @@ register int exid;
     vwmnp = VTOM(vw);
     MLOCK(mnp);		/* /view mnode lock protects this stuff */
     MLOCK(vwmnp);		/* order is parent->child */
-    if (vwmnp->mn_view.exid != -1 && vwmnp->mn_view.exid != exid) {
+    if (vwmnp->mn_view.exid != (u_int) -1 && vwmnp->mn_view.exid != exid) {
 	/* already exported with different ID */
 	error = EEXIST;
 	goto badexport;
@@ -928,7 +924,6 @@ CRED_T *cred;
     register mfs_mnode_t *viewrootmnp, *vwmnp, *hmmnp;
     VNODE_T *hmvw;
     char *hmnm = NULL;
-    char *hostname = NULL;
     char *nm;
     int len;
     int vnum;
@@ -985,12 +980,10 @@ CRED_T *cred;
     }
 
     hmnm = mfs_hmappend(VTOM(vdir)->mn_ramdir.ents[vnum].nm);
-    hostname = STRDUP(vwmnp->mn_view.svr.host);
     MUNLOCK(vwmnp);                     /* drop lock on view */
     if (hmnm == NULL) { /* Could not get memory for new name */
 	MUNLOCK(viewrootmnp);
 	VN_RELE(vdir);
-        STRFREE(hostname);
 	mvfs_log(MFS_LOG_ERR, "hmview: no memory for hm viewname\n");
 	return(ENOMEM);
     }
@@ -1008,7 +1001,6 @@ CRED_T *cred;
 	    MUNLOCK(viewrootmnp);
 	    VN_RELE(vdir);
 	    STRFREE(hmnm);
-	    STRFREE(hostname);
 
 	    /* Go update the hmview with the latest svr info
 	     * from the "master" view
@@ -1024,7 +1016,7 @@ CRED_T *cred;
      */
 
     MUNLOCK(viewrootmnp);	/* Unlock for mkdir */
-    error = mfs_viewdirmkdir(vdir, hmnm, NULL, &hmvw, cred, hostname);
+    error = mfs_viewdirmkdir(vdir, hmnm, NULL, &hmvw, cred, vwmnp->mn_view.svr.host);
     VN_RELE(vdir);	/* Done with view root dir */
     STRFREE(hmnm);	/* Done with history mode name */
     if (error) return(error);
@@ -1050,8 +1042,10 @@ update_hmview:
 		STRDUP(MFS_STRBUFPN_PAIR_GET_KPN(&(vwmnp->mn_view.svr.lpn)).s);
     MFS_STRBUFPN_PAIR_GET_KPN(&hmmnp->mn_view.svr.lpn).l = STRLEN(MFS_STRBUFPN_PAIR_GET_KPN(&hmmnp->mn_view.svr.lpn).s);
     MFS_STRBUFPN_PAIR_GET_KPN(&hmmnp->mn_view.svr.lpn).m = MFS_STRBUFPN_PAIR_GET_KPN(&hmmnp->mn_view.svr.lpn).l + 1;
+
     if (hmmnp->mn_view.svr.host) STRFREE(hmmnp->mn_view.svr.host);
     hmmnp->mn_view.svr.host = STRDUP(vwmnp->mn_view.svr.host);
+
     if (hmmnp->mn_view.svr.rpn) STRFREE(hmmnp->mn_view.svr.rpn);
     hmmnp->mn_view.svr.rpn = STRDUP(vwmnp->mn_view.svr.rpn);
     hmmnp->mn_view.svr.uuid = vwmnp->mn_view.svr.uuid;
@@ -1164,7 +1158,6 @@ mfs_viewdirflushrvc()
     int hwm;
     mvfs_viewroot_data_t *vrdp = MDKI_VIEWROOT_GET_DATAP();
      
-
     if (vrdp->mfs_viewroot_vfsp) {
 	dvp = VFS_TO_MMI(vrdp->mfs_viewroot_vfsp)->mmi_rootvp;
 	VN_HOLD(dvp);
@@ -1415,10 +1408,10 @@ mvfs_viewuuidrecover(
         } else {
             /* wrong view, release mnode and keep searching */
             MUNLOCK(mnp);
-            mfs_mnrele(mnp, mnp->mn_hdr.vfsp);
+            mfs_mnrele(mnp);
         }
     }
     VN_RELE(dvp);
     return error;
 }
-static const char vnode_verid_mvfs_vwdirops_c[] = "$Id:  a5d60508.b25211dd.9387.00:01:83:9c:f6:11 $";
+static const char vnode_verid_mvfs_vwdirops_c[] = "$Id:  14c3a167.a23a11df.8bc7.00:01:84:7a:f2:e4 $";

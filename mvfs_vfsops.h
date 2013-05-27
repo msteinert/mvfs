@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_VFSOPS_H_
 #define MVFS_VFSOPS_H_
 
@@ -35,4 +35,4 @@ typedef struct mvfs_vfs_data
 } mvfs_vfs_data_t;
 
 #endif /* MVFS_VFSOPS_H_ */
-/* $Id: 0fb5f8b3.365711dd.8aaa.00:01:83:09:5e:0d $ */
+/* $Id: f091542e.9c1e11dd.9a62.00:01:83:29:c0:fc $ */

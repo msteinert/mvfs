@@ -1,7 +1,7 @@
 #ifndef MVFS_LINUX_ONLY_H_
 #define MVFS_LINUX_ONLY_H_
 /*
- * Copyright (C) 1999, 2008 IBM Corporation.
+ * Copyright (C) 1999, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,7 +23,7 @@
  * For support, please visit http://www.ibm.com/software/support
  */
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,4,21)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,5)
 #error kernel version not supported
 #endif
 
@@ -48,7 +48,7 @@
 #define USE_ROOTALIAS_CURVIEW
 #endif /* !USE_CHROOT_CURVIEW && !USE_ROOTALIAS_CURVIEW */
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0) || (defined(RATL_REDHAT) && RATL_VENDOR_VER < 500)
+#if (defined(RATL_REDHAT) && RATL_VENDOR_VER < 500)
 #define NO_EXPORTED_LOOKUP_CREATE
 #endif
 
@@ -64,28 +64,10 @@
 #define DENT_T struct dentry
 #define SUPER_T struct super_block
 
-/* Testing for an empty hash list in a dentry can be different on different
-** versions.  In 2.6 they changed the dentry hash list to use a different kind
-** of list.  Also, you might think hlist_empty() would be the thing to use, but
-** that code assumes the d_bucket is non-NULL (and contains the addr of the
-** hash bucket to which this dentry is linked).  So, a better test is if this
-** dentry is currently unhashed (i.e. not on a hash chain), so that's what we
-** use.
-*/
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define DENT_HASH_IS_EMPTY(dent) list_empty(&((dent)->d_hash))
-#else
-#define DENT_HASH_IS_EMPTY(dent) hlist_unhashed(&((dent)->d_hash))
-#endif
-
 /* magic number for the mvfs superblock. */
 #define MVFS_SUPER_MAGIC 0xc1eaca5e
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define LINUX_SB_PVT_FIELD u.generic_sbp
-#else
 #define LINUX_SB_PVT_FIELD s_fs_info
-#endif
 #define SBTOVFS(sb)     ((VFS_T *)(sb)->LINUX_SB_PVT_FIELD)
 #define VFSTOSB(vfsp)   ((SUPER_T *)(vfsp)->vfs_sb)
 /* Newer compilers deprecate the "use of cast expressions as lvalues", so use
@@ -95,28 +77,22 @@
 #define SET_VFSTOSB(vfsp, value) do {(vfsp)->vfs_sb = (caddr_t)(value);} while(0)
 
 /* There are different constants for ngroups, so let's define our own. */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define LINUX_NGROUPS NGROUPS
-#define LINUX_TASK_NGROUPS(task) ((task)->ngroups)
-#define LINUX_TASK_GROUPS(task) ((task)->groups)
-
-typedef struct {
-    uid_t old_fsuid;
-    uid_t old_fsgid;
-    int ngroups;
-    gid_t groups[LINUX_NGROUPS];
-} vnlayer_fsuid_save_struct_t, *vnlayer_fsuid_save_t;
-#else
 #define LINUX_NGROUPS NGROUPS_SMALL
-#define LINUX_TASK_NGROUPS(task) ((task)->group_info->ngroups)
-#define LINUX_TASK_GROUPS(task) ((task)->group_info->blocks[0])
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
+/* We are not allowed to access cred struct members directly */
+# define LINUX_TASK_NGROUPS(task) ((task)->group_info->ngroups)
+# define LINUX_TASK_GROUPS(task) ((task)->group_info->blocks[0])
+#endif /*  LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32) */
 
 typedef struct {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
     uid_t old_fsuid;
     uid_t old_fsgid;
     struct group_info *saved_group_info;
-} vnlayer_fsuid_save_struct_t, *vnlayer_fsuid_save_t;
+#else
+    const struct cred *saved_cred;
 #endif
+} vnlayer_fsuid_save_struct_t, *vnlayer_fsuid_save_t;
 
 extern mdki_boolean_t
 vnlayer_fsuid_save(
@@ -183,13 +159,8 @@ extern V_OP_T mvop_cltxt_vnops;
 #define WRITE_I_SIZE(ip, size) (ip)->i_size = size
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define ITOV(ip)        ((struct mdki_vnode *)(&(ip)->u))
-#define VTOI(vp)        ((struct inode *)((caddr_t)(vp) - offsetof(struct inode, u)))
-#else
-/* In Linux 2.4 there was enough space in the inode to hold our vnode, so we
-** managed them as a "unit".  In 2.6 they've done the right thing and just put
-** a generic_ip pointer in the inode (which we will use to point to the vnode).
+/* Starting in 2.6 Linux has done the right thing and put a generic_ip pointer
+** in the inode (which we will use to point to the vnode).
 ** However, since we need to be able to get from an inode to a vnode even if
 ** the inode isn't filled in yet, we will define a structure to "keep them
 ** together" in consecutive storage for allocation and freeing purposes and let
@@ -206,7 +177,6 @@ typedef struct vnlayer_vnode {
 */
 #define ITOV(ip)    ((VNODE_T *)container_of((ip), vnlayer_vnode_t, vnl_inode))
 #define VTOI(vp)    ((struct inode *)(&(((vnlayer_vnode_t *)(vp))->vnl_inode)))
-#endif
 
 extern struct file_system_type mvfs_file_system;
 
@@ -239,6 +209,31 @@ extern IN_OPS_T vnlayer_clrvnode_iops;
 #endif /* HAVE_SHADOW_FILES */
 #define MDKI_INOISCLRVN(ino) (((ino) != NULL) && (((ino)->i_sb->s_type == &mvfs_file_system) && ((ino)->i_op == &vnlayer_clrvnode_iops)))
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24)
+# if BITS_PER_LONG == 32
+#   define MDKI_FID_CALC_HASH(PTR)      ((u32)(PTR))
+# else
+#   define MDKI_FID_CALC_HASH(PTR)      hash_ptr(PTR, 32)
+# endif
+/* MDKI_FID_EXTRA_SIZE must be even */
+# define MDKI_FID_EXTRA_SIZE            (sizeof(u32))
+# define MDKI_FID_LEN_WITH_HASH(FIDLEN) (MDKI_FID_EXTRA_SIZE + (FIDLEN) * 2)
+# define MDKI_FID_SB_HASH(PTR, FIDLEN)  (*(u32 *)&(((caddr_t)(PTR))\
+                                         [(FIDLEN) * 2]))
+# define MDKI_FID_SET_SB_HASH(P, FL, H)  do {\
+                                           MDKI_FID_SB_HASH(P, FL) = (H);\
+                                        }while(0)
+#else
+/* MDKI_FID_EXTRA_SIZE must be even */
+# define MDKI_FID_EXTRA_SIZE            0
+#endif /*  LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27) */
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
+# define MDKI_PATH_RELEASE(ND) path_put(&(ND)->path)
+#else
+# define MDKI_PATH_RELEASE(ND) path_release(ND)
+#endif
+
 extern DENT_T *
 vnlayer_inode2dentry(
     INODE_T *ip,
@@ -269,7 +264,6 @@ vnode_d_alloc_root(
     const char *func,
     int line
 );
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 extern DENT_T *
 vnode_d_alloc_anon(
     INODE_T * rootvp,
@@ -285,7 +279,6 @@ vnode_d_splice_alias(
     const char *func,
     int line
 );
-#endif
 extern DENT_T *
 vnode_d_alloc(
     DENT_T *parent,
@@ -392,9 +385,13 @@ vnlayer_set_urdent(
 extern INODE_T *
 vnlayer_get_ucdir_inode(void);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27) 
+# define F_COUNT_DEC(x) atomic_long_dec(&(x)->f_count)
+#else
+# define F_COUNT_DEC(x) atomic_dec(&(x)->f_count)
+#endif
 #define F_COUNT(x) file_count(x)
 #define F_COUNT_INC(x) get_file(x)
-#define F_COUNT_DEC(x) atomic_dec(&(x)->f_count)
 #define D_COUNT(x) ((x) ? atomic_read(&(x)->d_count) : 0)
 #define D_COUNT_INC(x) atomic_inc(&(x)->d_count)
 #define D_COUNT_DEC(x) atomic_dec(&(x)->d_count)
@@ -493,12 +490,6 @@ extern mdki_boolean_t mvfs_panic_assert;
 #define ASSERT_DCACHE_UNLOCKED()
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define ASSERT_KERNEL_LOCKED_24x() ASSERT_KERNEL_LOCKED()
-#else
-#define ASSERT_KERNEL_LOCKED_24x()
-#endif
-
 /* So far, all CPUs use similar semaphore internals, defined in
  * CPU-specific header files (in asm/semaphore.h).
  */
@@ -550,14 +541,8 @@ extern mdki_boolean_t mvfs_panic_assert;
 
 #define ASSERT_I_SEM_MINE(ino)   ASSERT_SEMA_MINE(&(ino)->i_sem)
 #define ASSERT_I_SEM_NOT_MINE(ino)
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define ASSERT_I_ZOMB_MINE(ino)  ASSERT_SEMA_MINE(&(ino)->i_zombie)
-#else
 /* No more i_zombie field in Linux 2.6. */
-#define ASSERT_I_ZOMB_MINE(ino)
-#endif
 #define ASSERT_SB_MOUNT_LOCKED_W(sb) ASSERT_RWSEMA_MINE_W(&(sb)->s_umount)
-#define ASSERT_I_ZOMB_NOT_MINE(ino)
 
 #define ASSERT_SB_LOCKED(sb)     ASSERT(TEST_SB_LOCKED(sb))
 #define ASSERT_SB_UNLOCKED(sb)   ASSERT(!TEST_SB_LOCKED(sb))
@@ -569,15 +554,12 @@ extern mdki_boolean_t mvfs_panic_assert;
 #else /* No debug */
 
 #define ASSERT_KERNEL_LOCKED()
-#define ASSERT_KERNEL_LOCKED_24x()
 #define ASSERT_KERNEL_UNLOCKED()
 #define ASSERT_DCACHE_LOCKED()
 #define ASSERT_DCACHE_UNLOCKED()
 #define ASSERT_SEMA_MINE(sema)
 #define ASSERT_I_SEM_MINE(ino)
 #define ASSERT_I_SEM_NOT_MINE(ino)
-#define ASSERT_I_ZOMB_MINE(ino)
-#define ASSERT_I_ZOMB_NOT_MINE(ino)
 #define ASSERT_SB_LOCKED(sb)
 #define ASSERT_SB_MOUNT_LOCKED_W(sb)
 #define ASSERT_SB_UNLOCKED(sb)
@@ -600,19 +582,18 @@ extern struct vfsops *vnlayer_vfs_opvec;
  * it when a file system is mounted and in use.  We need to handle
  * that ourselves in our superblock read (i.e. mount) handler.
  */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define MDKI_MODULE_GET(modp) __MOD_INC_USE_COUNT(modp)
-#define MDKI_MODULE_PUT(modp) __MOD_DEC_USE_COUNT(modp)
-#else
 /* If the try fails, we're sunk since that means MODULE_STATE_GOING is
 ** true, which means we're unloading even though we haven't even
 ** gotten loaded yet (see <linux/module.h> for details).
 */
 #define MDKI_MODULE_GET(modp) if (!try_module_get(modp)) {BUG();}
 #define MDKI_MODULE_PUT(modp) module_put(modp)
-#endif
 
-#define LINUX_DIRENT_T	struct dirent
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
+# define LINUX_DIRENT_T struct dirent
+#else
+# define LINUX_DIRENT_T struct linux_dirent64
+#endif
 
 #ifdef MVFS_DEBUG
 extern struct vfsmount *
@@ -652,11 +633,19 @@ vnlayer_swap_task_fs(
 );
 
 extern struct dentry *
+vnlayer_inode2dentry_internal_no_lock(
+    struct inode *inode,
+    struct dentry *parent,
+    struct qstr *name,
+    const struct dentry_operations *ops
+);
+
+extern struct dentry *
 vnlayer_inode2dentry_internal(
     struct inode *inode,
     struct dentry *parent,
     struct qstr *name,
-    struct dentry_operations *ops
+    const struct dentry_operations *ops
 );
 
 static inline mdki_boolean_t
@@ -831,6 +820,7 @@ vnlayer_set_fs_root(
 #define VNLAYER_SET_FS_ROOT set_fs_root
 #endif /* 2.6.10 or later, or RHEL4 */
 
+
 #ifdef USE_ROOTALIAS_CURVIEW
 extern struct inode_operations vnlayer_hijacked_iops;
 extern struct inode_operations vnlayer_root_iops_copy;
@@ -851,10 +841,8 @@ extern struct dentry_operations vnlayer_root_alias_dops;
 extern DENT_T *
 vnlayer_hijacked_lookup(
     INODE_T *dir,
-    struct dentry *dent
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-    , struct nameidata *nd
-#endif
+    struct dentry *dent,
+    struct nameidata *nd
 );
 #endif /* USE_ROOTALIAS_CURVIEW */
 extern int
@@ -899,7 +887,7 @@ mvfs_linux_xdr_getbytes(
 static __inline__ bool_t
 mvfs_linux_xdr_putbytes(
     XDR *x,
-    char *cp,
+    const char *cp,
     u_int cnt
 )
 {
@@ -932,75 +920,62 @@ typedef struct mdki_vop_close_ctx {
  * to check anything.
  */
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define NFSD_DCACHE_DISCON DCACHE_NFSD_DISCONNECTED
-#else
 #define NFSD_DCACHE_DISCON DCACHE_DISCONNECTED
-#endif
 
 #if defined(__s390__) || defined(__s390x__)
-#define INLINE_FOR_SMALL_STACK extern inline
+# if defined(__always_inline)
+# define INLINE_FOR_SMALL_STACK STATIC __always_inline
+# else
+# define INLINE_FOR_SMALL_STACK extern inline
+# endif /* __always_inline_ */
 #else
-#define INLINE_FOR_SMALL_STACK STATIC
-#endif
+# define INLINE_FOR_SMALL_STACK STATIC
+#endif /* s390 */
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
+# define MDKI_NAMEI_DENTRY(NI)          ((NI)->dentry)
+# define MDKI_NAMEI_MNT(NI)             ((NI)->mnt)
+# define MDKI_NAMEI_SET_DENTRY(NI, D)   ((NI)->dentry = D)
+# define MDKI_NAMEI_SET_MNT(NI, M)      ((NI)->mnt = M)
+
+# define MDKI_FS_ROOTDENTRY(F)          ((F)->root)
+# define MDKI_FS_ROOTMNT(F)             ((F)->rootmnt)
+# define MDKI_FS_SET_ROOTDENTRY(F, D)   ((F)->root = D)
+# define MDKI_FS_SET_ROOTMNT(F, M)      ((F)->rootmnt = M)
+
+# define MDKI_FS_PWDDENTRY(F)           ((F)->pwd)
+# define MDKI_FS_PWDMNT(F)              ((F)->pwdmnt)
+# define MDKI_FS_SET_PWDDENTRY(F, D)    ((F)->pwd = D)
+# define MDKI_FS_SET_PWDMNT(F, M)       ((F)->pwdmnt = M)
+
+#else
+/*
+ * For 2.6.27 and beyond they added a 'struct path' because 
+ * mnt and dentry are almost always handled in pairs.
+ */
+# define MDKI_NAMEI_DENTRY(NI)          ((NI)->path.dentry)
+# define MDKI_NAMEI_MNT(NI)             ((NI)->path.mnt)
+# define MDKI_NAMEI_SET_DENTRY(NI, D)   ((NI)->path.dentry = D)
+# define MDKI_NAMEI_SET_MNT(NI, M)      ((NI)->path.mnt = M)
+
+# define MDKI_FS_ROOTDENTRY(F)          ((F)->root.dentry)
+# define MDKI_FS_ROOTMNT(F)             ((F)->root.mnt)
+# define MDKI_FS_SET_ROOTDENTRY(F, D)   ((F)->root.dentry = D)
+# define MDKI_FS_SET_ROOTMNT(F, M)      ((F)->root.mnt = M)
+
+# define MDKI_FS_PWDDENTRY(F)           ((F)->pwd.dentry)
+# define MDKI_FS_PWDMNT(F)              ((F)->pwd.mnt)
+# define MDKI_FS_SET_PWDDENTRY(F, D)    ((F)->pwd.dentry = D)
+# define MDKI_FS_SET_PWDMNT(F, M)       ((F)->pwd.mnt = M)
+#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27) */
 
 /*
  * NO_STACK_CHECKING can be turned on (before including this header
  * file) in individual source modules to delete checks from those
  * modules.
  */
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)) && (defined(MVFS_DEBUG) || defined(STACK_CHECKING)) && !defined(NO_STACK_CHECKING)
-/*
- * The journal_info field is near the end of the task structure and is
- * likely to be trashed on a stack overflow.  If it's trashed, ext3
- * will crash on the next file system access.  These macros help identify
- * when it's been trashed before we unwind the stack and lose the stack trace
- * related to the overflow.
- */
-#ifdef __x86_64__
-#define ALIGNMENT_MASK 7
-#else
-#define ALIGNMENT_MASK 3
-#endif
-#if defined(RATL_REDHAT) && (RATL_VENDOR_VER < 400)
-#define VN_STACK_CHECK1 signal
-#define VN_STACK_CHECK2 last_siginfo
-#define VN_STACK_CHECK3 sighand
-#define VN_JOURNAL_CHECK
-#else
-#define VN_STACK_CHECK1 notifier_mask
-#define VN_STACK_CHECK2 sig
-#define VN_STACK_CHECK3 namespace
-#endif
-#ifdef VN_JOURNAL_CHECK
-#define STACK_CHECK_DECL()  void *journal_info = current->journal_info;
-#define STACK_JOURNAL_CHECK()                                              \
-    if ((journal_info != NULL && current->journal_info != journal_info) || \
-        (((long)current->journal_info) & ALIGNMENT_MASK))                  \
-    {                                                                      \
-        printk("ji=%p cji=%p\n", journal_info, current->journal_info);     \
-        BUG();                                                             \
-    }
-#else
-#define STACK_CHECK_DECL()  /* skip */
-#define STACK_JOURNAL_CHECK() /* skip */
-#endif
-#define STACK_CHECK() do {                                              \
-    STACK_JOURNAL_CHECK()                                               \
-    if ((((long)current->VN_STACK_CHECK1) & ALIGNMENT_MASK) ||          \
-	(((long)current->VN_STACK_CHECK2) & ALIGNMENT_MASK) ||          \
-        (((long)current->VN_STACK_CHECK3) & ALIGNMENT_MASK))            \
-    {                                                                   \
-        printk("pointers trashed: %p %p %p\n",                          \
-	       current->VN_STACK_CHECK1, current->VN_STACK_CHECK2,      \
-               current->VN_STACK_CHECK3);                               \
-        BUG();                                                          \
-    }                                                                   \
-} while (0)
-#else
 #define STACK_CHECK_DECL()
 #define STACK_CHECK()
-#endif /* STACK_CHECKING */
 
 #endif /* MVFS_LINUX_ONLY_H_ */
-/* $Id: 241422a8.8be611dd.851a.00:01:6c:81:c6:90 $ */
+/* $Id: f83723c6.d6d511df.8121.00:01:83:0a:3b:75 $ */

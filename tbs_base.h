@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2008. */
+/* * (C) Copyright IBM Corporation 1990, 2011. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_TBS_BASE_H_)
 #define _TBS_BASE_H_
 
@@ -36,6 +36,10 @@
 
 /* Required for definitions below */
 #include <linux/time.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /****************************************************************************
  * Basic c definitions
@@ -219,9 +223,14 @@ typedef int tbs_status_t;
 #define TBS_ST_UCM_OBJECT       TBS_STBASE+45     /* The object is a UCM object.
                                                    * The operation is not permitted
                                                    * on UCM objects */
+#define TBS_ST_ABORT		TBS_STBASE+46	  /* The operation was cancelled
+                                                   * midway
+                                                   */
 #define TBS_ST_MASTER_XFERRED   TBS_STBASE+47     /* The mastership has xferred
                                                    * to the requesting replica
                                                    */
+#define TBS_ST_NOT_LAST_VER     TBS_STBASE+48     /* not the last version on
+                                                     the branch */
 /* WARNING: When adding an error status you must also update TWO other files:
  *	tbs_cmsg.m
  *	tbs_errno.c
@@ -251,8 +260,9 @@ typedef int tbs_status_t;
 #define TBS_ST_EDQUOT		TBS_UNIXBASE+36	/* Disc quota exceeded */
 #define TBS_ST_ESTALE		TBS_UNIXBASE+37	/* Stale VIEW file handle */
 #define TBS_ST_EBUSY		TBS_UNIXBASE+38	/* Device/MVFS busy */
+#define TBS_ST_EPFNOSUPPORT	TBS_UNIXBASE+39	/* Protocol family not supported */
 
-#define TBS_STLIMIT		TBS_UNIXBASE+39 /* Highest status code */
+#define TBS_STLIMIT		TBS_UNIXBASE+40 /* Highest status code */
 
 /* WARNING: the SyncMgr values are greater than TBS_STLIMIT
  * This is OK, because there is no meaningful mapping to errno
@@ -292,6 +302,11 @@ typedef int tbs_status_t;
 
 /* SyncMgr highest status code */
 #define TBS_ST_SMLIMIT                  TBS_ST_SMBASE+11
+
+/* WARNING: When adding an error status you must also update TWO other files:
+ *	tbs_cmsg.m
+ *	tbs_errno.c
+ */
 
 /* CCRC Status Codes
  * WARNING: There is no meaningful mapping to errno
@@ -338,6 +353,41 @@ typedef int tbs_status_t;
 
 /* The parent stream's baselines are invalid for the current stream. */
 #define TBS_ST_CCRC_INVALID_BASELINES   TBS_ST_CCRC_BASE + 13
+
+/* A deliver operation is in progress on the stream in context with a
+   target view that was not created by the current user or was not
+   created by the current ClearCase web server. */
+#define TBS_ST_CCRC_DELIVER_IN_PROGRESS TBS_ST_CCRC_BASE + 14
+
+/* A Custom error code to prevent deliver if the source stream is 
+   project Integration stream.*/
+#define TBS_ST_CTRC_DELIVER_PROJINTSTREAM_ERR TBS_ST_CCRC_BASE + 15
+
+#define TBS_ST_CTRC_SYNC_CANCELLED TBS_ST_CCRC_BASE + 16
+
+#define TBS_ST_CTRC_SYNC_CANCEL_FAILED TBS_ST_CCRC_BASE + 17
+
+#define TBS_ST_CTRC_SYNC_CONNECTION_FAILED TBS_ST_CCRC_BASE + 18
+
+/* A custom error code to indicate that a checkout failed because
+   the checkout branch was not mastered locally. */
+#define TBS_ST_CCRC_CHECKOUT_BRANCH_NOT_MASTERED_LOCALLY TBS_ST_CCRC_BASE + 19
+
+/* A custom error code to indicate that a checkout failed because
+   the checkout branch type was not mastered locally. */
+#define TBS_ST_CCRC_CHECKOUT_BRTYPE_NOT_MASTERED_LOCALLY TBS_ST_CCRC_BASE + 20
+
+/* A custom error code to indicate that setConfigSpec failed because
+   of some bad load rules */
+#define TBS_ST_CCRC_BAD_LOAD_RULES TBS_ST_CCRC_BASE + 21
+
+/* CCRC highest status code */
+#define TBS_ST_CCRC_LIMIT                  TBS_ST_CCRC_BASE + 22
+
+/* WARNING: When adding an error status you must also update TWO other files:
+ *	tbs_cmsg.m
+ *	tbs_errno.c
+ */
 
 /****************************************************************************
  * Object identifier
@@ -510,6 +560,11 @@ typedef u_long tbs_ftype_t;
 #define TBS_FTYPE_LNK	(5L)
 #define TBS_FTYPE_FIFO	(6L)
 
+/* Note: we abuse VOB_MOD_MASTER_MODE_FLAG in vob_base_pvt.h as a value
+ * that doesn't exist below until an oplog change allows for better 
+ * implementation.
+ */
+
 typedef u_long tbs_fmode_t;
 #define	TBS_FMODE_NULL		(0L)
 #define	TBS_FMODE_DONTCARE	(0xffffffff)
@@ -578,5 +633,11 @@ typedef struct tbs_dirent_s {
  * IN	fstat_p		pointer to fstat structure
  */
 
+
+
+#ifdef __cplusplus
+} /* extern "C" */
 #endif
-/* $Id: eef5f38b.365611dd.8aaa.00:01:83:09:5e:0d $ */
+
+#endif
+/* $Id: 59bf05d3.cb5d4b9a.9a5b.a5:a2:33:78:88:83 $ */

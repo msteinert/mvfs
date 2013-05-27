@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1998, 2008. */
+/* * (C) Copyright IBM Corporation 1998, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,17 +19,170 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_TRANSTYPE_H_
 #define MVFS_TRANSTYPE_H_
 
-#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
 
+#if defined(ATRIA_WIN32_COMMON) || defined(ATRIA_LP64) || defined(ATRIA_LLP64)
 typedef ks_uint32_t mvfs_size_t_32;
 typedef ks_uint32_t mvfs_boolean_t_32;
 typedef ks_uint32_t mvfs_dbid_t_32;
 
+struct mfs_strbufpn_32 {
+    ptr32_t s;
+    mvfs_size_t_32 l;
+    mvfs_size_t_32 m;
+};
+typedef struct mfs_strbufpn_32 mfs_strbufpn_t_32;
+
+struct mvfs_iofid_32 {
+    ks_uint32_t dbid;
+    ks_uint32_t gen;
+};
+
+struct view_bhandle_32 {
+    ks_uint32_t build_session;
+    ks_uint32_t target_id;
+};
+
+struct timeval_32 {
+    ks_int32_t tv_sec;
+    ks_int32_t tv_usec;
+};
+
+struct mfs_ioncent_32 {
+    ks_uint32_t offset;
+    ks_uint16_t eocache;
+    ks_uint16_t flags;
+    ks_int32_t addtime;
+    struct mfs_strbufpn_32 dvw;
+    struct mfs_strbufpn_32 mp;
+    struct mvfs_iofid_32 dfid;
+    struct mfs_strbufpn_32 nm;
+    struct view_bhandle_32 bhlist[MVFS_IONCBHMAX];
+    struct mfs_strbufpn_32 vw;
+    struct mvfs_iofid_32 fid;
+    struct timeval_32 evtime;
+};
+
+/* The first field in a timestruc_t is a time_t on most platforms. */
+struct timestruc_32 {
+    ks_int32_t tv_sec;
+    ks_int32_t tv_nsec;
+};
+
+/*
+ * The version field used to be the first field in the stats structures before
+ * changing the statistics fields to 64-bit ints.  However, some compilers
+ * (e.g. in 64-bit kernels on x86_64 machines) would put a word of padding in
+ * the structure to align the statistics field accesses in that case.  Since
+ * user space is 32-bit, the compiler did not put in this padding when building
+ * user space, e.g. the mvfsstat command.  We considered these alternatives to
+ * solve this problem:
+ *
+ * - Declaring an explicit padding field.  That would waste space for the
+ *   architectures that didn't need it.
+ *
+ * - Using compiler options to pack the structures, e.g. #pragma pack(4) on
+ *   Solaris or __attribute__ ((packed)) on GCC.  However, that is fragile and
+ *   could lead to errors if the architecture requires that 64-bit fields be
+ *   aligned to be accessed correctly (e.g. Sparc).
+ *
+ * - Changing the version to a 64-bit field.  That would waste space, as above,
+ *   and it could also cause the version number check done by, e.g. mvfsstat,
+ *   to fail if user space expected an older version in a 32-bit field (since
+ *   the version would now be in the 2nd word of the 2 word version field).
+ *
+ * - Moving the version field to the end of the structure.  That does not use
+ *   any extra space, but it suffers from the same version checking problem as
+ *   above (since now mvfsstat would be looking at the first word of the first
+ *   statistics field in the structure).
+ *
+ * The final decision was to move the version field to the end of the
+ * structure.  This does mean that we won't be able to run later MVFS kernels
+ * with this change against an older user space installation.  This should not
+ * be a problem for customers since we ship user space and the kernel together.
+ */
+
+struct mfs_clntstat_32 {
+    MVFS_STAT_CNT_T clntget;
+    MVFS_STAT_CNT_T clntfree;
+    MVFS_STAT_CNT_T clntcreate;
+    MVFS_STAT_CNT_T clntdestroy;
+    MVFS_STAT_CNT_T clntcalls;
+    MVFS_STAT_CNT_T clntretries;
+    MVFS_STAT_CNT_T mfscall;
+    MVFS_STAT_CNT_T mfsfail;
+    MVFS_STAT_CNT_T mfsintr;
+    MVFS_STAT_CNT_T mfsmaxdelay;
+    MVFS_STAT_CNT_T mfsmaxdelaytime;
+    struct timestruc_32  mvfsthread_time;
+    ks_uint32_t version;
+};
+
+struct mfs_clearstat_32 {
+    MVFS_STAT_CNT_T clearget;
+    MVFS_STAT_CNT_T clearcreate;
+    MVFS_STAT_CNT_T clearraces;
+    MVFS_STAT_CNT_T clearcreatraces;
+    MVFS_STAT_CNT_T clearread;
+    MVFS_STAT_CNT_T clearwrite;
+    struct timestruc_32  clearget_time;
+    struct timestruc_32  clearcreat_time;
+    struct timestruc_32  clearrd_time;
+    struct timestruc_32  clearwr_time;
+    struct timestruc_32  clearopen_time;
+    struct timestruc_32  unclearrd_time;
+    struct timestruc_32  unclearwr_time;
+    struct timestruc_32  unclearget_time;
+    struct timestruc_32  cto_getattr_time;
+    MVFS_STAT_CNT_T clearopen;
+    MVFS_STAT_CNT_T unclearopen;
+    MVFS_STAT_CNT_T cleargetmiss;
+    MVFS_STAT_CNT_T clearreclaim;
+    MVFS_STAT_CNT_T clearreclaimmiss;
+    MVFS_STAT_CNT_T cleargetlkup;
+    ks_uint32_t version;
+};
+
+struct mfs_austat_32 {
+    MVFS_STAT_CNT_T au_calls;
+    MVFS_STAT_CNT_T au_vgetattr;
+    MVFS_STAT_CNT_T au_nvgetattr;
+    MVFS_STAT_CNT_T au_dupl;
+    struct timestruc_32  au_time;
+    struct timestruc_32  au_settime;
+    struct timestruc_32  au_ioctltime;
+    ks_uint32_t version;
+};
+
+struct mfs_rpchist_32 {
+    struct timestruc_32  histval[MFS_NUM_HISTX];
+    MVFS_STAT_CNT_T histrpc[MFS_NUM_HISTX];
+    MVFS_STAT_CNT_T histclr[MFS_NUM_HISTX];
+    MVFS_STAT_CNT_T histperop[VIEW_NUM_PROCS][MFS_NUM_HISTX];
+    ks_uint32_t version;
+};
+
+extern void mfs_strbufpn_to_mfs_strbufpn_32(struct mfs_strbufpn *, struct mfs_strbufpn_32 *);
+extern void mfs_strbufpn_32_to_mfs_strbufpn(struct mfs_strbufpn_32 *, struct mfs_strbufpn *);
+extern void timeval_to_timeval_32(struct timeval *vbl, struct timeval_32 *vbl_32);
+extern void timeval_32_to_timeval(struct timeval_32 *vbl_32, struct timeval *vbl);
+extern void mvfs_iofid_to_mvfs_iofid_32(struct mvfs_iofid *, struct mvfs_iofid_32 *);
+extern void mvfs_iofid_32_to_mvfs_iofid(struct mvfs_iofid_32 *, struct mvfs_iofid *);
+extern void view_bhandle_to_view_bhandle_32(struct view_bhandle *, struct view_bhandle_32 *);
+extern void view_bhandle_32_to_view_bhandle(struct view_bhandle_32 *, struct view_bhandle *);
+extern void mfs_ioncent_to_mfs_ioncent_32(struct mfs_ioncent *, struct mfs_ioncent_32 *);
+extern void mfs_ioncent_32_to_mfs_ioncent(struct mfs_ioncent_32 *, struct mfs_ioncent *);
+extern void mfs_timestruc_to_mfs_timestruc_32(timestruc_t *, struct timestruc_32 *);
+extern void mfs_clntstat_to_mfs_clntstat_32(struct mfs_clntstat *, struct mfs_clntstat_32 *);
+extern void mfs_clearstat_to_mfs_clearstat_32(struct mfs_clearstat *, struct mfs_clearstat_32 *);
+extern void mfs_austat_to_mfs_austat_32(struct mfs_austat *, struct mfs_austat_32 *);
+extern void mfs_rpchist_to_mfs_rpchist_32(struct mfs_rpchist *, struct mfs_rpchist_32 *);
+#endif
+#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
 struct mfs_strbuf_32 {
     ptr32_t s;
     mvfs_size_t_32 l;
@@ -37,14 +190,6 @@ struct mfs_strbuf_32 {
 };
 
 typedef struct mfs_strbuf_32 mfs_strbuf_t_32;
-
-struct mfs_strbufpn_32 {
-    ptr32_t s;
-    mvfs_size_t_32 l;
-    mvfs_size_t_32 m;
-};
-
-typedef struct mfs_strbufpn_32 mfs_strbufpn_t_32;
 
 struct mfs_strbufpn_pair_32 {
     mfs_strbufpn_t_32 upn;
@@ -62,26 +207,11 @@ struct tbs_uuid_s_32 {
     ks_byte_t node[6];
 };
 
+struct mvfs_gfsinfo_32 {
+    ks_int32_t  gfsno;
+};
 struct tbs_oid_s_32 {
     struct tbs_uuid_s_32 obj_uuid;
-};
-
-struct knetconfig_32 {
-    ks_uint32_t knc_semantics;
-    ptr32_t knc_protofmly;
-    ptr32_t knc_proto;
-    ks_uint32_t knc_rdev;
-    ks_uint32_t knc_unused[8];
-};
-
-/* IPv4 Socket address */
-struct sockaddr_in_32 {
-    ks_int16_t sin_family;
-    ks_uint16_t sin_port;
-    struct {
-        ks_uint32_t s_addr;
-    } sin_addr;
-    char sin_zero[8];
 };
 
 struct mfs_mntargs_32 {
@@ -91,10 +221,9 @@ struct mfs_mntargs_32 {
     struct mfs_strbuf_32 mma_mntpath;
     struct mfs_strbuf_32  mma_host;
 
-    struct sockaddr_in_32 mma_addr;
+    u_short mma_port;         /* in_port_t (same in 32-bit, 64-bit kernels). */
     struct mfs_strbufpn_pair_32  mma_spath;
     struct mfs_strbuf_32 mma_rpath;
-    struct mfs_strbuf_32 mma_vob_subdir;
     struct tbs_oid_s_32  mma_vob_oid;
     ks_uint32_t mma_timeo;
     ks_uint32_t mma_retries;
@@ -108,6 +237,7 @@ struct mfs_mntargs_32 {
     ptr32_t mma_sptab_ents;
     ks_uint32_t mma_vobminor;
     struct mvfs_cache_sizes mma_sizes;
+
 };
 
 struct mvfs_ioinval_32 {
@@ -158,7 +288,7 @@ struct mvfs_mkviewtag_info_32 {
     struct mfs_strbuf_32 host;
     struct mfs_strbufpn_32 rpath;
     struct tbs_uuid_s_32 uuid;
-    struct sockaddr_in_32 addr;
+    ks_sockaddr_storage_t addr; /* Same size in 32-bit and 64-bit kernels. */
 #if defined(ATRIA_LLP64)
     ks_uint32_t windows_view : 1;
     ks_uint32_t pad : 31;
@@ -218,13 +348,11 @@ struct mvfs_splitpool_32 {
     struct mfs_strbuf_32 msp_prefix;
     struct mfs_strbufpn_pair_32 msp_target;
 };
+struct mvfs_aix_device_info_32 {
+    ks_int32_t mvfs_specdev_major; /* Major number for specdev */
+};
 
 typedef int vob_mtype_t_32;
-
-struct timeval_32 {
-    ks_int32_t tv_sec;
-    ks_int32_t tv_usec;
-};
 
 struct tbs_fstat_db_s_32 {
     ks_uint32_t type;
@@ -275,44 +403,13 @@ struct mvfs_xstat_32 {
     ks_uint32_t spare[6];
 };
 
-typedef int time_t_32;
-
 struct mvfs_clrname_info_32 {
     ks_uint16_t clrpool;
     struct mfs_strbufpn_32 clrname;
 };
 
-struct mvfs_viewaddr_32 {
-    struct sockaddr_in_32 addr;
-};
-
 struct mvfs_iochange_mtype_32 {
     ks_int32_t mtype;
-};
-
-struct mvfs_iofid_32 {
-    ks_uint32_t dbid;
-    ks_uint32_t gen;
-};
-
-struct view_bhandle_32 {
-    ks_uint32_t build_session;
-    ks_uint32_t target_id;
-};
-
-struct mfs_ioncent_32 {
-    ks_uint32_t offset;
-    ks_uint16_t eocache;
-    ks_uint16_t flags;
-    time_t_32 addtime;
-    struct mfs_strbufpn_32 dvw;
-    struct mfs_strbufpn_32 mp;
-    struct mvfs_iofid_32 dfid;
-    struct mfs_strbufpn_32 nm;
-    struct view_bhandle_32 bhlist[MVFS_IONCBHMAX];
-    struct mfs_strbufpn_32 vw;
-    struct mvfs_iofid_32 fid;
-    struct timeval_32 evtime;
 };
 
 struct mvfs_bhinfo_32 {
@@ -335,7 +432,6 @@ struct mvfs_statbufs_32 {
     struct mfs_strbuf_32 viewopcnt;
     struct mfs_strbuf_32 viewoptime;
     struct mfs_strbuf_32 viewophist;
-    struct mfs_strbuf_32 io_stat;
 };
 
 struct mvfs_io_xattr_32 {
@@ -351,70 +447,6 @@ struct mvfs_unmount_info_32 {
 struct mvfs_export_viewinfo_32 {
     struct mfs_strbuf_32 viewtag;
     ks_int32_t exportid;
-};
-
-struct timestruc_32 {
-    ks_int32_t tv_sec;
-    ks_int32_t tv_nsec;
-};
-
-struct mfs_clntstat_32 {
-    ks_uint32_t version;
-    ks_uint32_t clntget;
-    ks_uint32_t clntfree;
-    ks_uint32_t clntcreate;
-    ks_uint32_t clntdestroy;
-    ks_uint32_t clntcalls;
-    ks_uint32_t clntretries;
-    ks_uint32_t mfscall;
-    ks_uint32_t mfsfail;
-    ks_uint32_t mfsintr;
-    ks_uint32_t mfsmaxdelay;
-    ks_uint32_t mfsmaxdelaytime;
-    struct timestruc_32  mvfsthread_time;
-};
-
-struct mfs_clearstat_32 {
-    ks_uint32_t version;
-    ks_uint32_t clearget;
-    ks_uint32_t clearcreate;
-    ks_uint32_t clearraces;
-    ks_uint32_t clearcreatraces;
-    ks_uint32_t clearread;
-    ks_uint32_t clearwrite;
-    struct timestruc_32  clearget_time;
-    struct timestruc_32  clearcreat_time;
-    struct timestruc_32  clearrd_time;
-    struct timestruc_32  clearwr_time;
-    struct timestruc_32  clearopen_time;
-    struct timestruc_32  unclearrd_time;
-    struct timestruc_32  unclearwr_time;
-    struct timestruc_32  unclearget_time;
-    struct timestruc_32  cto_getattr_time;
-    ks_uint32_t clearopen;
-    ks_uint32_t unclearopen;
-    ks_uint32_t cleargetmiss;
-    ks_uint32_t clearreclaim;
-    ks_uint32_t clearreclaimmiss;
-};
-
-struct mfs_austat_32 {
-    ks_uint32_t version;
-    ks_uint32_t au_calls;
-    ks_uint32_t au_vgetattr;
-    ks_uint32_t au_nvgetattr;
-    ks_uint32_t au_dupl;
-    struct timestruc_32  au_time;
-    struct timestruc_32  au_settime;
-    struct timestruc_32  au_ioctltime;
-};
-
-struct mfs_rpchist_32 {
-    ks_uint32_t version;
-    struct timestruc_32  histval[MFS_NUM_HISTX];
-    ks_uint32_t histrpc[MFS_NUM_HISTX];
-    ks_uint32_t histclr[MFS_NUM_HISTX];
-    ks_uint32_t histperop[VIEW_NUM_PROCS][MFS_NUM_HISTX];
 };
 
 typedef struct mfs_audit_object_sn_32 {
@@ -515,15 +547,7 @@ extern void mvfs_export_viewinfo_32_to_mvfs_export_viewinfo(struct mvfs_export_v
 extern void mvfs_export_viewinfo_to_mvfs_export_viewinfo_32(struct mvfs_export_viewinfo *, struct mvfs_export_viewinfo_32 *);
 extern void mvfs_clrname_info_to_mvfs_clrname_info_32(struct mvfs_clrname_info *, struct mvfs_clrname_info_32 *);
 extern void mvfs_clrname_info_32_to_mvfs_clrname_info(struct mvfs_clrname_info_32 *, struct mvfs_clrname_info *);
-extern void mvfs_viewaddr_to_mvfs_viewaddr_32(struct mvfs_viewaddr *, struct mvfs_viewaddr_32 *);
-extern void mvfs_viewaddr_32_to_mvfs_viewaddr(struct mvfs_viewaddr_32 *, struct mvfs_viewaddr *);
 extern void mvfs_iochange_mtype_32_to_mvfs_iochange_mtype(struct mvfs_iochange_mtype_32 *, struct mvfs_iochange_mtype *);
-extern void mvfs_iofid_to_mvfs_iofid_32(struct mvfs_iofid *, struct mvfs_iofid_32 *);
-extern void mvfs_iofid_32_to_mvfs_iofid(struct mvfs_iofid_32 *, struct mvfs_iofid *);
-extern void view_bhandle_to_view_bhandle_32(struct view_bhandle *, struct view_bhandle_32 *);
-extern void view_bhandle_32_to_view_bhandle(struct view_bhandle_32 *, struct view_bhandle *);
-extern void mfs_ioncent_to_mfs_ioncent_32(struct mfs_ioncent *, struct mfs_ioncent_32 *);
-extern void mfs_ioncent_32_to_mfs_ioncent(struct mfs_ioncent_32 *, struct mfs_ioncent *);
 extern void mvfs_bhinfo_to_mvfs_bhinfo_32(struct mvfs_bhinfo *, struct mvfs_bhinfo_32 *);
 extern void mvfs_bhinfo_32_to_mvfs_bhinfo(struct mvfs_bhinfo_32 *, struct mvfs_bhinfo *);
 extern void view_vstat_to_view_vstat_32(struct view_vstat *, struct view_vstat_32 *);
@@ -531,15 +555,13 @@ extern void mvfs_xstat_to_mvfs_xstat_32(struct mvfs_xstat *, struct mvfs_xstat_3
 extern void mvfs_xstat_32_to_mvfs_xstat(struct mvfs_xstat_32 *, struct mvfs_xstat *);
 #define MVFS_IOCTL_CMD_32       MIOWR('M', 101, struct mvfscmd_block_32)
 
-extern void mfs_strbufpn_to_mfs_strbufpn_32(struct mfs_strbufpn *, struct mfs_strbufpn_32 *);
-extern void mfs_strbufpn_32_to_mfs_strbufpn(struct mfs_strbufpn_32 *, struct mfs_strbufpn *);
+extern void mvfs_gfsinfo_to_mvfs_gfsinfo_32(struct mvfs_gfsinfo *, struct mvfs_gfsinfo_32 *);
+extern void mvfs_gfsinfo_32_to_mvfs_gfsinfo(struct mvfs_gfsinfo_32 *, struct mvfs_gfsinfo *);
 extern void mfs_strbufpn_pair_to_mfs_strbufpn_pair_32(struct mfs_strbufpn_pair *, struct mfs_strbufpn_pair_32 *);
 extern void mfs_strbufpn_pair_32_to_mfs_strbufpn_pair(struct mfs_strbufpn_pair_32 *, struct mfs_strbufpn_pair *);
 extern void mfs_strbuf_to_mfs_strbuf_32(struct mfs_strbuf *, struct mfs_strbuf_32 *);
 extern void mfs_strbuf_32_to_mfs_strbuf(struct mfs_strbuf_32 *, struct mfs_strbuf *);
 extern void mfs_mntargs_32_to_mfs_mntargs(struct mfs_mntargs_32 *, struct mfs_mntargs *);
-extern void sockaddr_in_to_sockaddr_in_32(struct sockaddr_in *, struct sockaddr_in_32 *);
-extern void sockaddr_in_32_to_sockaddr_in(struct sockaddr_in_32 *, struct sockaddr_in *);
 extern void tbs_oid_s_to_tbs_oid_s_32(struct tbs_oid_s *, struct tbs_oid_s_32 *);
 extern void tbs_oid_s_32_to_tbs_oid_s(struct tbs_oid_s_32 *, struct tbs_oid_s *);
 extern void tbs_uuid_s_to_tbs_uuid_s_32(struct tbs_uuid_s *, struct tbs_uuid_s_32 *);
@@ -563,9 +585,6 @@ extern void mvfs_iovfh_32_to_mvfs_iovfh(struct mvfs_iovfh_32 *, struct mvfs_iovf
 
 extern void mvfs_splitpool_32_to_mvfs_splitpool(struct mvfs_splitpool_32 *vbl_32, struct mvfs_splitpool *vbl);
 
-extern void timeval_to_timeval_32(struct timeval *vbl, struct timeval_32 *vbl_32);
-extern void timeval_32_to_timeval(struct timeval_32 *vbl_32, struct timeval *vbl);
-
 extern void tbs_fstat_db_s_to_tbs_fstat_db_s_32(struct tbs_fstat_db_s *vbl, struct tbs_fstat_db_s_32 *vbl_32);
 
 extern void view_vstat_to_view_vstat_32(struct view_vstat *vbl, struct view_vstat_32 *vbl_32); 
@@ -577,11 +596,6 @@ extern void mvfs_ioinval_32_to_mvfs_ioinval( struct mvfs_ioinval_32 *vbl_32, str
 extern int mvfs_ioctl_validate_64bitos(mvfscmd_block_t *, MVFS_CALLER_INFO *callinfo );
 extern tbs_boolean_t mvfs_ioctl_chk_cmd(int cmd, MVFS_CALLER_INFO *callinfo);
 
-extern void mfs_timestruc_to_timestruc_32(timestruc_t *, struct timestruc_32 *);
-extern void mfs_clntstat_to_mfs_clntstat_32(struct mfs_clntstat *, struct mfs_clntstat_32 *);
-extern void mfs_clearstat_to_mfs_clearstat_32(struct mfs_clearstat *, struct mfs_clearstat_32 *);
-extern void mfs_austat_to_mfs_austat_32(struct mfs_austat *, struct mfs_austat_32 *);
-extern void mfs_rpchist_to_mfs_rpchist_32(struct mfs_rpchist *, struct mfs_rpchist_32 *);
 extern void mfs_auditrec_to_mfs_auditrec_32(struct mfs_auditrec *, struct mfs_auditrec_32 *);
 extern void mfs_auditbuf_to_mfs_auditbuf_32(struct mfs_auditrec *, struct mfs_auditrec_32 *, struct mfs_auditrec *);
 extern void mvfs_viewstats_32_to_mvfs_viewstats(struct mvfs_viewstats_32 *, struct mvfs_viewstats *);
@@ -589,9 +603,8 @@ extern void mvfs_zero_viewstat_32_to_mvfs_zero_viewstat(struct mvfs_zero_viewsta
 
 extern void mvfs_vobinfo_32_to_mvfs_vobinfo(struct mvfs_vobinfo_32 *vbl_32, struct mvfs_vobinfo *vbl);
 extern void mvfs_vobinfo_to_mvfs_vobinfo_32(struct mvfs_vobinfo *vbl, struct mvfs_vobinfo_32 *vbl_32);
-extern void mfs_timestruc_to_mfs_timestruc_32(timestruc_t *vbl, struct timestruc_32 *vbl_32);
 
 #endif /* ATRIA_LP64 || ATRIA_LLP64 */
 
 #endif /* MVFS_TRANSTYPE_H_ */
-/* $Id: 0465f6bb.365711dd.8aaa.00:01:83:09:5e:0d $ */
+/* $Id: 2f93a827.a23a11df.8bc7.00:01:84:7a:f2:e4 $ */

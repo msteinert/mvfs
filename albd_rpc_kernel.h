@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2005. */
+/* * (C) Copyright IBM Corporation 1991, 2007. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #if !defined(_ALBD_RPC_KERNEL_H_)
 #define _ALBD_RPC_KERNEL_H_
 
@@ -28,7 +28,8 @@
 #include <albd_base.h>
 
 #define ALBD_SERVICE_WK_PORT 371
-#define ALBD_SERVER_PROTOCOL_VERSION 5    /* V5.0 version */
+#define ALBD_SERVER_PROTOCOL_VERSION 6              /* V7.1 version */
+#define ALBD_SERVER_PROTOCOL_VERSION_V5_COMPAT 5    /* V5 compatible version */
 
 /*******************************
  *
@@ -39,8 +40,13 @@ EZ_XDR_ROUTINE(albd_protocol_in_t);
 EZ_XDR_ROUTINE(albd_rpc_trait_t);
 
 typedef struct sockaddr_in albd_sockaddr_in_t;
+typedef struct sockaddr albd_sockaddr_t;
 
 EZ_XDR_ROUTINE(albd_sockaddr_in_t);
+
+EZ_XDR_ROUTINE(albd_server_port_t);
+
+EZ_XDR_ROUTINE(albd_server_port_list_t);
 
 /*
  * All albd request must start with this header
@@ -51,8 +57,10 @@ typedef struct albd_hdr_req {
     u_long xid;		/* transaction id, not currently used for albd */
 } albd_hdr_req_t;
 EXTERN bool_t
-    xdr_albd_hdr_req_t(P1(XDR *xdrs)
-		       PN(albd_hdr_req_t *objp));
+xdr_albd_hdr_req_t(
+    XDR *xdrs,
+    albd_hdr_req_t *objp
+);
 
 /*
  * All albd replys start with this header
@@ -62,8 +70,10 @@ typedef struct albd_hdr_reply {
     tbs_status_t status;/* reply status */
 } albd_hdr_reply_t;
 EXTERN bool_t
-    xdr_albd_hdr_reply_t(P1(XDR *xdrs)
-			 PN(albd_hdr_reply_t *objp));
+xdr_albd_hdr_reply_t(
+    XDR *xdrs,
+    albd_hdr_reply_t *objp
+);
 
 /****************************************************************************
  * albd_find_server
@@ -74,39 +84,58 @@ typedef struct albd_find_server_req {
     tbs_uuid_t uuid;
     char *path;
 } albd_find_server_req_t;
+typedef albd_find_server_req_t albd_find_server_v70_req_t;
+#define xdr_albd_find_server_v70_req_t xdr_albd_find_server_req_t
 EXTERN bool_t 
-    xdr_albd_find_server_req_t(P1(XDR *xdrs)
-			     PN(albd_find_server_req_t *objp));
+xdr_albd_find_server_req_t(
+    XDR *xdrs,
+    albd_find_server_req_t *objp
+);
 
-typedef struct albd_find_server_reply {
+typedef struct albd_find_server_v70_reply {
     albd_hdr_reply_t hdr;
     time_t coming_up;
     tbs_uuid_t uuid;
     char *path;
     albd_sockaddr_in_t saddr;
+} albd_find_server_v70_reply_t;
+EXTERN bool_t
+xdr_albd_find_server_v70_reply_t(
+    XDR *xdrs,
+    albd_find_server_v70_reply_t *objp
+);
+typedef struct albd_find_server_reply {
+    albd_hdr_reply_t hdr;
+    time_t coming_up;
+    tbs_uuid_t uuid;
+    char *path;
+    albd_server_port_list_t port_list;
 } albd_find_server_reply_t;
 EXTERN bool_t
-    xdr_albd_find_server_reply_t(P1(XDR *xdrs)
-			       PN(albd_find_server_reply_t *objp));
+xdr_albd_find_server_reply_t(
+    XDR *xdrs,
+    albd_find_server_reply_t *objp
+);
 
 /****************************************************************************
  */
 #define ALBD_SERVER 390512 /* Sun supplied rpc number */
 #define ALBD_SERVER_VERS 3
 
+
 typedef enum albd_server_proc {
     ALBD_CONTACT = 1,
     ALBD_REGISTER_SERVER,
-    ALBD_FIND_SERVER,
+    ALBD_FIND_SERVER_V70,
     ALBD_SERVER_IDLE,
     ALBD_SERVER_BUSY,
-    ALBD_GET_HOST_ADDR,
-    ALBD_UNUSED_1,
-    ALBD_LICENSE_CHECK,
-    ALBD_LICENSE_STATS,
-    ALBD_LICENSE_REVOKE,
+    ALBD_UNUSED_6,
+    ALBD_UNUSED_7,
+    ALBD_UNUSED_8,
+    ALBD_UNUSED_9,
+    ALBD_UNUSED_10,
     ALBD_SCHED_INFO,
-    ALBD_REMOTE_BUILD,
+    ALBD_UNUSED_12,
     ALBD_REGISTRY_GET_ID,
     ALBD_REGISTRY_FINDBYSTRING,
     ALBD_REGISTRY_FINDBYUUID,
@@ -116,11 +145,11 @@ typedef enum albd_server_proc {
     ALBD_SERVER_ALTERNATE_UUID,
     ALBD_REGISTRY_CHK_ACCESS,
     ALBD_REGISTRY_GET_DTM,
-    ALBD_LIST_SERVERS,
+    ALBD_LIST_SERVERS_V70,
     ALBD_GET_LOCAL_PATH,
-    ALBD_CLNT_LIST_LOOKUP,
+    ALBD_CLNT_LIST_LOOKUP_V70,
     ALBD_LICENSE_GET_PRODUCT,
-    ALBD_CLNT_LIST_GET,
+    ALBD_CLNT_LIST_GET_V70,
     ALBD_HOSTINFO,
     ALBD_CLNT_LIST_REGISTER,
     ALBD_REGISTRY_GET_DB_LIST,
@@ -158,15 +187,20 @@ typedef enum albd_server_proc {
     /* 61 */ ALBD_LICENSE_CHECK_SID,
     /* 62 */ ALBD_LICENSE_SID_STATS,
     /* 63 */ ALBD_LICENSE_REVOKE_SID,
-    /* 64 */ ALBD_ELCC_FIND_SERVER,
+    /* 64 */ ALBD_ELCC_FIND_SERVER_V70,
     /* 65 */ ALBD_ELCC_IS_ELCC,
     /* 66 */ ALBD_TZINFO,
     /* 67 */ ALBD_TOGGLE_SERVER_RESTART,
     /* 68 */ ALBD_SCHED_JOB_CREATE_UTC,
     /* 69 */ ALBD_SCHED_JOB_GET_PROPERTIES_UTC,
     /* 70 */ ALBD_SCHED_JOB_SET_PROPERTIES_UTC,
+    /* 71 */ ALBD_FIND_SERVER,
+    /* 72 */ ALBD_ELCC_FIND_SERVER,
+    /* 73 */ ALBD_LIST_SERVERS,
+    /* 74 */ ALBD_CLNT_LIST_LOOKUP,
+    /* 75 */ ALBD_CLNT_LIST_GET,
     ALBD_NUM_PROCS
 } albd_server_proc_t;
 
 #endif /* _ALBD_RPC_KERNEL_H_ */
-/* $Id: eda2bb84.637a11da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: 8aa14066.9c1f11dd.9a62.00:01:83:29:c0:fc $ */

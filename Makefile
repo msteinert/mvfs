@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2003, 2008 IBM Corporation.
+# Copyright (C) 2003, 2009 IBM Corporation.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -41,26 +41,38 @@ RELEASE := $(shell uname -r)
 MACH := $(shell uname -m)
 MVFS_ARCH=($shell echo $(MACH) |sed -e s:i.86:i386:)
 LINUX_KERNEL_DIR=/lib/modules/$(RELEASE)/build
-ifeq ($(KERNEL_REV), 2.4)
-INSTALL_DIR=/lib/modules/fs
-else
 INSTALL_DIR=/lib/modules/$(RELEASE)/kernel/fs/mvfs
-endif
 SRCDIR=.
 MVFSSRCDIR=.
 
 # The following is supposed to detect kernel ABI changes, at least on Red Hat.
 KABI=$(shell rpm -q --provides kernel-$(RELEASE) | grep kABI )
 
-DEBUG=
+MVFS_DEBUG_FLAGS=
 NM=nm
 DEPMOD=/sbin/depmod
+ifdef RATLHOME
+RATL_HOME=${RATLHOME}
+else
+RATL_HOME=/opt/rational
+endif
+ifdef CLEARCASE_COMMON
+CC_COMMON=${CLEARCASE_COMMON}
+else
+CC_COMMON=${RATL_HOME}/common
+endif
 ifdef CLEARCASEHOME
 CCHOME=${CLEARCASEHOME}
 else
-CCHOME=/opt/rational/clearcase
+CCHOME=${RATL_HOME}/clearcase
 endif
-CCINSTALL=${CCHOME}/install
+
+CCINSTALL=${CC_COMMON}/install
+JAVA=$(CC_COMMON)/java/jre/bin/java
+INSTALL_BASE=com.ibm.rational.team.install.cc
+JARFILE=$(INSTALL_BASE).jar
+PARAM_METHOD=$(INSTALL_BASE).mvfs.CreateMvfsParams
+CLASSPATH=$(CCINSTALL)/$(JARFILE)
 
 ifndef KBUILD_EXTMOD
 # The 2.6 kernel Makefile framework (which sets the KBUILD_EXTMOD variable)
@@ -72,7 +84,13 @@ endif
 
 # All values that can be redefined in mvfs_param.mk.config must be defined
 # before this point.
+# Only include mvfs_param.mk.config if it exists
+# This eliminates bogus attemtps to rebuild it on make clean
+
+exists := $(shell cat  $(obj)/mvfs_param.mk.config)
+ifneq ($(strip $(exists)),)
 include $(obj)/mvfs_param.mk.config
+endif
 
 KINC=$(LINUX_KERNEL_DIR)/include
 ADAPTER_OBJECTS= \
@@ -139,13 +157,6 @@ MVFS_DEFS= \
 	-DXREV_SERVERS_SUPPORT_V6_CLIENTS \
 	-D_LARGEFILE64_SOURCE
 
-
-ifeq ($(KERNEL_REV), 2.6)
-# ************************************************************
-# 2.6 kernel builds
-# ************************************************************
-
-
 # This little bit of checking is to allow us to build properly on a
 # 2.6.9-5.0.5.EL errata kernel for RHEL4.  
 UPDATE_VER=$(shell echo $(RELEASE) |cut -d - -f 2 | cut -d . -f 1-2)
@@ -161,9 +172,7 @@ all: mvfs_param.mk.config
 # If your system is running RHEL4 and has had certain errata installed to
 # fix problems with flock on NFS, uncomment the following line.
 #RATL_EXTRAFLAGS += -DMVFS_REMOVE_FLOCK_DEFENSIVE_CODE
-
 OPT_SPACE= -Os
-EXTRA_CFLAGS += $(WARNING_FLAGS) $(RATL_EXTRAFLAGS) -I$(obj) -D_KERNEL $(OPT_SPACE) $(MVFS_MOD_FLAGS)
 
 ifeq ($(ARCH), x86_64)
 # don't optimize for space in this file--GCC will generate a function
@@ -171,25 +180,47 @@ ifeq ($(ARCH), x86_64)
 $(obj)/mvfs_linux_builtins.o : OPT_SPACE=
 endif
 
+# On SLES11 s390x the compiler uses the warn-framesize value for a >= check
+# rather than the > check the GCC documentation would imply.  Passing in
+# this argument will override the kernel build environment -mwarn-framesize=256
+# and prevent our -Werror option from generating an error.  The fno-tree-ter
+# option is used to deactivate the temporary expression replacement to keep
+# the frame size under limit.
+ifneq (,$(if $(findstring linux_390,$(CC)),linux_390,$(findstring s390x,$(MACH))))
+SLES11_390:=$(CC) $(RATL_EXTRAFLAGS)
+ifneq (,$(if $(findstring RATL_VENDOR_VER=1100,$(SLES11_390)),$(findstring RATL_SUSE,$(SLES11_390))))
+RATL_EXTRAFLAGS += -mwarn-framesize=257 -fno-tree-ter
+endif
+endif
+
 VNODE_CONSTRUCTED_OBJS=timestamp.o
 VNODE_BUILT_OBJECTS=$(addprefix $(obj)/,$(ADAPTER_OBJECTS))
 VNODE_GEN_OBJECTS=$(addprefix $(obj)/,$(VNODE_CONSTRUCTED_OBJS))
+MVFS_EXTRA_CFLAGS += $(WARNING_FLAGS) $(RATL_EXTRAFLAGS) -I$(obj) -D_KERNEL $(OPT_SPACE) $(MVFS_MOD_FLAGS)
 $(VNODE_BUILT_OBJECTS) $(VNODE_GEN_OBJECTS) : MVFS_MOD_FLAGS=-Werror -Wunused
+$(VNODE_BUILT_OBJECTS) $(VNODE_GEN_OBJECTS) : ccflags-y+=$(MVFS_EXTRA_CFLAGS)
+$(VNODE_BUILT_OBJECTS) $(VNODE_GEN_OBJECTS) : EXTRA_CFLAGS:=$(EXTRA_CFLAGS) $(MVFS_EXTRA_CFLAGS)
 
 
 MVFS_BUILT_OBJECTS=$(addprefix $(obj)/,$(MVFS_OBJECTS))
 $(MVFS_BUILT_OBJECTS) : MVFS_MOD_FLAGS=${MVFS_DEFS} -Wno-unused
+$(MVFS_BUILT_OBJECTS) : ccflags-y+=$(WARNING_FLAGS) $(RATL_EXTRAFLAGS) -I$(obj) -D_KERNEL $(OPT_SPACE) $(MVFS_MOD_FLAGS)
+$(MVFS_BUILT_OBJECTS) : EXTRA_CFLAGS:=$(EXTRA_CFLAGS) $(WARNING_FLAGS) $(RATL_EXTRAFLAGS) -I$(obj) -D_KERNEL $(OPT_SPACE) $(MVFS_MOD_FLAGS)
 
 obj-${CONFIG_MVFS} += mvfs.o
 mvfs-objs := $(MVFS_OBJECTS) $(ADAPTER_OBJECTS) $(VNODE_CONSTRUCTED_OBJS)
 $(obj)/mvfs_tunables.o: $(obj)/mvfs_when.h
 
 $(obj)/mvfs_param.mk.config:
-	cd $(obj) && $(CCINSTALL)/kernel_guess
+	$(JAVA) -classpath $(CLASSPATH) $(PARAM_METHOD) $(LINUX_KERNEL_DIR) $(obj)
 
+# Include the debug version string in the timestamp because mvfs_when.h,
+# which contains the version string, is only built once for all the variants
+# of a particular architecture.
+#
 $(obj)/timestamp.c: $(VNODE_BUILT_OBJECTS) $(MVFS_BUILT_OBJECTS)
 	@echo GENERATE $@
-	@TZ=GMT date '+const char mdki_vnode_build_time[] = "$$Date: %Y-%m-%d.%T (UTC) $$";' >$(obj)/timestamp.c
+	@TZ=GMT date '+const char mdki_vnode_build_time[] = "$$Date: %Y-%m-%d.%T$(MVFS_DEBUG_FLAGS) (UTC) $$";' >$(obj)/timestamp.c
 	@echo 'static const char mdki_vnode_build_host[] = "$$BuiltOn: '`uname -a`' $$";' >>$(obj)/timestamp.c
 
 install: mvfs.ko
@@ -202,51 +233,4 @@ clean: cleano
 
 cleano:
 	-rm -rf *.o *.kobj *.obj *.ko *.mod.? .*.cmd .tmp_versions
-
-else
-# ************************************************************
-# 2.4 kernel builds
-# ************************************************************
-
-
-
-all: mvfs_param.mk.config mvfs.o
-
-clean: cleano
-	-rm -f mvfs_param.mk.config
-
-cleano:
-	-rm -f *.o
-
-WARNING_FLAGS = -Wall -Wstrict-prototypes -Werror
-CFLAGS=-D_KERNEL -D__KERNEL__ -DKERNEL -DMODULE $(RATL_EXTRAFLAGS) $(WARNING_FLAGS) $(MOD_FLAGS) -I$(KINC) -I. -Os $(DEBUG)
-
-$(ADAPTER_OBJECTS) : MOD_FLAGS=-Werror -Wno-unused
-$(MVFS_OBJECTS) : MOD_FLAGS=${MVFS_DEFS} -I$(SRCDIR) -I$(MVFSSRCDIR) -Wno-unused
-
-ALLOBJS=$(MVFS_OBJECTS) $(ADAPTER_OBJECTS) timestamp.o
-
-mvfs.o: $(ALLOBJS)
-	$(CC) -Wl,-r -nostdlib -o $@ $(ALLOBJS) -lgcc
-
-mvfs_tunables.o: mvfs_when.h
-
-mvfs_param.o: mvfs_param.c
-
-install: mvfs.o
-	mkdir -p $(INSTALL_DIR)
-	install --backup --suffix=.save mvfs.o $(INSTALL_DIR)/mvfs.o
-
-mvfs_param.mk.config:
-	 $(CCINSTALL)/kernel_guess
-
-timestamp.c: $(ADAPTER_OBJECTS) $(MVFS_OBJECTS)
-	TZ=GMT date '+const char mdki_vnode_build_time[] = "$$Date: %Y-%m-%d.%T (UTC) $$";' >timestamp.c
-	echo 'static const char mdki_vnode_build_host[] = "$$BuiltOn: '`uname -a`' $$";' >>timestamp.c
-
-.c.o:
-	rm -f $@
-	$(CC) $(CFLAGS) -DKBUILD_BASENAME=${@:.o=} -c -o $@ $<
-
-endif
-# $Id: 965bdc83.efb011dc.8d14.00:01:83:09:5e:0d $ 
+# $Id: 905be985.b45711de.8ddb.00:01:83:29:c0:fc $ 

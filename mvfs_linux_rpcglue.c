@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2007 IBM Corporation.
+ * Copyright (C) 1999, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -35,38 +35,87 @@
  * XXX There do not appear to be any locking protocols needed for RPC
  * client stuff.  RPC code handles internal structure locking itself
  */
-CLIENT *
+int
 mdki_linux_clntkudp_create(
-    struct sockaddr_in *addr,
+    struct sockaddr *addr,
     const int version,
     struct rpc_program *prog,
     const int retrans_count,
-    const bool_t intr
+    const bool_t intr,
+    CLIENT **cl_pp
 )
 {
     struct rpc_clnt *rpc_cl;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
     struct rpc_xprt *xprt;
 
-    xprt = xprt_create_proto(IPPROTO_UDP, addr, NULL);
+    *cl_pp = NULL;
+    switch (addr->sa_family) {
+      case AF_INET:
+        xprt = xprt_create_proto(IPPROTO_UDP, (struct sockaddr_in *)addr, NULL);
+        break;
+
+      case AF_INET6:
+        xprt = ERR_PTR(-EPFNOSUPPORT);
+        MDKI_TRACE(TRACE_RPC, "clntkudp_create: no support for AF_INET6(%d)\n",
+                   addr->sa_family);
+        break;
+
+      default:
+        xprt = ERR_PTR(-EPFNOSUPPORT);
+        MDKI_TRACE(TRACE_RPC, "clntkudp_create: no support for AF %d\n",
+                   addr->sa_family);
+        break;
+    }
     if (IS_ERR(xprt))
-        return NULL;
+        return vnlayer_errno_linux_to_unix(PTR_ERR(xprt));
 
     rpc_cl = rpc_create_client(xprt, prog->name /*XXX not really host name! */,
                                prog, version, RPC_AUTH_UNIX);
+#else /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24) */
+    struct rpc_create_args *rpc_ca;
+
+    if (addr->sa_family != AF_INET) {
+        MDKI_TRACE(TRACE_RPC, "clntkudp_create: no support for AF %d\n",
+                   addr->sa_family);
+        return EPFNOSUPPORT;
+    }
+    /* using kmalloc to save stack space */
+    rpc_ca = mdki_linux_kmalloc(sizeof(*rpc_ca), GFP_KERNEL);
+    if (rpc_ca == NULL) {
+        return ENOMEM;
+    }
+    memset(rpc_ca, 0, sizeof(*rpc_ca));
+    rpc_ca->protocol       = IPPROTO_UDP;
+    rpc_ca->address        = (struct sockaddr *)addr;
+    rpc_ca->addrsize       = sizeof(*addr);
+    rpc_ca->servername     = prog->name;        /* XXX not really host name! */
+    rpc_ca->program        = prog;
+    rpc_ca->version        = version;
+    rpc_ca->authflavor     = RPC_AUTH_UNIX;
+    rpc_ca->flags          = RPC_CLNT_CREATE_NOPING;
+    rpc_cl = rpc_create(rpc_ca);
+    mdki_linux_kfree(rpc_ca, sizeof(*rpc_ca));
+#endif
+
     if (IS_ERR(rpc_cl)) {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13)
         (void) xprt_destroy(xprt);
 #endif
-        return NULL;
+        return -PTR_ERR(rpc_cl);
     }
+
     /*
      * Ignore creds for now (not passed in).  At call time, we'll set
      * up current->fsuid/fsgid which will get picked up by the RPC
      * runtime routines.
      */
-    rpc_cl->cl_softrtry = 1;         /* we want control after timeouts */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     rpc_cl->cl_intr = intr;
-    return rpc_cl;
+#endif
+    rpc_cl->cl_softrtry = 1;         /* we want control after timeouts */
+    *cl_pp = rpc_cl;
+    return 0;
 }
 
 void
@@ -75,31 +124,65 @@ mdki_linux_clnt_set_intr(
     bool_t intr
 )
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     struct rpc_clnt *rpc_cl = (struct rpc_clnt *)cl;
     rpc_cl->cl_intr = intr;
+#endif
 }
 
 /*
  * Take an existing handle and redirect it to work to a different
  * destination.
  */
-void
+int
 mdki_linux_clntkudp_init(
     CLIENT *cl,
-    struct sockaddr_in *addr,
+    struct sockaddr *addr,
     int retries,
     bool_t intr
 )
 {
     struct rpc_clnt *rpc_cl = (struct rpc_clnt *)cl;
 
-    *RPC_PEERADDR(rpc_cl) = *addr;
-    rpc_cl->cl_timeout.to_retries = retries;
+    switch (addr->sa_family) {
+      case AF_INET:
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+        *RPC_PEERADDR(rpc_cl) = *((struct sockaddr_in *)addr);
+#else
+        /* 
+         * We have to handle the address field as an opaque pointer,
+         * and we can't assume any format for it.
+         */
+        if(rpc_cl->cl_xprt->addrlen >= sizeof(*addr)) {
+            BCOPY(addr, &rpc_cl->cl_xprt->addr, sizeof(*addr));
+            rpc_cl->cl_xprt->addrlen = sizeof(*addr);
+        } else {
+            MDKI_VFS_LOG(VFS_LOG_ERR, "%s: addr field is %d bytes length\n",
+                         __func__, (int) rpc_cl->cl_xprt->addrlen);
+            return EPFNOSUPPORT;
+        }
+#endif
+        break;
 
+      case AF_INET6:
+        MDKI_TRACE(TRACE_RPC, "clntkudp_init: no support for AF_INET6(%d)\n",
+                   addr->sa_family);
+        return EPFNOSUPPORT;
+
+      default:
+        MDKI_TRACE(TRACE_RPC, "clntkudp_init: no support for AF %d\n",
+                   addr->sa_family);
+        return EPFNOSUPPORT;
+    }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+    rpc_cl->cl_timeout.to_retries = retries;
     /* credentials will be handled in clnt_call */
     rpc_cl->cl_intr = intr;
+#endif
+
     MDKI_TRACE(TRACE_RPC, "clntkudp_init %p ntries %d intr %d\n",
                rpc_cl, retries, intr);
+    return 0;
 }
 
 void
@@ -130,6 +213,7 @@ mdki_linux_clnt_call(
     MDKI_TRACE(TRACE_RPC,
                "clnt_call %p proc %d timeo %d intr %d cred %p\n",
                rpc_cl, procnum, rpctimeout, intr, cred);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
     rpc_cl->cl_intr = intr;
     /*
      * set timeouts &c. They're measured in ticks. rpctimeout is in
@@ -152,6 +236,7 @@ mdki_linux_clnt_call(
     rpc_cl->cl_timeout.to_maxval = 20*HZ; /* like Solaris kudp */
     rpc_cl->cl_timeout.to_exponential = 1;
     /* to_retries is set in mdki_linux_clntkudp_init() */
+#endif
 
     ASSERT(rpc_cl->cl_procinfo[procnum].p_encode != NULL);
 
@@ -191,7 +276,22 @@ mdki_linux_clnt_call(
              * obliterating the lower-level transport error code.  The
              * most important code of which is ETIMEDOUT.  So we have
              * to call every random error a timeout.  !@!#$!#
+             *
+             * Note, CR RATLC01278388 and technote #1386035 cover a case
+             * on RHEL 4, 4.1, and 4.2 where EIO is returned
+             * incorrectly, as does the code below for SLES11 for CR
+             * RATLC01288935.
              */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
+            if (fatal_signal_pending(current)) {
+                /*
+                 * When RPC is in connect stage, it returns -EIO instead of
+                 * -ERESTARTSYS.  See xprt_connect_status.
+                 */
+                *status = RPC_INTR;
+                break;
+            }
+#endif
           case ETIMEDOUT:
           case ECONNREFUSED:
             *status = RPC_TIMEDOUT;
@@ -227,7 +327,12 @@ extern int
 mdki_linux_destroy_client(CLIENT *cl)
 {
     struct rpc_clnt *rpc_cl = (struct rpc_clnt *)cl;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
     return rpc_destroy_client(rpc_cl);
+#else
+    rpc_shutdown_client(rpc_cl);
+    return 0;
+#endif
 }
 
-static const char vnode_verid_mvfs_linux_rpcglue_c[] = "$Id:  867601ec.66c511dc.9bbb.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_linux_rpcglue_c[] = "$Id:  f83723de.d6d511df.8121.00:01:83:0a:3b:75 $";

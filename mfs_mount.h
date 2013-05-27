@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2005. */
+/* * (C) Copyright IBM Corporation 1991, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MFS_MOUNT_H_
 #define MFS_MOUNT_H_
 /* 
@@ -66,7 +66,7 @@
  * Define the mount call argument structure
  */
 
-#define MFSMNT_VERSION		11	/* Mount arg structure version */
+#define MFSMNT_VERSION		12	/* Mount arg structure version */
 
 #define MFSMNT_VOB		0x0001	/* VOB mount flag */
 #define MFSMNT_VIEWROOT		0x0002	/* View root mount flag */
@@ -93,7 +93,7 @@ struct mvfs_splitpool {
  *     VOB mounts:
  *	    mma_hmsuffix, mma_addr are not used.
  *     Viewroot mounts:
- *	    mma_vob_subdir, mma_vob_oid are not used.
+ *	    mma_vob_oid is not used.
  *	    mma_spath, mma_rpath, mma_uuid are not used.
  *	    Other server information is for local ALBD
  */
@@ -104,10 +104,9 @@ struct mfs_mntargs {
 	u_long		 	mma_flags;	/* Mount flags */
 	struct mfs_strbuf	mma_mntpath;	/* Mnt dir path */
 	struct mfs_strbuf	mma_host;	/* Svr host name */
-	struct sockaddr_in	mma_addr;	/* Svr address */
+	u_short			mma_port;	/* ALBD port on the local host (in_port_t) */
 	mfs_strbufpn_pair_t	mma_spath;	/* Svr storage path */
 	struct mfs_strbuf	mma_rpath;	/* Svr storage remote path */
-	struct mfs_strbuf	mma_vob_subdir; /* VOB subdir to mount */
 	tbs_oid_t	 	mma_vob_oid; 	/* VOB oid */
 	u_long			mma_timeo;	/* Timeout in .1 secs */
 	u_long			mma_retries;	/* Max retries */
@@ -121,8 +120,8 @@ struct mfs_mntargs {
 	struct mvfs_splitpool	*mma_sptab_ents; /* split pool entries */
         u_int		 	mma_vobminor;	/* requested VOB minor devno */
         mvfs_cache_sizes_t      mma_sizes;      /* cache sizes, see mfs_ioctl.h */
+
 };
 
 #endif /* MFS_MOUNT_H */
-
-/* $Id: 30f29da4.637911da.8655.00:01:83:a6:4c:63 $ */
+/* $Id: 1393a107.a23a11df.8bc7.00:01:84:7a:f2:e4 $ */

@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1998, 2008. */
+/* * (C) Copyright IBM Corporation 1998, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,9 +19,10 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_transtype.c */
+
 #include "mvfs_systm.h"
 #include <tbs_base.h>
 #include <tbs_errno.h>
@@ -30,9 +31,202 @@
 
 #include "mvfs_transtype.h"
 
-#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
+#if defined(ATRIA_WIN32_COMMON) || defined(ATRIA_LP64) || defined(ATRIA_LLP64)
+void
+mfs_strbufpn_to_mfs_strbufpn_32(struct mfs_strbufpn *vbl, struct mfs_strbufpn_32 *vbl_32)
+{
+	vbl_32->s  = PTR_TO_PTR32(vbl->s);
+	vbl_32->l = (mvfs_size_t_32) vbl->l;
+	vbl_32->m = (mvfs_size_t_32) vbl->m;
+}
 
-struct mvfs_ioctl_valid_entry {
+void
+mfs_strbufpn_32_to_mfs_strbufpn(struct mfs_strbufpn_32 *vbl_32, struct mfs_strbufpn *vbl)
+{
+	vbl->s = PTR32_TO_PTR(vbl_32->s);
+	vbl->l = vbl_32->l;
+	vbl->m = vbl_32->m;
+}
+
+void
+mvfs_iofid_to_mvfs_iofid_32(struct mvfs_iofid *vbl, struct mvfs_iofid_32 *vbl_32)
+{
+	vbl_32->dbid = vbl->dbid;
+	vbl_32->gen = vbl->gen;
+}
+void
+mvfs_iofid_32_to_mvfs_iofid(struct mvfs_iofid_32 *vbl_32, struct mvfs_iofid *vbl)
+{
+	vbl->dbid = vbl_32->dbid;
+	vbl->gen = vbl_32->gen;
+}
+void
+view_bhandle_to_view_bhandle_32(struct view_bhandle *vbl, struct view_bhandle_32 *vbl_32)
+{
+	vbl_32->build_session = vbl->build_session;
+	vbl_32->target_id = vbl->target_id;
+}
+void
+view_bhandle_32_to_view_bhandle(struct view_bhandle_32 *vbl_32, struct view_bhandle *vbl)
+{
+	vbl->build_session = vbl_32->build_session;
+	vbl->target_id = vbl_32->target_id;
+}
+
+void
+mvfs_timeval_to_mvfs_timeval_32(struct timeval *vbl, struct timeval_32 *vbl_32)
+{
+	vbl_32->tv_sec = (ks_int32_t)vbl->tv_sec;
+	vbl_32->tv_usec = vbl->tv_usec;
+}
+void
+mvfs_timeval_32_to_mvfs_timeval(struct timeval_32 *vbl_32, struct timeval *vbl)
+{
+	vbl->tv_sec = vbl_32->tv_sec;
+	vbl->tv_usec = vbl_32->tv_usec;
+}
+
+void
+mfs_ioncent_to_mfs_ioncent_32(struct mfs_ioncent *vbl, struct mfs_ioncent_32 *vbl_32)
+{
+	int i;
+
+	vbl_32->offset = vbl->offset;
+	vbl_32->eocache = vbl->eocache;
+	vbl_32->flags = vbl->flags;
+        /* We just assume here that the time_t addtime will fit in 32 bits even
+        ** if it is a 64-bit type in this kernel.  We could avoid this ASSERT
+        ** and cast on Windows since we know the user-space addtime will be
+        ** 64-bits (see below and mvfs_transtype.h for details), but it hardly
+        ** seems worth the #ifdef to check.
+        */
+        ASSERT(INT_MIN <= vbl->addtime && vbl->addtime <= INT_MAX);
+	vbl_32->addtime = (ks_int32_t)vbl->addtime;
+	mfs_strbufpn_to_mfs_strbufpn_32(&vbl->dvw, &vbl_32->dvw);
+	mfs_strbufpn_to_mfs_strbufpn_32(&vbl->mp, &vbl_32->mp);
+	mvfs_iofid_to_mvfs_iofid_32(&vbl->dfid, &vbl_32->dfid);
+	mfs_strbufpn_to_mfs_strbufpn_32(&vbl->nm, &vbl_32->nm);
+	for ( i = 0; i < MVFS_IONCBHMAX; i++)
+		view_bhandle_to_view_bhandle_32(&vbl->bhlist[i], &vbl_32->bhlist[i]);
+	mfs_strbufpn_to_mfs_strbufpn_32(&vbl->vw, &vbl_32->vw);
+	mvfs_iofid_to_mvfs_iofid_32(&vbl->fid, &vbl_32->fid);
+	mvfs_timeval_to_mvfs_timeval_32(&vbl->evtime, &vbl_32->evtime);
+}
+void
+mfs_ioncent_32_to_mfs_ioncent(struct mfs_ioncent_32 *vbl_32, struct mfs_ioncent *vbl)
+{
+	int i;
+
+	vbl->offset = vbl_32->offset;
+	vbl->eocache = vbl_32->eocache;
+	vbl->flags = vbl_32->flags;
+	vbl->addtime = (time_t)vbl_32->addtime;
+	mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32->dvw, &vbl->dvw);
+	mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32->mp, &vbl->mp);
+	mvfs_iofid_32_to_mvfs_iofid(&vbl_32->dfid, &vbl->dfid);
+	mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32->nm, &vbl->nm);
+	for ( i = 0; i < MVFS_IONCBHMAX; i++)
+		view_bhandle_32_to_view_bhandle(&vbl_32->bhlist[i], &vbl->bhlist[i]);
+	mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32->vw, &vbl->vw);
+	mvfs_iofid_32_to_mvfs_iofid(&vbl_32->fid, &vbl->dfid);
+	mvfs_timeval_32_to_mvfs_timeval(&vbl_32->evtime, &vbl->evtime);
+}
+
+void
+mfs_timestruc_to_mfs_timestruc_32(timestruc_t *vbl, struct timestruc_32 *vbl_32)
+{
+        vbl_32->tv_sec = (ks_int32_t)vbl->tv_sec;
+        vbl_32->tv_nsec = vbl->tv_nsec;
+}
+
+void
+mfs_clntstat_to_mfs_clntstat_32(struct mfs_clntstat *vbl, struct mfs_clntstat_32 *vbl_32)
+{
+        vbl_32->version = vbl->version;
+        vbl_32->clntget = vbl->clntget;
+        vbl_32->clntfree = vbl->clntfree;
+        vbl_32->clntcreate = vbl->clntcreate;
+        vbl_32->clntdestroy = vbl->clntdestroy;
+        vbl_32->clntcalls = vbl->clntcalls;
+        vbl_32->clntretries = vbl->clntretries;
+        vbl_32->mfscall = vbl->mfscall;
+        vbl_32->mfsfail = vbl->mfsfail;
+        vbl_32->mfsintr = vbl->mfsintr;
+        vbl_32->mfsmaxdelay = vbl->mfsmaxdelay;
+        vbl_32->mfsmaxdelaytime = vbl->mfsmaxdelaytime;
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->mvfsthread_time,
+                &vbl_32->mvfsthread_time);
+}
+
+void
+mfs_clearstat_to_mfs_clearstat_32(struct mfs_clearstat *vbl, struct mfs_clearstat_32 *vbl_32)
+{
+        vbl_32->version = vbl->version;
+        vbl_32->clearget = vbl->clearget;
+        vbl_32->clearcreate = vbl->clearcreate;
+        vbl_32->clearraces = vbl->clearraces;
+        vbl_32->clearcreatraces = vbl->clearcreatraces;
+        vbl_32->clearread = vbl->clearread;
+        vbl_32->clearwrite = vbl->clearwrite;
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->clearget_time,
+                &vbl_32->clearget_time);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->clearcreat_time,
+                &vbl_32->clearcreat_time);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->clearrd_time,
+                &vbl_32->clearrd_time);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->clearwr_time,
+                &vbl_32->clearwr_time);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->clearopen_time,
+                &vbl_32->clearopen_time);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->unclearrd_time,
+                &vbl_32->unclearrd_time);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->unclearwr_time,
+                &vbl_32->unclearwr_time);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->unclearget_time,
+                &vbl_32->unclearget_time);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->cto_getattr_time,
+                &vbl_32->cto_getattr_time);
+        vbl_32->clearopen = vbl->clearopen;
+        vbl_32->unclearopen = vbl->unclearopen;
+        vbl_32->cleargetmiss = vbl->cleargetmiss;
+        vbl_32->clearreclaim = vbl->clearreclaim;
+        vbl_32->clearreclaimmiss = vbl->clearreclaimmiss;
+}
+
+void
+mfs_austat_to_mfs_austat_32(struct mfs_austat *vbl, struct mfs_austat_32 *vbl_32)
+{
+        vbl_32->version = vbl->version;
+        vbl_32->au_calls = vbl->au_calls;
+        vbl_32->au_vgetattr = vbl->au_vgetattr;
+        vbl_32->au_nvgetattr = vbl->au_nvgetattr;
+        vbl_32->au_dupl = vbl->au_dupl;
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->au_time, &vbl_32->au_time);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->au_settime, &vbl_32->au_settime);
+        mfs_timestruc_to_mfs_timestruc_32(&vbl->au_ioctltime, &vbl_32->au_ioctltime);
+}
+
+void
+mfs_rpchist_to_mfs_rpchist_32(struct mfs_rpchist *vbl, struct mfs_rpchist_32 *vbl_32)
+{
+        int i, j;
+
+        vbl_32->version = vbl->version;
+        for ( i = 0; i < MFS_NUM_HISTX; i++) {
+            mfs_timestruc_to_mfs_timestruc_32(&vbl->histval[i], &vbl_32->histval[i]);
+            vbl_32->histrpc[i] = vbl->histrpc[i];
+            vbl_32->histclr[i] = vbl->histclr[i];
+        }
+
+        for (i = 0; i < VIEW_NUM_PROCS; i++) {
+                for (j = 0; j < MFS_NUM_HISTX; j++)
+                        vbl_32->histperop[i][j] = vbl->histperop[i][j];
+        }
+}
+
+#endif
+#if defined(ATRIA_LP64) || defined(ATRIA_LLP64)
+struct {
     int used;		/* if cmd is used */
     long mininfolen;	/* min infolen reqd */
     long maxinfolen;	/* max infolen reqd */
@@ -54,7 +248,7 @@ struct mvfs_ioctl_valid_entry {
 	/* MVFS_CMD_RMVIEWTAG 8 */
 	{TRUE, sizeof(struct mvfs_viewtag_info_32), sizeof(struct mvfs_viewtag_info_32)},
 	/* MVFS_CMD_GET_VIEWADDR 9 */
-	{TRUE, sizeof(struct mvfs_viewaddr_32), sizeof(struct mvfs_viewaddr_32)},
+	{TRUE, sizeof(struct mvfs_viewaddr), sizeof(struct mvfs_viewaddr)},
 	/* MVFS_CMD_GET_VOBINFO 10 */
 	{TRUE, sizeof(struct mvfs_vobinfo_32), sizeof(struct mvfs_vobinfo_32)},
 	/* MVFS_CMD_GET_VIEWTAG_DIR 11 */
@@ -145,8 +339,8 @@ struct mvfs_ioctl_valid_entry {
         {FALSE, 0, 0},
 	/* MVFS_CMD_GET_VIEWTAG_EXPORT 54 */
 	{TRUE, sizeof(struct mvfs_export_viewinfo_32), sizeof(struct mvfs_export_viewinfo_32)},
-        /* NUMBER RETIRED, AVAILABLE FOR USE 55 */
-	{FALSE, 0, 0},
+        /* MVFS_CMD_GET_GFSINFO 55 */
+        {TRUE, sizeof(struct mvfs_gfsinfo_32), sizeof(struct mvfs_gfsinfo_32)},
         /* MVFS_CMD_SET_VOBRT_VFSMNT 56 */
         {TRUE, sizeof(struct mfs_strbufpn_pair_32), sizeof(struct mfs_strbufpn_pair_32)},
 	/* MVFS_CMD_GET_CACHE_SIZES 57 */
@@ -158,6 +352,12 @@ struct mvfs_ioctl_valid_entry {
         {FALSE ,0, 0},
 	/* MVFS_CMD_COMPUTE_CACHE_DEFAULTS 60 */
 	{TRUE, sizeof(mvfs_cache_sizes_t), sizeof(mvfs_cache_sizes_t)},
+
+       /* MVFS_CMD_GRPLIST_READ 61 */
+       {FALSE, 0, 0},
+       /* MVFS_CMD_MKVIEWTAG_EX 62 */
+       {FALSE, 0, 0},
+
 };
 
 int
@@ -228,41 +428,6 @@ mvfs_ioctl_chk_cmd(
 	if (MDKI_CALLER_IS_32BIT(callinfo)) 
 		return(cmd == MVFS_IOCTL_CMD_32);
 	return(cmd == MVFS_IOCTL_CMD);
-}
-
-void
-mfs_sockaddr_in_to_mfs_sockaddr_in_32(struct sockaddr_in *vbl, struct sockaddr_in_32 *vbl_32)
-{
-	vbl_32->sin_family = vbl->sin_family;
-	vbl_32->sin_port = vbl->sin_port;
-	vbl_32->sin_addr.s_addr = vbl->sin_addr.s_addr;
-	BCOPY((caddr_t)&vbl->sin_zero[0], (caddr_t)&vbl_32->sin_zero[0],
-		sizeof(vbl->sin_zero));
-}
-void
-mfs_sockaddr_in_32_to_mfs_sockaddr_in(struct sockaddr_in_32 *vbl_32, struct sockaddr_in *vbl)
-{
-	vbl->sin_family = vbl_32->sin_family;
-	vbl->sin_port = vbl_32->sin_port;
-	vbl->sin_addr.s_addr = vbl_32->sin_addr.s_addr;
-	BCOPY((caddr_t)&vbl_32->sin_zero[0], (caddr_t)&vbl->sin_zero[0],
-		sizeof(vbl_32->sin_zero));
-}
-
-void
-mfs_strbufpn_to_mfs_strbufpn_32(struct mfs_strbufpn *vbl, struct mfs_strbufpn_32 *vbl_32)
-{
-	vbl_32->s  = PTR_TO_PTR32(vbl->s);
-	vbl_32->l = (mvfs_size_t_32) vbl->l;
-	vbl_32->m = (mvfs_size_t_32) vbl->m;
-}
-
-void
-mfs_strbufpn_32_to_mfs_strbufpn(struct mfs_strbufpn_32 *vbl_32, struct mfs_strbufpn *vbl)
-{
-	vbl->s = PTR32_TO_PTR(vbl_32->s);
-	vbl->l = vbl_32->l;
-	vbl->m = vbl_32->m;
 }
 
 void
@@ -365,14 +530,13 @@ mfs_mntargs_32_to_mfs_mntargs(struct mfs_mntargs_32 *vbl_32, struct mfs_mntargs 
 	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->mma_mntpath, &vbl->mma_mntpath);
 	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->mma_host, &vbl->mma_host);
 
-	mfs_sockaddr_in_32_to_mfs_sockaddr_in(&vbl_32->mma_addr,
-			&vbl->mma_addr);
+	/* in_port_t is the same in 32-bit and 64-bit kernels (u_short). */
+	vbl->mma_port = vbl_32->mma_port;
 
 	mfs_strbufpn_pair_32_to_mfs_strbufpn_pair(&vbl_32->mma_spath, 
 		&vbl->mma_spath);
 
 	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->mma_rpath, &vbl->mma_rpath);
-	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->mma_vob_subdir, &vbl->mma_vob_subdir);
 
 	tbs_oid_s_32_to_tbs_oid_s(&vbl_32->mma_vob_oid, &vbl->mma_vob_oid);
 
@@ -393,7 +557,6 @@ mfs_mntargs_32_to_mfs_mntargs(struct mfs_mntargs_32 *vbl_32, struct mfs_mntargs 
 	vbl->mma_vobminor = vbl_32->mma_vobminor;
 
         vbl->mma_sizes = vbl_32->mma_sizes;
-
 }
 
 void
@@ -474,7 +637,8 @@ mvfs_mkviewtag_info_32_to_mvfs_mkviewtag_info(struct mvfs_mkviewtag_info_32 *vbl
 	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->host, &vbl->host);
 	mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32->rpath, &vbl->rpath);
 	tbs_uuid_s_32_to_tbs_uuid_s(&vbl_32->uuid, &vbl->uuid);
-	mfs_sockaddr_in_32_to_mfs_sockaddr_in(&vbl_32->addr, &vbl->addr);
+	/* ks_sockaddr_storage_t is the same in 32-bit and 64-bit kernels. */
+	vbl->addr = vbl_32->addr;
 #if defined(ATRIA_LLP64)
         vbl->windows_view = vbl_32->windows_view;
         vbl->pad = vbl_32->pad;
@@ -617,19 +781,7 @@ mvfs_splitpool_32_to_mvfs_splitpool(struct mvfs_splitpool_32 *vbl_32, struct mvf
 }
 
 void
-mvfs_timeval_to_mvfs_timeval_32(struct timeval *vbl, struct timeval_32 *vbl_32)
-{
-	vbl_32->tv_sec = vbl->tv_sec;
-	vbl_32->tv_usec = vbl->tv_usec;
-}
-void
-mvfs_timeval_32_to_mvfs_timeval(struct timeval_32 *vbl_32, struct timeval *vbl)
-{
-	vbl->tv_sec = vbl_32->tv_sec;
-	vbl->tv_usec = vbl_32->tv_usec;
-}
-
-void mvfs_credutl_sid_s_to_credutl_sid_s_32(struct credutl_sid_s *vbl, struct credutl_sid_s *vbl_32)
+mvfs_credutl_sid_s_to_credutl_sid_s_32(struct credutl_sid_s *vbl, struct credutl_sid_s *vbl_32)
 {   
     vbl_32->length = vbl->length;
     vbl_32->type = vbl->type;
@@ -728,85 +880,9 @@ mvfs_clrname_info_32_to_mvfs_clrname_info(struct mvfs_clrname_info_32 *vbl_32, s
 }
 
 void
-mvfs_viewaddr_to_mvfs_viewaddr_32(struct mvfs_viewaddr *vbl, struct mvfs_viewaddr_32 *vbl_32)
-{
-	mfs_sockaddr_in_to_mfs_sockaddr_in_32(&vbl->addr, &vbl_32->addr);
-}
-
-void
-mvfs_viewaddr_32_to_mvfs_viewaddr(struct mvfs_viewaddr_32 *vbl_32, struct mvfs_viewaddr *vbl)
-{
-	mfs_sockaddr_in_32_to_mfs_sockaddr_in(&vbl_32->addr, &vbl->addr);
-}
-
-void
 mvfs_iochange_mtype_32_to_mvfs_iochange_mtype(struct mvfs_iochange_mtype_32 *vbl_32, struct mvfs_iochange_mtype *vbl)
 {
 	vbl->mtype = vbl_32->mtype;
-}
-
-void
-mvfs_iofid_to_mvfs_iofid_32(struct mvfs_iofid *vbl, struct mvfs_iofid_32 *vbl_32)
-{
-	vbl_32->dbid = vbl->dbid;
-	vbl_32->gen = vbl->gen;
-}
-void
-mvfs_iofid_32_to_mvfs_iofid(struct mvfs_iofid_32 *vbl_32, struct mvfs_iofid *vbl)
-{
-	vbl->dbid = vbl_32->dbid;
-	vbl->gen = vbl_32->gen;
-}
-void
-view_bhandle_to_view_bhandle_32(struct view_bhandle *vbl, struct view_bhandle_32 *vbl_32)
-{
-	vbl_32->build_session = vbl->build_session;
-	vbl_32->target_id = vbl->target_id;
-}
-void
-view_bhandle_32_to_view_bhandle(struct view_bhandle_32 *vbl_32, struct view_bhandle *vbl)
-{
-	vbl->build_session = vbl_32->build_session;
-	vbl->target_id = vbl_32->target_id;
-}
-
-void
-mfs_ioncent_to_mfs_ioncent_32(struct mfs_ioncent *vbl, struct mfs_ioncent_32 *vbl_32)
-{
-	int i;
-
-	vbl_32->offset = vbl->offset;
-	vbl_32->eocache = vbl->eocache;
-	vbl_32->flags = vbl->flags;
-	vbl_32->addtime = (time_t_32)vbl->addtime;
-	mfs_strbufpn_to_mfs_strbufpn_32(&vbl->dvw, &vbl_32->dvw);
-	mfs_strbufpn_to_mfs_strbufpn_32(&vbl->mp, &vbl_32->mp);
-	mvfs_iofid_to_mvfs_iofid_32(&vbl->dfid, &vbl_32->dfid);
-	mfs_strbufpn_to_mfs_strbufpn_32(&vbl->nm, &vbl_32->nm);
-	for ( i = 0; i < MVFS_IONCBHMAX; i++)
-		view_bhandle_to_view_bhandle_32(&vbl->bhlist[i], &vbl_32->bhlist[i]);
-	mfs_strbufpn_to_mfs_strbufpn_32(&vbl->vw, &vbl_32->vw);
-	mvfs_iofid_to_mvfs_iofid_32(&vbl->fid, &vbl_32->fid);
-	mvfs_timeval_to_mvfs_timeval_32(&vbl->evtime, &vbl_32->evtime);
-}
-void
-mfs_ioncent_32_to_mfs_ioncent(struct mfs_ioncent_32 *vbl_32, struct mfs_ioncent *vbl)
-{
-	int i;
-
-	vbl->offset = vbl_32->offset;
-	vbl->eocache = vbl_32->eocache;
-	vbl->flags = vbl_32->flags;
-	vbl->addtime = vbl_32->addtime;
-	mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32->dvw, &vbl->dvw);
-	mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32->mp, &vbl->mp);
-	mvfs_iofid_32_to_mvfs_iofid(&vbl_32->dfid, &vbl->dfid);
-	mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32->nm, &vbl->nm);
-	for ( i = 0; i < MVFS_IONCBHMAX; i++)
-		view_bhandle_32_to_view_bhandle(&vbl_32->bhlist[i], &vbl->bhlist[i]);
-	mfs_strbufpn_32_to_mfs_strbufpn(&vbl_32->vw, &vbl->vw);
-	mvfs_iofid_32_to_mvfs_iofid(&vbl_32->fid, &vbl->dfid);
-	mvfs_timeval_32_to_mvfs_timeval(&vbl_32->evtime, &vbl->evtime);
 }
 
 void
@@ -841,7 +917,6 @@ mvfs_statbufs_32_to_mvfs_statbufs(struct mvfs_statbufs_32 *vbl_32, struct mvfs_s
 	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->viewopcnt, &vbl->viewopcnt);
 	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->viewoptime, &vbl->viewoptime);
 	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->viewophist, &vbl->viewophist);
-	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->io_stat, &vbl->io_stat);
 }
 
 void
@@ -869,98 +944,6 @@ mvfs_export_viewinfo_to_mvfs_export_viewinfo_32(struct mvfs_export_viewinfo *vbl
 {
 	mfs_strbuf_to_mfs_strbuf_32(&vbl->viewtag, &vbl_32->viewtag);
 	vbl_32->exportid = vbl->exportid;
-}
-
-void
-mfs_timestruc_to_mfs_timestruc_32(timestruc_t *vbl, struct timestruc_32 *vbl_32)
-{
-	vbl_32->tv_sec = (time_t_32)vbl->tv_sec;
-	vbl_32->tv_nsec = vbl->tv_nsec;
-}
-
-void
-mfs_clntstat_to_mfs_clntstat_32(struct mfs_clntstat *vbl, struct mfs_clntstat_32 *vbl_32)
-{
-	vbl_32->version = vbl->version;
-	vbl_32->clntget = MVFS_ATOMIC_READ(vbl->clntget);
-	vbl_32->clntfree = MVFS_ATOMIC_READ(vbl->clntfree);
-	vbl_32->clntcreate = MVFS_ATOMIC_READ(vbl->clntcreate);
-	vbl_32->clntdestroy = MVFS_ATOMIC_READ(vbl->clntdestroy);
-	vbl_32->clntcalls = MVFS_ATOMIC_READ(vbl->clntcalls);
-	vbl_32->clntretries = MVFS_ATOMIC_READ(vbl->clntretries);
-	vbl_32->mfscall = MVFS_ATOMIC_READ(vbl->mfscall);
-	vbl_32->mfsfail = MVFS_ATOMIC_READ(vbl->mfsfail);
-	vbl_32->mfsintr = MVFS_ATOMIC_READ(vbl->mfsintr);
-	vbl_32->mfsmaxdelay = MVFS_ATOMIC_READ(vbl->mfsmaxdelay);
-	vbl_32->mfsmaxdelaytime = MVFS_ATOMIC_READ(vbl->mfsmaxdelaytime);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->mvfsthread_time, 
-		&vbl_32->mvfsthread_time);
-}
-
-void
-mfs_clearstat_to_mfs_clearstat_32(struct mfs_clearstat *vbl, struct mfs_clearstat_32 *vbl_32)
-{
-	vbl_32->version = vbl->version;
-	vbl_32->clearget = MVFS_ATOMIC_READ(vbl->clearget);
-	vbl_32->clearcreate = MVFS_ATOMIC_READ(vbl->clearcreate);
-	vbl_32->clearraces = MVFS_ATOMIC_READ(vbl->clearraces);
-	vbl_32->clearcreatraces = MVFS_ATOMIC_READ(vbl->clearcreatraces);
-	vbl_32->clearread = MVFS_ATOMIC_READ(vbl->clearread);
-	vbl_32->clearwrite = MVFS_ATOMIC_READ(vbl->clearwrite);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->clearget_time, 
-		&vbl_32->clearget_time);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->clearcreat_time, 
-		&vbl_32->clearcreat_time);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->clearrd_time, 
-		&vbl_32->clearrd_time);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->clearwr_time, 
-		&vbl_32->clearwr_time);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->clearopen_time, 
-		&vbl_32->clearopen_time);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->unclearrd_time, 
-		&vbl_32->unclearrd_time);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->unclearwr_time, 
-		&vbl_32->unclearwr_time);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->unclearget_time, 
-		&vbl_32->unclearget_time);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->cto_getattr_time, 
-		&vbl_32->cto_getattr_time);
-	vbl_32->clearopen = MVFS_ATOMIC_READ(vbl->clearopen);
-	vbl_32->unclearopen = MVFS_ATOMIC_READ(vbl->unclearopen);
-	vbl_32->cleargetmiss = MVFS_ATOMIC_READ(vbl->cleargetmiss);
-	vbl_32->clearreclaim = MVFS_ATOMIC_READ(vbl->clearreclaim);
-	vbl_32->clearreclaimmiss = MVFS_ATOMIC_READ(vbl->clearreclaimmiss);
-}
-
-void
-mfs_austat_to_mfs_austat_32(struct mfs_austat *vbl, struct mfs_austat_32 *vbl_32)
-{
-	vbl_32->version = vbl->version;
-	vbl_32->au_calls = MVFS_ATOMIC_READ(vbl->au_calls);
-	vbl_32->au_vgetattr = MVFS_ATOMIC_READ(vbl->au_vgetattr);
-	vbl_32->au_nvgetattr = MVFS_ATOMIC_READ(vbl->au_nvgetattr);
-	vbl_32->au_dupl = MVFS_ATOMIC_READ(vbl->au_dupl);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->au_time, &vbl_32->au_time);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->au_settime, &vbl_32->au_settime);
-	mfs_timestruc_to_mfs_timestruc_32(&vbl->au_ioctltime, &vbl_32->au_ioctltime);
-}
-
-void
-mfs_rpchist_to_mfs_rpchist_32(struct mfs_rpchist *vbl, struct mfs_rpchist_32 *vbl_32)
-{
-	int i, j;
-
-	vbl_32->version = vbl->version;
-	for ( i = 0; i < MFS_NUM_HISTX; i++) {
-    	mfs_timestruc_to_mfs_timestruc_32(&vbl->histval[i], &vbl_32->histval[i]);
-		vbl_32->histrpc[i] = MVFS_ATOMIC_READ(vbl->histrpc[i]);
-		vbl_32->histclr[i] = MVFS_ATOMIC_READ(vbl->histclr[i]);
-	}
-
-	for (i = 0; i < VIEW_NUM_PROCS; i++) {
-		for (j = 0; j < MFS_NUM_HISTX; j++) 
-			vbl_32->histperop[i][j] = MVFS_ATOMIC_READ(vbl->histperop[i][j]);
-	}
 }
 
 void 
@@ -1100,5 +1083,18 @@ mvfs_zero_viewstat_32_to_mvfs_zero_viewstat(struct mvfs_zero_viewstat_32 *vbl_32
 {
 	mfs_strbuf_32_to_mfs_strbuf(&vbl_32->viewtag, &vbl->viewtag);
 }
+
+void
+mvfs_gfsinfo_to_mvfs_gfsinfo_32(struct mvfs_gfsinfo *gfsinfo, struct mvfs_gfsinfo_32 *gfsinfo_32)
+{
+	gfsinfo_32->gfsno  = gfsinfo->gfsno;
+}
+
+void
+mvfs_gfsinfo_32_to_mvfs_gfsinfo(struct mvfs_gfsinfo_32 *gfsinfo_32, struct mvfs_gfsinfo *gfsinfo)
+{
+	gfsinfo->gfsno  = gfsinfo_32->gfsno;
+}
+
 #endif /* ATRIA_LP64 || ATRIA_LLP64 */
-static const char vnode_verid_mvfs_transtype_c[] = "$Id:  0465f6d3.365711dd.8aaa.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_transtype_c[] = "$Id:  2f93a83f.a23a11df.8bc7.00:01:84:7a:f2:e4 $";

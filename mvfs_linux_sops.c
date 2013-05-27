@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2008 IBM Corporation.
+ * Copyright (C) 1999, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -54,7 +54,8 @@ void
 mvfs_clear_inode(
     INODE_T *inode_p
 );
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) || \
+    LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
 void
 mvfs_linux_umount_begin(SUPER_T *super_p);
 #else
@@ -63,13 +64,8 @@ mvfs_linux_umount_begin(
     struct vfsmount *mnt,
     int flags);
 #endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-SUPER_T *
-vnlayer_read_super(
-#else
 int
 vnlayer_fill_super(
-#endif
     SUPER_T *super_p,
     void *data_p,
     int silent
@@ -89,16 +85,7 @@ vnlayer_get_dentry(
     void *fhbits
 );
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-struct dentry *
-vnlayer_fh_to_dentry(
-    SUPER_T *sb,
-    __u32 *fh,
-    int len,                            /* counted in units of 4-bytes */
-    int fhtype,
-    int parent
-);
-#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0) */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
 struct dentry *
 vnlayer_decode_fh(
     SUPER_T *sb,
@@ -108,19 +95,37 @@ vnlayer_decode_fh(
     int (*acceptable)(void *context, struct dentry *de),
     void *context
 );
+#else /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24) */
+struct dentry * vnlayer_fh_to_dentry(
+    SUPER_T *sb,
+    struct fid *fh,
+    int len,                            /* counted in units of 4-bytes */
+    int fhtype
+);
+
+struct dentry * vnlayer_fh_to_parent(
+    SUPER_T *sb,
+    struct fid *fh,
+    int len,                            /* counted in units of 4-bytes */
+    int fhtype
+);
+#endif /* else LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24) */
 
 struct dentry *
 vnlayer_get_parent(struct dentry *child);
 
 static struct export_operations vnlayer_export_ops = {
     .encode_fh = &vnlayer_dentry_to_fh,
+    .get_parent = &vnlayer_get_parent,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
     .decode_fh = &vnlayer_decode_fh,
     .get_dentry = &vnlayer_get_dentry,
-    .get_parent = &vnlayer_get_parent,
+#else
+    .fh_to_dentry = vnlayer_fh_to_dentry,
+    .fh_to_parent = vnlayer_fh_to_parent,
+#endif
 };
-#endif /* pre-2.6/2.6 */
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
 SUPER_T *
 vnlayer_get_sb(
@@ -142,16 +147,12 @@ vnlayer_get_sb(
 void
 vnlayer_kill_sb(SUPER_T *sbp);
 
-/* Defined in mvfs_linux_mdki.c because that's where it is initialized, but
-** used here in the following functions.
-*/
-extern kmem_cache_t *vnlayer_vnode_cache;
-
 INODE_T *
 vnlayer_alloc_inode(SUPER_T *sbp);
 void
 vnlayer_destroy_inode(INODE_T *inode);
-#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0) */
+STATIC struct dentry *
+vnlayer_find_dentry(VNODE_T *vp);
 
 SB_OPS_T mvfs_super_ops = {
         /* no read_inode */
@@ -163,14 +164,9 @@ SB_OPS_T mvfs_super_ops = {
         .statfs =        &vnlayer_linux_statfs,
         .remount_fs =    &vnlayer_remount_fs,
         .clear_inode =   &mvfs_clear_inode,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-	.fh_to_dentry =  &vnlayer_fh_to_dentry,
-	.dentry_to_fh =  &vnlayer_dentry_to_fh,
-#else
         /* inodes no longer have space for fs data (e.g. our vnode). */
         .alloc_inode =   &vnlayer_alloc_inode,
         .destroy_inode = &vnlayer_destroy_inode,
-#endif
 	.umount_begin =  &mvfs_linux_umount_begin,
 };
 
@@ -183,14 +179,9 @@ SB_OPS_T mvfs_super_ops = {
 struct file_system_type mvfs_file_system =
    {
      .name =       "mvfs",
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-     .fs_flags =   FS_REQUIRES_DEV,
-     .read_super = vnlayer_read_super,
-#else
      .fs_flags =   FS_REQUIRES_DEV | FS_BINARY_MOUNTDATA | FS_REVAL_DOT,
      .get_sb   =   &vnlayer_get_sb,
      .kill_sb  =   &vnlayer_kill_sb,
-#endif
      .owner =      THIS_MODULE,
     };
 
@@ -220,7 +211,6 @@ vnlayer_write_super(struct super_block *super_p)
     CRED_T *cred;
     int err;
 
-    ASSERT_KERNEL_LOCKED_24x(); /* not locked in 2.6's sync_supers() */
     ASSERT_SB_LOCKED(super_p);
 
     cred = MDKI_GET_UCRED();
@@ -277,7 +267,7 @@ vnlayer_remount_fs(
 void
 mvfs_clear_inode(struct inode *inode_p)
 {
-    CRED_T *cred;
+    CALL_DATA_T cd;
 
     ASSERT(MDKI_INOISOURS(inode_p));
 
@@ -290,13 +280,13 @@ mvfs_clear_inode(struct inode *inode_p)
         ASSERT(I_COUNT(inode_p) == 0);
         ASSERT(inode_p->i_state & I_FREEING);
 
-        cred = MDKI_GET_UCRED();
+        mdki_linux_init_call_data(&cd);
 
         /*
          * Do actual deactivation of the vnode/mnode
          */
-        error = VOP_INACTIVE(vp, cred);
-        MDKI_CRFREE(cred);
+        error = VOP_INACTIVE(vp, &cd);
+        mdki_linux_destroy_call_data(&cd);
 
         if (error)
             MDKI_VFS_LOG(VFS_LOG_ERR, "mvfs_clear_inode: inactive error %d\n",
@@ -312,7 +302,8 @@ mvfs_clear_inode(struct inode *inode_p)
                ITOV(inode_p), I_COUNT(inode_p));
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) || \
+    LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
 extern void
 mvfs_linux_umount_begin(SUPER_T *super_p)
 #else
@@ -324,13 +315,13 @@ mvfs_linux_umount_begin(
 #endif
 {
     VNODE_T *vp;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) || \
+    LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
     struct vfsmount *mnt;
 #else
     /*
-     * Since 2.6.18 we have mnt as a parameter.
-     * so we don't need to declare it again.
-     * But we still need to know the super
+     * Since 2.6.18 and before 2.6.27 we have mnt as a parameter.
+     * But we still need super_p.
      */
     SUPER_T *super_p = mnt->mnt_sb;
 #endif
@@ -339,9 +330,27 @@ mvfs_linux_umount_begin(
     ASSERT(super_p->s_root != NULL);
     vp = ITOV(super_p->s_root->d_inode);
     ASSERT(vp != NULL);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) || \
+    LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
     mnt = VTOVFSMNT(vp);
+#else
+    /* Check that the mountpoint passed in matches the one
+     * from the vp that we are going to clear.  Skip it otherwise.
+     * We know from experience that this can happen when unmounting
+     * loopback (bind) mounts.
+     */
+     if (mnt != VTOVFSMNT(vp))
+         return;
 #endif
+    /* Note that there is no mechanism for restoring the mount pointer
+     * in the vnode if an error happens later on in the umount.  This is
+     * the only callback into the mvfs during umount.  So far this has not
+     * been a problem and if we don't do this here, the umount will never
+     * succeed because the Linux code expects the mnt_count to be 2.
+     * The count is 3 at this point from the initial allocation of the 
+     * vfsmnt structure, the path_lookup call in this umount call and 
+     * from when we placed the pointer in the vp.  
+     */
     if (mnt && atomic_read(&mnt->mnt_count) == 3) {
         MDKI_MNTPUT(mnt);
         SET_VTOVFSMNT(vp, NULL);
@@ -378,24 +387,20 @@ vnlayer_linux_mount(
 
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-SUPER_T *
-vnlayer_read_super(
-#else
+
 int
 vnlayer_fill_super(
-#endif
     SUPER_T *super_p,
     void *data_p,
     int silent
 )
 {
-    CRED_T *ucred;
     INODE_T *ino_p;
     VNODE_T *rootvp;
     VATTR_T va;
     VFS_T *vfsp;
     int err = 0;
+    CALL_DATA_T cd;
 
     ASSERT_KERNEL_LOCKED();             /* sys_mount() */
     ASSERT_SB_MOUNT_LOCKED_W(super_p);
@@ -427,9 +432,7 @@ vnlayer_fill_super(
     super_p->s_blocksize_bits = MVFS_DEF_BLKSIZE_BITS;
     super_p->s_maxbytes = MVFS_DEF_MAX_FILESIZE;
     super_p->s_op = &mvfs_super_ops;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
     super_p->s_export_op = &vnlayer_export_ops;
-#endif
     super_p->dq_op = NULL;
     super_p->s_magic = MVFS_SUPER_MAGIC;
 
@@ -465,12 +468,12 @@ vnlayer_fill_super(
      * the inode from the vnode at the root of the file system, and
      * attach it to a new dentry.
      */
-    ucred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
     err = VFS_ROOT(SBTOVFS(super_p), &rootvp);
     if (err) {
         err = mdki_errno_unix_to_linux(err);
-        (void) VFS_UNMOUNT(vfsp, ucred);
-        MDKI_CRFREE(ucred);
+        (void) VFS_UNMOUNT(vfsp, MVFS_CD2CRED(&cd));
+        mdki_linux_destroy_call_data(&cd);
         goto bailout;
     }
 
@@ -490,7 +493,7 @@ vnlayer_fill_super(
      */
     VATTR_NULL(&va);
     /* ignore error code, we're committed */
-    (void) VOP_GETATTR(rootvp, &va, 0, ucred);
+    (void) VOP_GETATTR(rootvp, &va, 0, &cd);
 
     /* This will allocate a dentry with a name of /, which is
      * what Linux uses in all filesystem roots.  The dentry is
@@ -517,12 +520,12 @@ vnlayer_fill_super(
         igrab(ino_p);
     } else {
         VN_RELE(rootvp);
-        (void) VFS_UNMOUNT(vfsp, ucred);
-        MDKI_CRFREE(ucred);
+        (void) VFS_UNMOUNT(vfsp, MVFS_CD2CRED(&cd));
+        mdki_linux_destroy_call_data(&cd);
         err = -ENOMEM;
         goto bailout;
     }
-    MDKI_CRFREE(ucred);
+    mdki_linux_destroy_call_data(&cd);
     super_p->s_dirt = 1;            /* we want to be called on
                                        write_super/sync() */
     /*
@@ -530,14 +533,8 @@ vnlayer_fill_super(
      * references now
      */
     VN_RELE(rootvp);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    return super_p;
-#else
     return(0);
-#endif
-    /* Can't return an error code, Linux code always provides -EINVAL
-     * in 2.4.x.  Oh well.
-     */
+
   bailout:
     MDKI_VFS_LOG(VFS_LOG_ERR,
                  "%s failed: error %d\n", __func__,
@@ -545,14 +542,9 @@ vnlayer_fill_super(
     SET_SBTOVFS(super_p, NULL);
     KMEM_FREE(vfsp, sizeof(*vfsp));
   return_NULL:
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    return(NULL);
-#else
     return(err);
-#endif
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
 /* This function is a callback from sget.  We will setup the device number
  * to be our default major and minor = 0.  We will set the real device number
  * later in vnlayer_fill_super when it calls into the mvfs proper.  The 
@@ -652,7 +644,7 @@ vnlayer_alloc_inode(SUPER_T *sbp)
 {
     vnlayer_vnode_t *vnlvp;
 
-    vnlvp = (vnlayer_vnode_t *)kmem_cache_alloc(vnlayer_vnode_cache, SLAB_KERNEL);
+    vnlvp = (vnlayer_vnode_t *)kmem_cache_alloc(vnlayer_vnode_cache, GFP_KERNEL);
     if (vnlvp != NULL) {
         /* The inode used to be initialized by the kernel slab allocator
         ** because we used it to allocate an inode directly (see init_once() in
@@ -675,11 +667,9 @@ vnlayer_destroy_inode(INODE_T *inode)
     kmem_cache_free(vnlayer_vnode_cache, (vnlayer_vnode_t *)ITOV(inode));
 }
 
-#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0) */
-
 #ifndef roundup
 #define roundup(val, upto) (( ((val) + (upto) - 1) / (upto)) * (upto))
-#endif 
+#endif
 
 /*
  * NFS access to vnode file systems.
@@ -727,6 +717,9 @@ vnlayer_dentry_to_fh(
     MDKI_FID_T *lfidp = NULL;
     MDKI_FID_T *parent_fidp = NULL;
     mdki_boolean_t bailout_needed = TRUE; /* Assume we'll fail. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
+    SUPER_T *sbp;
+#endif
 
     /*
      * We use the type byte (return value) to encode the FH length.  Since we
@@ -778,7 +771,7 @@ vnlayer_dentry_to_fh(
      * units.
      */
     type = parent_fidp->fid_len + lfidp->fid_len; /* Guaranteed even. */
-    mylen = roundup(type, sizeof(*fh));
+    mylen = roundup(type + MDKI_FID_EXTRA_SIZE, sizeof(*fh));
 
     if (mylen == VNODE_NFS_FH_TYPE_RESERVED ||
         mylen >= VNODE_NFS_FH_TYPE_ERROR)
@@ -801,6 +794,24 @@ vnlayer_dentry_to_fh(
     BCOPY(lfidp->fid_data, fh, lfidp->fid_len);
     BCOPY(parent_fidp->fid_data, ((caddr_t)fh) + (type / 2),
           parent_fidp->fid_len);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
+    /* 
+     * For 64 bits OS, use a 32 bits hash of the SB pointer.
+     * For 32 bits OS, use the pointer itself.
+     */
+    if (ITOV(dent->d_inode) == NULL || 
+        ITOV(dent->d_inode)->v_vfsmnt == NULL) {
+        MDKI_VFS_LOG(VFS_LOG_ESTALE,
+                     "%s: %p is this a MVFS inode?\n",
+                     __func__, dent->d_inode);
+        goto bailout;
+    } else {
+        sbp = ((struct vfsmount *)ITOV(dent->d_inode)->v_vfsmnt)->mnt_sb;
+    }
+    MDKI_FID_SET_SB_HASH(fh, type / 2, MDKI_FID_CALC_HASH(sbp));
+#endif
+
     bailout_needed = FALSE;         /* We're home free now. */
 
     if (bailout_needed) {
@@ -868,46 +879,8 @@ vnlayer_unpack_fh(
     return 0;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-struct dentry *
-vnlayer_fh_to_dentry(
-    SUPER_T *sb,
-    __u32 *fh,
-    int len,                         /* counted in units of 4-bytes */
-    int fhtype,
-    int parent
-)
-{
-    MDKI_FID_T *lfidp;
-    DENT_T *dp;
-    int error, fidlen;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
 
-    fidlen = fhtype >> 1;
-    if (fidlen == 0)
-        return ERR_PTR(-EINVAL);
-
-    lfidp = KMEM_ALLOC(MDKI_FID_ALLOC_LEN(fidlen), KM_SLEEP);
-    if (lfidp == NULL)
-        return ERR_PTR(-ENOMEM);
-    /*
-     * Copy the appropriate FID out of the FH (parent or child,
-     * depending on caller's preference), then get a vnode for the
-     * object.
-     */
-    if (parent) {
-        error = vnlayer_unpack_fh(fh, len, fhtype, fidlen, NULL, lfidp);
-    } else {
-        error = vnlayer_unpack_fh(fh, len, fhtype, fidlen, lfidp, NULL);
-    }
-    if (error == 0) {
-        dp = vnlayer_get_dentry(sb, lfidp);
-    } else {
-        dp = ERR_PTR(error);
-    }
-    KMEM_FREE(lfidp, MDKI_FID_ALLOC_LEN(fidlen));
-    return dp;
-}
-#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0) */
 #include <linux/sunrpc/svc.h>
 #include <linux/nfsd/nfsd.h>
 
@@ -953,6 +926,11 @@ vnlayer_decode_fh(
         dp = (*realsb->s_export_op->find_exported_dentry)(realsb, lfidp,
                                                           plfidp, acceptable,
                                                           context);
+        if (IS_ERR(dp)) {
+            MDKI_VFS_LOG(VFS_LOG_ESTALE,
+                "%s: pid %d call to find_exported_dentry returned error %ld\n",
+                __FUNCTION__, current->pid, PTR_ERR(dp));
+        }
     } else {
         dp = ERR_PTR(error);
     }
@@ -961,24 +939,131 @@ vnlayer_decode_fh(
     KMEM_FREE(plfidp, MDKI_FID_ALLOC_LEN(fidlen));
     return dp;
 }
-
-STATIC inline void
-vnlayer_anonymize_root(struct dentry *rdentp)
+#else /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24) */
+/* 
+ *  Matching callback passed to mfs_find_mount, it will return
+ *  the super_block pointer related to the VFS_T if it matches
+ *  or NULL.
+ */
+static void *
+vnlayer_eval_mount(
+    VFS_T *vfsp,
+    void *data
+)
 {
-    
-    ASSERT(rdentp->d_name.name == rdentp->d_iname);
-    rdentp->d_name.len = 0;
-    rdentp->d_name.hash = 0;
-    rdentp->d_iname[0] = '\0';
+    SUPER_T *sb = VFSTOSB(vfsp);
+    if(MDKI_FID_CALC_HASH(sb) == *(unsigned *)data) {
+        lock_super(sb);
+        return sb;
+    }
+    return NULL;
 }
+
+/* Common file handle decoding for both parent and dentry */
+static struct dentry *
+vnlayer_decode_fh(
+    SUPER_T *sb,
+    struct fid *fh,
+    int len,                            /* counted in units of 4-bytes */
+    int fhtype,
+    int is_parent)
+{
+    MDKI_FID_T *lfidp;
+    DENT_T *dp;
+    int error, fidlen;
+    SUPER_T *realsb;
+    unsigned realsb_hash;
+
+    fidlen = fhtype >> 1;
+    if (fidlen == 0) {
+        return ERR_PTR(-EINVAL);
+    }
+
+    if (len * 4 < MDKI_FID_LEN_WITH_HASH(fidlen)) {
+        MDKI_VFS_LOG(VFS_LOG_ESTALE,
+                      "%s: FH too small to be a MVFS FH\n",
+                      __FUNCTION__);
+        return ERR_PTR(-EINVAL);
+    }
+
+    lfidp = KMEM_ALLOC(MDKI_FID_ALLOC_LEN(fidlen), KM_SLEEP);
+    if (lfidp == NULL) {
+        return ERR_PTR(-ENOMEM);
+    }
+
+    if (is_parent) {
+        error = vnlayer_unpack_fh((__u32 *)fh, len, fhtype, fidlen,
+                                  NULL, lfidp);
+    } else {
+        error = vnlayer_unpack_fh((__u32 *)fh, len, fhtype, fidlen,
+                                  lfidp, NULL);
+    }
+
+    if (error == 0) {
+        realsb_hash = MDKI_FID_SB_HASH(fh, fidlen);
+
+        /*
+         * Search in the VOB mount list for the super_block we encoded.
+         * If the result is not NULL, the superblock was locked with
+         * lock_super and should be unlocked.
+         */
+        realsb = (SUPER_T *) mvfs_find_mount(vnlayer_eval_mount,
+                                             &realsb_hash);
+
+        if (realsb != NULL) {
+            /*
+             * It found a matching VOB mount to this hash, we will leave to
+             * vnlayer_get_dentry decides wether we can trust this FID, 
+             * it should be able to smell any staleness.
+             */
+            dp = vnlayer_get_dentry(realsb, lfidp);
+            unlock_super(realsb);
+            if (IS_ERR(dp)) {
+                MDKI_VFS_LOG(VFS_LOG_ESTALE,
+                    "%s: pid %d vnlayer_get_dentry returned error %ld\n",
+                    __FUNCTION__, current->pid, PTR_ERR(dp));
+            }
+        } else {
+            dp = ERR_PTR(-EINVAL);
+            MDKI_VFS_LOG(VFS_LOG_ESTALE, "%s SB not found, hash=%08x\n",
+                         __FUNCTION__, realsb_hash);
+        }
+    } else {
+        dp = ERR_PTR(error);
+    }
+    KMEM_FREE(lfidp, MDKI_FID_ALLOC_LEN(fidlen));
+    return dp;
+}
+
+struct dentry *
+vnlayer_fh_to_dentry(
+    SUPER_T *sb,
+    struct fid *fh,
+    int len,                            /* counted in units of 4-bytes */
+    int fhtype)
+{
+    return vnlayer_decode_fh(sb, fh, len, fhtype, 0);
+}
+
+struct dentry *
+vnlayer_fh_to_parent(
+    SUPER_T *sb,
+    struct fid *fh,
+    int len,                            /* counted in units of 4-bytes */
+    int fhtype)
+{
+    return vnlayer_decode_fh(sb, fh, len, fhtype, 1);
+}
+
+#endif /* else LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24) */
 
 struct dentry *
 vnlayer_get_parent(struct dentry *child)
 {
     VNODE_T *parentvp;
-    CRED_T *ucred;
     struct dentry *rdentp;
     struct lookup_ctx ctx;
+    CALL_DATA_T cd;
     int err;
 
     if (!MDKI_INOISMVFS(child->d_inode))
@@ -986,56 +1071,28 @@ vnlayer_get_parent(struct dentry *child)
 
     ctx.flags = 0;
     ctx.dentrypp = NULL;
-    ucred = MDKI_GET_UCRED();
+    mdki_linux_init_call_data(&cd);
 
     err = VOP_LOOKUP(ITOV(child->d_inode), "..", &parentvp, NULL,
-                     VNODE_LF_LOOKUP, NULL, ucred, &ctx);
-    MDKI_CRFREE(ucred);
+                     VNODE_LF_LOOKUP, NULL, &cd, &ctx);
+    mdki_linux_destroy_call_data(&cd);
     if (err == 0) {
-        /*
-         * Now we create a dentry for the parent vnode.
-         */
         ASSERT(ctx.dentrypp == NULL);
         ASSERT(parentvp != NULL);
         if (!MDKI_INOISMVFS(VTOI(parentvp))) {
-            VN_RELE(parentvp);
             rdentp = ERR_PTR(-ESTALE);
-        } else {
-            /* equivalent of d_splice_alias */
-            rdentp = vnlayer_inode2dentry_internal(VTOI(parentvp),
-                                                   NULL, /* any will do */
-                                                   NULL,
-                                                   &vnode_dentry_ops);
-            if (rdentp != NULL) {
-                /* we don't need our reference */
-                VN_RELE(parentvp);
-            } else {
-                /*
-                 * OK, we have to fabricate one for NFS.  See comments
-                 * below about why we don't use d_alloc_anon()
-                 */
-                rdentp = VNODE_D_ALLOC_ROOT(VTOI(parentvp));
-                if (rdentp == NULL) {
-                    VN_RELE(parentvp);
-                    rdentp = ERR_PTR(-ESTALE);
-                } else {
-                    rdentp->d_flags |= NFSD_DCACHE_DISCON;
-                    vnlayer_anonymize_root(rdentp);
-                    rdentp->d_op = &vnode_dentry_ops;
-                }
-            }
+        } else { 
+            rdentp = vnlayer_find_dentry(parentvp);
         }
+        /* always drop vnode's refcount */
+        VN_RELE(parentvp);
     } else {
         rdentp = ERR_PTR(mdki_errno_unix_to_linux(err));
     }
     return rdentp;
 }
-#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0) */
 
-MDKI_DECLARE_SLEEPLOCK(vnlayer_nfs_dentry_lock);
-
-#define VATTR_ALLOC() KMEM_ALLOC(sizeof(VATTR_T), KM_SLEEP)
-#define VATTR_FREE(vap) KMEM_FREE(vap, sizeof(VATTR_T))
+extern int mfs_rebind_vpp(int release, VNODE_T **vpp, CALL_DATA_T *cd);
 
 struct dentry *
 vnlayer_get_dentry(
@@ -1048,95 +1105,93 @@ vnlayer_get_dentry(
     VNODE_T *vp;
     MDKI_FID_T *lfidp = fhbits;
     DENT_T *dp;
-    INODE_T *ip;
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,0)
-    VATTR_T *vap;
-    CRED_T *cred;
-#endif
+    CALL_DATA_T cd;
 
-    error = VFS_VGET(vfsp, &vp, lfidp);
+    mdki_linux_init_call_data(&cd);
+    error = VFS_VGET(vfsp, &vp, lfidp, &cd);
     if (error == 0) {
-        /*
-         * We have a vnode/inode, now get the dentry.  If there isn't
-         * one already pointing to the inode, we must fabricate a
-         * disconnected entry for NFS to connect up to the known
-         * dcache tree (in the paranoia/export directory checking
-         * cases--but performance will be better if
-         * NFSEXP_NOSUBTREECHECK is present in the export options--but
-         * will this break our use of dentry->d_parent->d_inode in
-         * dentry_to_fh()? XXX).
-         */
-        ip = VTOI(vp);
-        /*
-         * take lock to protect against races to allocate a
-         * disconnected dentry.  (XXX could we use one of the inode's
-         * semaphores, to avoid a system-wide lock?  Maybe add a
-         * sleep-lock to the vnode body?)
-         */
-        MDKI_SLEEP_LOCK(&vnlayer_nfs_dentry_lock);
-        /* we only want view-extended dentries */
-        dp = vnlayer_inode2dentry_internal(ip, NULL, NULL, &vnode_dentry_ops);
-        if (dp == NULL) {
-            /*
-             * Didn't find a dentry, fabricate one for NFS
-             */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-            /*
-             * Because we may have multiple dentries on the same inodes
-             * (one for setview, one for non-setview), we can't use
-             * d_alloc_anon() since it doesn't understand this.
-             * d_alloc_root() seems to be good enough, although we need
-             * to add flags to it like we do for 2.4.x
-             */
-#endif
-            dp = VNODE_D_ALLOC_ROOT(ip);
-            if (dp == NULL) {
-                dp = ERR_PTR(-ENOMEM);
-                VN_RELE(vp);
-            } else {
-                ASSERT(dp->d_op == NULL);
-                dp->d_op = &vnode_dentry_ops;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-                vnlayer_anonymize_root(dp);
-#endif
-                /* d_alloc_root assumes we've held the inode, so we
-                 * leave the count from VFS_VGET alone.
-                 */
-                dp->d_flags |= NFSD_DCACHE_DISCON;
-                /*
-                 * We used to check that we could find the new dentry
-                 * via vnlayer_inode2dentry_internal(), but that
-                 * doesn't work on plain files since the dentry is not
-                 * hashed at this moment and thus it won't be found by
-                 * that routine.
-                 */
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,0)
-                /*
-                 * Need to pull up fsid attributes into our vnode (to
-                 * make sure we pass any xdev tests for things like
-                 * vfs_link()).
-                 */
-                vap = VATTR_ALLOC();
-                cred = MDKI_GET_UCRED();
-                VATTR_NULL(vap);
-                VATTR_SET_MASK(vap, AT_FSID);
-                (void) VOP_GETATTR(vp, vap, GETATTR_FLAG_PULLUP_ATTRS, cred);
-                MDKI_CRFREE(cred);
-                VATTR_FREE(vap);
-#endif
-            }
-        } else {
-            /*
-             * We have a dentry which references the vnode, now we can
-             * drop the ref count returned by VFS_VGET
-             */
-            VN_RELE(vp);
+        /* rebind if needed */
+        if (mfs_rebind_vpp(1, &vp, &cd)) {
+            MDKI_VFS_LOG(VFS_LOG_ESTALE,
+                      "%s: vp %p rebound\n",
+                      __FUNCTION__, vp);
         }
-        MDKI_SLEEP_UNLOCK(&vnlayer_nfs_dentry_lock);
+        dp = vnlayer_find_dentry(vp);
+        /* always drop vnode's refcount */
+        VN_RELE(vp);
     } else {
         dp = ERR_PTR(mdki_errno_unix_to_linux(error));
     }
+    mdki_linux_destroy_call_data(&cd);
     return dp;
 }
 
-static const char vnode_verid_mvfs_linux_sops_c[] = "$Id:  36011763.844911dd.94a6.00:01:83:09:5e:0d $";
+/*
+ * We have a vnode/inode, now get the dentry.  If there isn't
+ * one already pointing to the inode, we must fabricate a
+ * disconnected entry for NFS to connect up to the known
+ * dcache tree (in the paranoia/export directory checking
+ * cases--but performance will be better if
+ * NFSEXP_NOSUBTREECHECK is present in the export options--but
+ * will this break our use of dentry->d_parent->d_inode in
+ * dentry_to_fh()? XXX).
+ * Returns a valid dentry pointer or a negative error code.
+ * If the returned dentry is a new one, the inode's refcount is
+ * incremented.
+ */
+STATIC struct dentry *
+vnlayer_find_dentry(VNODE_T *vp)
+{
+    static const struct qstr this_is_anon  = { .name = ""};
+    struct dentry *dp;
+    struct dentry *dnew;
+    INODE_T *ip;
+
+    ip = VTOI(vp);
+    /*
+     * We create an anonymous dentry for NFS, but it will be used
+     * only if we don't find a suitable one for this inode.
+     * We have to do it here because d_alloc acquires dcache_lock.
+     */
+    dnew = d_alloc(NULL, &this_is_anon);
+    if (dnew == NULL) {
+        dp = ERR_PTR(-ENOMEM);
+    } else {
+        dnew->d_parent = dnew;
+        spin_lock(&dcache_lock);
+        /*
+         * equivalent of d_splice_alias,
+         * we only want view-extended dentries
+         */
+        dp = vnlayer_inode2dentry_internal_no_lock(ip,
+                                                   NULL,
+                                                   NULL,
+                                                   &vnode_dentry_ops);
+        if (dp == NULL) {
+            /* new dentry, increase the refcount for this v/inode */
+            VN_HOLD(vp);
+            /* found no suitable dentry, add a new one */
+            dnew->d_op = &vnode_dentry_ops;
+            dnew->d_sb = ip->i_sb;
+            dnew->d_inode = ip;
+            dnew->d_flags |= NFSD_DCACHE_DISCON;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+            dnew->d_flags &= ~DCACHE_UNHASHED;
+#endif
+            list_add(&dnew->d_alias, &ip->i_dentry);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+            hlist_add_head(&dnew->d_hash, &ip->i_sb->s_anon);
+#endif
+            dp = dnew;
+            /* skip the dput call for dnew, we will need it */
+            dnew = NULL;
+        }
+        spin_unlock(&dcache_lock);
+    }
+    /* dput dnew if we don't use it */
+    if (dnew != NULL)
+        dput(dnew);
+    return dp;
+}
+
+static const char vnode_verid_mvfs_linux_sops_c[] = "$Id:  a7cbf7b3.dc5411df.9210.00:01:83:0a:3b:75 $";

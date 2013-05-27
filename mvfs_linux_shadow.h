@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000, 2007 IBM Corporation.
+ * Copyright (C) 2000, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -255,10 +255,6 @@ vnode_shadow_cp_inodat(
     (dest)->i_blkbits = (src)->i_blkbits;
 #endif
     (dest)->i_blocks = (src)->i_blocks;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    (dest)->i_attr_flags = (src)->i_attr_flags;
-    (dest)->i_dev = (src)->i_dev;
-#endif
 }
 
 #define SHADOW_CP_ATIME(src, dest) (dest)->i_atime = (src)->i_atime
@@ -271,22 +267,24 @@ vnode_copy_file_struct(
     struct file *dest
 )
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
+    const struct cred *creds;
+
+    creds = get_cred(src->f_cred);
+    if (creds != NULL) {
+        put_cred(dest->f_cred);
+    }
+    dest->f_cred = creds;
+#else
+    (dest)->f_uid = (src)->f_uid;
+    (dest)->f_gid = (src)->f_gid;
+#endif
     /* do not copy f_count, it's a ref count! */
     (dest)->f_mode = (src)->f_mode;
     (dest)->f_pos = (src)->f_pos;
     (dest)->f_flags = (src)->f_flags;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-    (dest)->f_reada = (src)->f_reada;
-    (dest)->f_ramax = (src)->f_ramax;
-    (dest)->f_raend = (src)->f_raend;
-    (dest)->f_ralen = (src)->f_ralen;
-    (dest)->f_rawin = (src)->f_rawin;
-#else
     (dest)->f_ra = (src)->f_ra;       /* Copy struct file_ra_state */
-#endif
     (dest)->f_owner = (src)->f_owner;
-    (dest)->f_uid = (src)->f_uid;
-    (dest)->f_gid = (src)->f_gid;
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,12)
     (dest)->f_error = (src)->f_error;
 #endif
@@ -314,4 +312,4 @@ extern F_OPS_T vnode_shadow_mapped_file_ops;
 
 extern void
 vnode_shadow_dop_release(DENT_T *dentry);
-/* $Id: 87a6021c.66c511dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: f8c723f6.d6d511df.8121.00:01:83:0a:3b:75 $ */

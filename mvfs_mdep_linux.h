@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1999, 2008. */
+/* * (C) Copyright IBM Corporation 1999, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_MDEP_LINUX_H_
 #define MVFS_MDEP_LINUX_H_
 /*
@@ -67,6 +67,25 @@
 
 /* Needed for our wrapper routines */
 #include "vnode_linux.h"
+
+/* Provide wrapper functions so we only call mvfs_enter_fs and mvfs_exit_fs
+ * when we actually enter and leave the mvfs.
+ */
+#define MVFS_WRAP_ENTER_EXIT
+
+/* The following are declared as NULL macros here so that we won't be
+ * calling mvfs_enter_fs() and mvfs_exit_fs() in our normal processing.
+ * See comments in mvfs_systm.h for the use of these macros.
+ */
+#define MVFS_DECLARE_THREAD(mth)
+#define MVFS_ENTER_FS(mth)
+#define MVFS_EXIT_FS(mth)
+
+/* MVFS_CD2CRED and MVFS_CD2THREAD are defined in mvfs_mdki.h so that
+ * they can be used in the linux specific code as well.
+ */
+#define MVFS_GET_THREAD(cd) MVFS_CD2THREAD(cd)
+#define MVFS_MYTHREAD(cd) MVFS_CD2THREAD(cd)
 
 #define _IOCPARM_MASK _IOC_SIZEMASK
 
@@ -130,6 +149,7 @@ typedef struct mfs_lock {
  */
 
 #define STATVFS_FILL(statp) 0           /* nothing needed */
+#define STATVFS_RESET_FLAGS(statp)  0   /* nothing needed */
 
 #define MVFS_SIZE_TIME_MASK (AT_MTIME_SET|AT_ATIME_SET|AT_MTIME|AT_ATIME|\
                              AT_CTIME)
@@ -160,6 +180,27 @@ mvfs_linux_mapinit(struct mvfs_minmap *map);
 #define MVFS_FMT_SSIZE_T_D "ld"
 #else
 #error need CPU-specific defines fixed up
+#endif
+
+/*
+ * Due to the high stack pressure and the strange behaviour of
+ * __builtin_memset on SLES11 x86_64, we need to replace
+ * the default implementation of MVFS_STAT_ZERO macro by a function.
+ */
+struct mvfs_statistics_data;
+EXTERN void
+mvfs_linux_stat_zero(struct mvfs_statistics_data *sdp);
+#define MVFS_STAT_ZERO(sdp) mvfs_linux_stat_zero(sdp);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18)
+/*
+ * Skips getattr for both read/write audit operations, because getattr forces
+ * a write flush to update mtime, which severely affects audited builds.
+ * The mtime for auditing is informational only and can safely use the value
+ * obtained by the last getattr call.
+ */
+# define MDKI_AOP_KIND_NEEDS_REAL_MTIME(OP_KIND)  \
+                ((OP_KIND) != MFS_AR_WRITE && (OP_KIND) != MFS_AR_READ)
 #endif
 
 #define UIOMOVE(kbuf,klen,direction,uiop) \
@@ -237,13 +278,18 @@ mvfs_linux_vnget(
  * Now for the translation of vnode operations to the corresponding
  * Linux inode (or other) operations.  There may be a wrapper function
  * involved.
+ * Mostly the MVOP macros just use the corresponding VOP versions
+ * which embody the calling sequence required to call from linux
+ * into the MVFS.  In some cases we do not want to use the VOP macros
+ * because we do not need the call_data passed back to us and it is
+ * not available to all of our callers.
  */
 #define MVOP_ACCESS VOP_ACCESS
-#define MVOP_GETATTR(VP,CVP,VAP,F,CR)	VOP_GETATTR(VP,VAP,F,CR)
+#define MVOP_GETATTR(VP,CVP,VAP,F,CR)	mvop_linux_getattr(VP,VAP,F,CR)
 #define MVOP_SETATTR(VP,VAP,F,CR,CTXP)	VOP_SETATTR(VP,VAP,F,CR)
 #define MVOP_READDIR VOP_READDIR
 #define MVOP_OPEN VOP_OPEN
-#define MVOP_CLOSE VOP_CLOSE
+#define MVOP_CLOSE mvop_linux_close
 #define MVOP_READ VOP_READ
 #define MVOP_WRITE VOP_WRITE
 #define MVOP_IOCTL VOP_IOCTL
@@ -351,8 +397,8 @@ extern int mvfs_majfixmax;
 #define MVFS_MAJDYNMAX mvfs_majdynmax
 #define MVFS_MAJFIXMAX mvfs_majfixmax
 #define MVFS_MINORMAX mdki_maxminor
-#define MVFS_VIEW_MASK_BITS 0
 #define MVFS_VIEW_SHIFT_BITS mvfs_view_shift_bits
+#define MVFS_VIEW_MASK_BITS ((1UL << (MVFS_VIEW_SHIFT_BITS)) -1)
 #define MDKI_SET_MINORMAX(minormax, view_shift_bits) \
     minormax = 1 << view_shift_bits;
 #define MDKI_SET_VIEW_MASK_BITS(view_mask_bits, view_shift_bits)
@@ -578,8 +624,8 @@ mvfs_linux_exit_fs(struct mvfs_thread *thr);
 extern int
 mvfs_linux_should_cover(void);
 
-#define LOOKUP_FOR_IOCTL(pn,s,f,opt,dvpp,vpp,cred)              \
-	mvfs_linux_lookup_ioctl(pn,s,f,opt,dvpp,vpp,cred)
+#define LOOKUP_FOR_IOCTL(pn,s,f,opt,dvpp,vpp,cd)              \
+	mvfs_linux_lookup_ioctl(pn,s,f,opt,dvpp,vpp,cd)
 
 #define LOOKUP_AUDIT_FILE(pn,vpp,cred)                                  \
         mvop_linux_lookup_storage_file(pn, vpp, cred)
@@ -592,7 +638,7 @@ mvfs_linux_lookup_ioctl(
     int opt,
     VNODE_T **dvpp,
     CLR_VNODE_T **vpp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 
 extern char *
@@ -769,12 +815,27 @@ mvfs_linux_condlock(
 #define MVFS_SAVE_ROOTDIR(ctx)  mdki_get_rootdir((ctx)->dentrypp)
 
 /*
+ * We are defining IN6_IS_ADDR_V4MAPPED for now since
+ * the kernel headers for Linux do not define it yet.
+ * The Linux userspace headers do currently define this macro,
+ * but we cannot use that version of it.
+ * Once the Linux kernel provides us with this macro, we can use their version
+ * instead of our own, as defined below.
+ */
+#ifndef IN6_IS_ADDR_V4MAPPED
+#define IN6_IS_ADDR_V4MAPPED(s6addr_p) \
+((s6addr_p)->s6_addr32[0] == 0 && \
+ (s6addr_p)->s6_addr32[1] == 0 && \
+ (s6addr_p)->s6_addr32[2] == htonl(0xffff))
+#endif
+
+/*
  * RPC definitions (make Linux kernel RPC look like Sun ONC RPC API).
  */
 
 struct rpc_clnt;
-#define MDKI_CLNTKUDP_CREATE(bogus,a,t,r,i,c)	\
-    mvfs_linux_clntkudp_create(a,t,r,i)
+#define MDKI_CLNTKUDP_CREATE(bogus,a,t,r,i,c,cl_pp)	\
+    mvfs_linux_clntkudp_create(a,t,r,i,cl_pp)
 #define MDKI_CLNTKUDP_INIT(h,a,r,c,i,t,bogus_p,bogus_v,bogus_n) 	\
     mdki_linux_clntkudp_init(h,a,r,i)
 
@@ -805,6 +866,15 @@ mvfs_linux_clnt_geterr(
     struct rpc_err *errp
 );
 
+#define MDKI_CLNT_GET_SERVER_ADDR(clientp, saddr) \
+	mvfs_linux_clnt_get_servaddr((clientp), (saddr))
+
+extern void
+mvfs_linux_clnt_get_servaddr(
+    CLIENT *cl,
+    char *saddr
+);
+
 #define MDKI_CLNTKUDP_ADDR_T			int /* not really used */
 #define MDKI_SIGMASK_T                          int /* not really used */
 
@@ -815,19 +885,14 @@ struct mfs_callinfo;                    /* forward decl */
 const char *
 mvfs_linux_clnt_sperrno(enum clnt_stat status);
 
-CLIENT *
+int
 mvfs_linux_clntkudp_create(
-    struct sockaddr_in *addr,
+    struct sockaddr *addr,
     struct mfs_callinfo *trait,
     int retrans_count,
-    bool_t intr
+    bool_t intr,
+    CLIENT **cl_pp
 );
-
-/*
- * General Networking definitions
- */
-
-#define MVFS_SIN_CVT(sockaddrp) /* no conversion needed */
 
 /* This is the count of physical pages on the system. */
 
@@ -850,7 +915,7 @@ mvfs_linux_clntkudp_create(
 ** so it should be OK to make it smaller (i.e. there are probably bigger
 ** problems to worry about if this happens).
 */
-#define MVFS_STK_FREEQLEN		12
+#define MVFS_STK_FREEQLEN		9
 #else
 #define MVFS_STK_FREEQLEN               32
 #endif
@@ -973,68 +1038,39 @@ mvfs_linux_ioctl_chk_cmd(
 #define MVFS_RDWR_GET_MAXOFF(vp, uiop, maxoff, ctx) \
     maxoff = (MVFS_GET_MAXOFF_FILE_CTX(vp, ctx))
 
-/*
-** Macros to increment/decrement statistics.  They are all declared as
-** MVFS_ATOMIC_T types.  The mfs_statlock (defined in mvfs_utils.c) is only
-** used to "chunk" stat updates (rather than locking around each one).  It is
-** not used to make a group of updates "consistent" (either we're not worried
-** about that level of consistency, or a higher level lock already provides
-** it).
-*/
-#define MVFS_ATOMIC_T atomic_t
-#define MVFS_ATOMIC_INIT(i) ATOMIC_INIT(i)
-#define MVFS_ATOMIC_READ(v) atomic_read(&(v))
-
-#define MVFS_STATLOCK_INIT()
-#define MVFS_STATLOCK_FREE()
-#define MVFS_STATLOCK_LOCK(spl)
-#define MVFS_STATLOCK_UNLOCK(spl)
-
-#define BUMPSTAT(nm, s) {mvfs_stats_data_t *sdp = MDKI_STATS_GET_DATAP(); \
-                         atomic_inc(&(sdp->nm));  }
-#define BUMPSTAT_LOCKED(nm, inc) {mvfs_stats_data_t *sdp = MDKI_STATS_GET_DATAP(); \
-                                  atomic_add((inc), &(sdp->nm)); }
-#define DECSTAT(nm, s)          {mvfs_stats_data_t *sdp = MDKI_STATS_GET_DATAP(); \
-                                 atomic_dec(&(sdp->nm)); }
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0) && \
-    (defined(__s390__) || defined(__s390x__))
-/* Earlier versions for s390 don't have a cmpxchg() macro defined, so
-** just do the "simple" thing (like the default in mvfs_systm.h).
-*/
-#define XCHG_STAT32_CMP_LOCKED(target, cmp, value) \
-        (target) = (value)
-#else
-#define XCHG_STAT32_CMP_LOCKED(target, cmp, value) \
-                cmpxchg(&(target), (cmp), (value))
-#endif
-
-/*
- * Macros to bump per view statistics.  Takes particular stat offset
- * in view mnode.
+/* Macros to enable and disable preemption for increment/decrement
+ * of statistics.  Disabling kernel premption is used on available
+ * platforms.  On other platforms, interrupts are disabled.  This
+ * eliminates the need for locking or atomic increment or decrement.
  */
-#define BUMP_PVSTAT(nm, s) atomic_inc(&(nm)) 
 
-#define BUMP_PVSTAT_LOCKED(nm, s) atomic_inc(&(nm)) 
-
-/* Since it might not be the case that an atomic_t is the same size as the
-** fields in a timestruct_t, we'll just use a spinlock here to make this easy.
-*/
-extern void
-mvfs_linux_bumptime(
-    timestruc_t *stp,
-    timestruc_t *dtp,
-    timestruc_t *tvp
-);
-#define MFS_BUMPTIME(stime, dtime, nm)  { \
-                mvfs_stats_data_t *sdp = MDKI_STATS_GET_DATAP(); \
-                mvfs_linux_bumptime(&(stime), &(dtime), &(sdp->nm)); \
-                }
-
-#define MFS_TIME_DELTA(stime, dtime, ztime) {  \
-                (ztime).tv_sec = (ztime).tv_nsec = 0; \
-                mvfs_linux_bumptime(&(stime), &(dtime), &(ztime)); \
-                }
+/*
+ * For Linux kernel 2.6.2 and prior versions, no API was available
+ * for the maximum cpus on a machine.  We gather that 512 is the
+ * maximum number of CPUs supported on any platform.  So, we use
+ * a constant 512 for versions where we don't have an API to use.
+ */
+#define MVFS_GET_CUR_CPUID smp_processor_id()
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
+/* Linux 2.4 Kernels are non-preemptible.  */
+#define MVFS_INTR_DISABLE(dummy)
+#define MVFS_INTR_ENABLE(dummy)
+#define MVFS_GET_MAXCPU 512
+#define MAXCPU_IS_CONSTANT
+#else
+/*
+ * For versions where preempt_disable is available, it must have a
+ * corresponding preempt_enable.
+ */
+#define MVFS_INTR_DISABLE(dummy) preempt_disable()
+#define MVFS_INTR_ENABLE(dummy)  preempt_enable()
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,2)
+#define MVFS_GET_MAXCPU 512
+#define MAXCPU_IS_CONSTANT
+#else
+#define MVFS_GET_MAXCPU num_possible_cpus()
+#endif
+#endif
 
 #endif
-/* $Id: d54dcdd3.541d11dd.90ce.00:01:83:09:5e:0d $ */
+/* $Id: 693be71b.dc5411df.9210.00:01:83:0a:3b:75 $ */

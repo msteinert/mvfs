@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2006. */
+/* * (C) Copyright IBM Corporation 1991, 2010. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MFS_DNC_H_
 #define MFS_DNC_H_
 
@@ -266,7 +266,10 @@ mfs_dnc_add_flag(
  *              lookup.  (This struct is used because it passes 
  *              through the VOP_LOOKUP call in the Unix SVR4-style 
  *              MVFS core)
- * IN cred      Ptr to credentials lookup is being done with
+ * IN cd        Ptr to call_data that points to the credentials to be
+ *              used for the lookup and the thred for the process.
+ *              For platforms that have not been converted, this will be
+ *              a pointer to the cred structure
  * Result:      NULL means no cached translation was found
  *              MFS_DNC_ENOENTVP means the cached result was name-not-found
  *              Otherwise a vnode ptr to the result of the lookup is returned
@@ -278,7 +281,7 @@ mfs_dnclookup(
     VNODE_T *dvp,
     char *nm,
     struct pathname *pnp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 /***************************************************************************
  * MFS_DNCREMOVE_ONE - remove one translation from the cache
@@ -485,7 +488,8 @@ mvfs_dnc_compute_caches(
  *		either a loop-back view or an NT-style view-tag.
  * IN vobrtvp	Ptr to vnode of bare VOB root.
  * OUT fidp	Ptr to fid to be filled in with bound VOB root node's fid
- * IN cred	Credentials
+ * IN cd	Credentials.  Being converted to call_data which includes
+ *              pointer to credentials and to thread structure.
  *
  * On success, returns 0 and fills in *fidp.
  * If no VOB root is found in the cache, returns an error code.
@@ -497,7 +501,7 @@ mvfs_rvclookup(
     VNODE_T *vw,
     VNODE_T *vobrtvp,
     mfs_fid_t *fidp,
-    CRED_T *cred
+    CALL_DATA_T *cd
 );
 
 /***************************************************************************
@@ -521,4 +525,4 @@ mvfs_rvcenter(
 );
 
 #endif /* MFS_DNC_H_ */
-/* $Id: 96d36d8c.66b911dc.9bbb.00:01:83:09:5e:0d $ */
+/* $Id: 663be65b.dc5411df.9210.00:01:83:0a:3b:75 $ */

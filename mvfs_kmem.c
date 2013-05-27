@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2006. */
+/* * (C) Copyright IBM Corporation 1991, 2007. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,11 +19,13 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 /* mvfs_kmem.c */
+
 #include "mvfs_systm.h"
 #include "mvfs.h"
+
 
 #ifndef MVFS_SYSTEM_KMEM
 
@@ -1002,4 +1004,4 @@ mvfs_free_slab(
 }
 
 #endif /* !MVFS_SYSTEM_KMEM */
-static const char vnode_verid_mvfs_kmem_c[] = "$Id:  afe3720c.66b911dc.9bbb.00:01:83:09:5e:0d $";
+static const char vnode_verid_mvfs_kmem_c[] = "$Id:  73b1131e.9c1e11dd.9a62.00:01:83:29:c0:fc $";

@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2008. */
+/* * (C) Copyright IBM Corporation 1991, 2011. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  This module is part of the IBM (R) Rational (R) ClearCase (R)
  Multi-version file system (MVFS).
  For support, please visit http://www.ibm.com/software/support
-*/
 
+*/
 #ifndef MVFS_SYSTM_H_
 #define MVFS_SYSTM_H_
 /*
@@ -42,7 +42,6 @@
 #endif
 #endif
 
-	 
 /*
  * defaults for things that the mdep files didn't care to define:
  */
@@ -54,6 +53,7 @@
 
 #define MVFS_IS_LASTCLOSE(cnt)	(cnt == MVFS_LASTCLOSE_COUNT)
 #define MVFS_KEEPHANDLE		0
+
 
 /* VFS_T to MVFS Mount Information */
 #define VFS_TO_MMI(vfsp) ((struct mfs_mntinfo *)((vfsp)->vfs_data))
@@ -76,6 +76,7 @@
  * Determines from pathname struct if lookup case-insensitive
  */
 #define MVFS_PN_CI_LOOKUP(pnp)  FALSE
+
 
 /* the type of the vfsp->v_data ptr */
 #define MVFS_VFSDATA_T caddr_t
@@ -138,6 +139,24 @@
 #define MVFS_MDEP_EXIT_FS(thr)
 #endif
 
+#ifndef MVFS_WRAP_ENTER_EXIT
+/* The definition of MVFS_DECLARE_THREAD violates our standard of putting 
+ * the semi-colon in the code after the invocation of the macro but that 
+ * generates warnings if this turns into a line consisting of a single 
+ * semi-colon in the middle of a list of declarations. The Linux compiler, 
+ * at least, objects even to a null code line there.
+ */
+#define MVFS_DECLARE_THREAD(mth) mvfs_thread_t *mth;
+#define MVFS_ENTER_FS(mth) mth = mvfs_enter_fs()
+#define MVFS_EXIT_FS(mth) mvfs_exit_fs(mth)
+#define MVFS_GET_THREAD(cd) mvfs_enter_fs()
+#define MVFS_MYTHREAD(cd) mvfs_mythread()
+#define CALL_DATA_T CRED_T
+#define MVFS_CD2CRED(cd) (cd)
+#define MVFS_ALLOC_SUBSTITUTE_CRED(CD,CR) (CR)
+#define MVFS_FREE_SUBSTITUTE_CRED(CD)
+
+#endif /*MVFS_WRAP_ENTER_EXIT*/
 /*
  * Unless otherwise declared in the port mdep.h file, everybody can
  * wait.  Define MDKI_MYTHREAD_CANTWAIT() as a predicate deciding
@@ -204,6 +223,9 @@
  *                                      makes sense for the port.
  *                                      (defaulted in this file to compare
  *                                      procid via MDKI_PROCID_EQ)
+ *  MDKI_IS_SOL_EXITPROC(pid,mcdp):     Used only on Solaris to test for 
+ *                                      special p0 association during proc 
+ *                                      exit; always false on other OS
  *
  *  The base MVFS will provide:
  *       A hash function & hash table stuff for procid -> mvfs process state
@@ -215,6 +237,10 @@
 
 #ifndef MDKI_MYPROCTAG
 #define MDKI_MYPROCTAG(tagp, pidp) *(tagp) = *(pidp)
+#endif
+
+#ifndef MDKI_IS_SOL_EXITPROC
+#define MDKI_IS_SOL_EXITPROC(pid, _common_data_ptr)  0
 #endif
 
 /*
@@ -251,6 +277,10 @@
 
 #define MVFS_UNREGISTER_SIDHOST_CREDMAPS(cptr) 0
 
+#ifndef MVFS_GET_GFSINFO
+#define MVFS_GET_GFSINFO(gfsinfo)  ENOTTY
+#endif
+
 #define MVFS_REGISTER_GRPLIST_ORDER(gptr) 0
 
 #define MVFS_UNREGISTER_GRPLIST_ORDER(luid) 0
@@ -268,6 +298,11 @@
  * for COW.
  */
 #define MVFS_COPYVP(ovp,nvp,len,cred)	mfs_copyvp(ovp,nvp,len,cred)
+
+/* Default, use mvfs_logfile_printf */
+#define MVFS_PRINTF		mvfs_logfile_printf
+#define MVFS_VPRINTF_3		mvfs_logfile_vprintf_3
+#define	MVFS_GENERIC_LOGFILE_PRINTF
 
 #define MVFS_ADJUST_CACHESIZES mvfs_physmem_adj_caches
 
@@ -293,7 +328,7 @@
 #define MVFS_SKIP_AUDIT(vp) (FALSE)
 
 #define MVFS_THREAD_LOOKUP_ROOT(th)   NULL
-#define MVFS_ROOT_LOOKUP(root,nm,vpp,pnp,flags,cred,ctx) 0
+#define MVFS_ROOT_LOOKUP(root,nm,vpp,pnp,flags,cd,ctx) 0
 
 #define MVFS_LOGFILE_REINIT()
 
@@ -377,9 +412,30 @@
 #define PTR_TO_PTR32(x) (ptr32_t ) (x)
 #endif
 
+/*
+ * This macro is called under the assumption that the caller
+ * holds the mfs_unload_lock.
+ */
+#ifndef FREE_INIT_LOCKS
+#define FREE_INIT_LOCKS() { \
+        FREELOCK(&mvfs_printf_lock); \
+        FREELOCK(&mvfs_printstr_lock); \
+        FREELOCK(&(MDKI_VFS_GET_DATAP()->mvfs_mountlock)); \
+        MVFS_UNLOCK(&mfs_unload_lock); \
+        FREELOCK(&mfs_unload_lock); \
+}
+#endif
+
+
 #define REAL_CVN_RELE CVN_RELE
 
 #define MVFS_VP_TO_CVP(vp,cvpp) VN_HOLD(vp); (*(cvpp)) = (vp)
+
+#ifndef MVFS_RENAME_RENAME_NEEDED
+/* only need to rename if this is the last link */
+#define MVFS_RENAME_RENAME_NEEDED(vp, ctx) \
+  (V_COUNT(vp) > 1 && VTOM(vp)->mn_vob.attr.fstat.nlink < 2)
+#endif
 
 #define MVFS_FLK_CALLBACK_T void
 
@@ -495,73 +551,25 @@
 #define MVFS_VATTR_TO_FSTAT_DB_GID(vap, gsid_p) \
     mvfs_credutl_unix_gid_to_sid(VATTR_GET_GID((vap)), (gsid_p))
 
-/*
- * Macros to bump per view statistics.  Takes particular stat offset in view
- * mnode.  Covers per view stats with the mfs_statlock.
- */
-
-#ifndef BUMP_PVSTAT
-#define BUMP_PVSTAT(nm, s) { \
-        mvfs_stats_data_t *sdp = MDKI_STATS_GET_DATAP(); \
-        SPLOCK(sdp->mfs_statlock, (s)); \
-        (nm)++; \
-        SPUNLOCK(sdp->mfs_statlock, (s)); \
-    }
-#endif
-
-#ifndef BUMP_PVSTAT_LOCKED
-#define BUMP_PVSTAT_LOCKED(nm, s) { \
-        (nm)++; \
-    }
-#endif
-
-/*
- * Also for per view stats, but takes vnode.
- */
-#define BUMPVSTAT(vnode, stat, s) { \
-      if (MFS_VIEW(vnode)) { \
-	struct mvfs_pvstat * pvp = VTOM(MFS_VIEW(vnode))->mn_view.pvstat; \
-	BUMP_PVSTAT(pvp->stat,(s)); \
-      } \
-    }
-
-/*
- * Macro as above to bump per view statistics except that it takes an mnode
- * pointer as an argument.  It will follow the viewvp pointer if it is set
- * and bump the statistics there without validating that it points to a view.
- */
-
-#define BUMPVSTATM(mnode, stat, s) { \
-      if (mnode->mn_hdr.viewvp) { \
-        struct mvfs_pvstat * pvp = VTOM(mnode->mn_hdr.viewvp)->mn_view.pvstat; \
-	BUMP_PVSTAT(pvp->stat,(s)); \
-      } \
-}
-
-/*
- * Yet another variation on bumping view statistics.  Here we know that we 
- * have a pointer to a view vnode.  We just go ahead and bump the counter.
- * This just saves some typing.
- */
-
-#define BUMPVSTATV(vnode, stat, s) { \
-	struct mvfs_pvstat * pvp = VTOM(vnode)->mn_view.pvstat; \
-	BUMP_PVSTAT(pvp->stat,(s)); \
-}
-
-#ifndef MFS_TIME_DELTA
-/*
- * Macro to calculate elapsed time, but without adding to cumulative stats
- */
-#define MFS_TIME_DELTA(stime, dtime, ztime) { \
-	(ztime).tv_sec = (ztime).tv_nsec = 0; \
-	mfs_bumptime(&(stime), &(dtime), &(ztime)); \
-    }
+#ifndef MVFS_STAT_CNT_T
+#define MVFS_STAT_CNT_T ks_uint64_t
 #endif
 
 #define MVFS_MDEP_PROC_START_AUDIT()
 
 #define MVFS_MDEP_PROC_STOP_AUDIT()
+
+/*
+ * MDKI_AOP_KIND_NEEDS_REAL_MTIME determines which operations will result in a
+ * call to getattr to obtain the mtime, when a file is being audited.
+ * The default case is to avoid the getattr call for write operations.
+ * If a different behaviour is needed, #define this macro inside the
+ * platform's mdep header (see mvfs_mdep_linux.h).
+ * The getattr call will be skipped when the macro resolves to 0.
+ */
+#ifndef MDKI_AOP_KIND_NEEDS_REAL_MTIME
+# define MDKI_AOP_KIND_NEEDS_REAL_MTIME(OP_KIND)  ((OP_KIND) != MFS_AR_WRITE)
+#endif
 
 #define MDKI_ISVCEXCL(x) ((x) == EXCL)   /* check exclusive create bit */
 
@@ -577,6 +585,7 @@
         (MVFS_MAJDYNMAX + MVFS_MAJFIXMAX) * sizeof(MVFS_MAJOR_T))
 
 #define MVFS_DUMMY_RELE(thr)
+
 
 /* Load a value if it's present and valid in the sizes */
 #define MVFS_SIZE_CONDLOAD(var,sz,bit)          \
@@ -608,6 +617,7 @@
            (var) = (sz)->size[MVFS_SETCACHE_##bit];             \
    } else                                                       \
        (var) = (def)
+
 
 /* General context type */
 #define MVFS_CALLER_CONTEXT_T	void
@@ -695,12 +705,43 @@ mvfs_strrchr(
   (error) = EACCES
 #endif
 
+#ifndef MVFS_VFID_SET_EXP_ERROR
+#define MVFS_VFID_SET_EXP_ERROR(error, mnp, vp) \
+    mvfs_log(MFS_LOG_ERR, \
+             "NFS access denied for view %s: View not exported.\n", \
+             mfs_vp2vw(vp)); \
+    (error) = EACCES
+#endif
+
 /* Some platforms are picky about stack size, so make these macros in case we
 ** want to make this use a slab someday.
 */
-#ifndef VATTR_ALLOC
-#define VATTR_ALLOC() KMEM_ALLOC(sizeof(VATTR_T), KM_SLEEP)
-#define VATTR_FREE(vap) KMEM_FREE((vap), sizeof(VATTR_T))
+
+#ifdef MVFS_VATTR_SLAB_ALLOC
+
+extern struct mvfs_slab_list* mvfs_vattr_slabs;
+
+#define MVFS_VATTR_ALLOC()      (VATTR_T *) mvfs_slab_getchunk(mvfs_vattr_slabs, sizeof(VATTR_T))
+#define MVFS_VATTR_FREE(vap)                                                        \
+        do {                                                                        \
+            mvfs_slab_freechunk(mvfs_vattr_slabs, (caddr_t)(vap), sizeof(VATTR_T)); \
+            vap = NULL;                                                             \
+        } while (0)
+
+#define MVFS_VATTR_SLAB_INIT(vap_list, size, flag, label)   \
+        vap_list = mvfs_create_slablist(size, flag, label)
+#define MVFS_VATTR_SLAB_DESTROY(vap_list)                   \
+        do {                                                    \
+            mvfs_destroy_slablist(vap_list);                    \
+            vap_list = NULL;                                    \
+        } while (0)
+#else
+
+#define MVFS_VATTR_ALLOC()      (VATTR_T *) KMEM_ALLOC(sizeof(VATTR_T), KM_SLEEP)
+#define MVFS_VATTR_FREE(vap)    KMEM_FREE((vap), sizeof(VATTR_T))
+#define MVFS_VATTR_SLAB_INIT(vap, size, flag, label)    /* nothing */
+#define MVFS_VATTR_SLAB_DESTROY(vap)                    /* nothing */
+
 #endif
 
 #ifndef MVFS_SYSTEM_KMEM
@@ -753,19 +794,39 @@ mvfs_strrchr(
 /* Dummy versions of utility macros */
 #define MDKI_INGLOBALZONE() (TRUE)
 #define MDKI_ZONE_READY() (mvfs_init_state == MVFS_INIT_COMPLETE)
+#define MDKI_GLOBALZONE_READY() (mvfs_init_state == MVFS_INIT_COMPLETE)
 #define MDKI_SETZONEID(id)  0
 #define MDKI_GETZONEID()  0
 #define MDKI_GET_ZONE_NAME()
 
-/* Macros to allocate/free subsystem data don't do anything */
+/* Macros to allocate/free subsystem data */
 #define MDKI_MNODE_ALLOC_DATA()
 #define MDKI_MNODE_FREE_DATA()
 #define MDKI_VIEWROOT_ALLOC_DATA()
 #define MDKI_VIEWROOT_FREE_DATA()
 #define MDKI_DNLC_ALLOC_DATA() 
 #define MDKI_DNLC_FREE_DATA()
-#define MDKI_STATS_ALLOC_DATA() 
-#define MDKI_STATS_FREE_DATA()
+#ifndef MDKI_STATS_ALLOC_DATA
+#define MDKI_STATS_ALLOC_DATA() \
+    mvfs_stats_data_ptr_percpu = \
+        (mvfs_stats_data_t **)KMEM_ALLOC((mvfs_max_cpus * \
+                                          (sizeof(mvfs_stats_data_t *))), \
+                                         KM_SLEEP);
+#endif
+#ifndef MDKI_STATS_FREE_DATA
+#define MDKI_STATS_FREE_DATA() {        \
+    int cpuid;      \
+    mvfs_stats_data_t *sdp; \
+    for (cpuid = 0; cpuid < mvfs_max_cpus; cpuid++) {    \
+             if ((sdp = MDKI_STATS_GET_DATAP(cpuid)) != NULL) { \
+                 KMEM_FREE(sdp, sizeof(mvfs_stats_data_t));   \
+              } \
+    } \
+    KMEM_FREE(mvfs_stats_data_ptr_percpu, \
+              mvfs_max_cpus * (sizeof(mvfs_stats_data_t *)));   \
+}
+#endif
+
 #define MDKI_AUDIT_ALLOC_DATA()
 #define MDKI_AUDIT_FREE_DATA()
 
@@ -775,8 +836,58 @@ mvfs_strrchr(
 #define MDKI_MNODE_GET_DATAP() (&mvfs_mnode_data_var)
 #define MDKI_VIEWROOT_GET_DATAP() (&mvfs_viewroot_data_var)
 #define MDKI_DNLC_GET_DATAP()  (&mvfs_dnlc_data_var)
-#define MDKI_STATS_GET_DATAP()  (&mvfs_stats_data_var)
+#ifndef MDKI_STATS_GET_DATAP
+#define MDKI_STATS_GET_DATAP(cpuid) (mvfs_stats_data_ptr_percpu[cpuid])
+#endif
 #define MDKI_AUDIT_GET_DATAP()  (&mvfs_audit_data_var)
 
+/*
+ * For platforms that use interrupt disable to protect the stats data,
+ * this is defined as the appropriate interrupt level type used on those.
+ * For the rest, we define it as an int and this is just a dummy in this case
+ * since we do not use this argument in preemption disabling.
+ */
+#ifndef MVFS_SAVE_PRIORITY_T
+#define MVFS_SAVE_PRIORITY_T int
+#endif
+
+/* Macro to zero out the statistics structure.  */
+#ifndef MVFS_STAT_ZERO_COMMON
+#define MVFS_STAT_ZERO_COMMON(sdp) \
+    BZERO(&(sdp->mfs_clntstat), sizeof(mfs_clntstat)); \
+    BZERO(&(sdp->mfs_mnstat), sizeof(mfs_mnstat)); \
+    BZERO(&(sdp->mfs_clearstat), sizeof(mfs_clearstat)); \
+    BZERO(&(sdp->mfs_rvcstat), sizeof(mfs_rvcstat)); \
+    BZERO(&(sdp->mfs_dncstat), sizeof(mfs_dncstat)); \
+    BZERO(&(sdp->mfs_acstat), sizeof(mfs_acstat)); \
+    BZERO(&(sdp->mfs_rlstat), sizeof(mfs_rlstat)); \
+    BZERO(&(sdp->mfs_austat), sizeof(mfs_austat)); \
+    BZERO(sdp->mfs_vnopcnt, mfs_vnopmax*sizeof(MVFS_STAT_CNT_T)); \
+    BZERO(sdp->mfs_vfsopcnt, mfs_vfsopmax*sizeof(MVFS_STAT_CNT_T)); \
+    BZERO(sdp->mfs_viewopcnt, mfs_viewopmax*sizeof(MVFS_STAT_CNT_T)); \
+    BZERO(&(sdp->mfs_viewophist.histval[0]), \
+          sizeof(sdp->mfs_viewophist.histval)); \
+    BZERO(&(sdp->mfs_viewophist.histrpc[0]), \
+          sizeof(sdp->mfs_viewophist.histrpc)); \
+    BZERO(&(sdp->mfs_viewophist.histclr[0]), \
+          sizeof(sdp->mfs_viewophist.histclr)); \
+    BZERO(&(sdp->mfs_viewophist.histperop[0][0]), \
+          sizeof(sdp->mfs_viewophist.histperop)); \
+    BZERO(&(sdp->mfs_viewoptime[0]), sizeof(sdp->mfs_viewoptime)); \
+    sdp->mfs_clntstat.version = MFS_CLNTSTAT_VERS; \
+    sdp->mfs_mnstat.version = MFS_MNSTAT_VERS; \
+    sdp->mfs_clearstat.version = MFS_CLEARSTAT_VERS; \
+    sdp->mfs_rvcstat.version = MFS_RVCSTAT_VERS; \
+    sdp->mfs_dncstat.version = MFS_DNCSTAT_VERS; \
+    sdp->mfs_acstat.version = MFS_ACSTAT_VERS;  \
+    sdp->mfs_rlstat.version = MFS_RLSTAT_VERS; \
+    sdp->mfs_austat.version = MFS_AUSTAT_VERS; \
+    sdp->mfs_viewophist.version = MFS_RPCHIST_VERS;
+#endif
+
+#ifndef MVFS_STAT_ZERO
+#define MVFS_STAT_ZERO MVFS_STAT_ZERO_COMMON
+#endif
+
 #endif /* MVFS_SYSTM_H_ */
-/* $Id: 94be0db4.07e011dd.9a30.00:01:83:09:5e:0d $ */
+/* $Id: 95a2eff8.45b111e0.9a57.00:11:25:23:c8:f1 $ */

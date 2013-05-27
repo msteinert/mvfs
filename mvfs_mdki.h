@@ -1,7 +1,7 @@
 #ifndef MVFS_MDKI_H_
 #define MVFS_MDKI_H_
 /*
- * Copyright (C) 1999, 2008 IBM Corporation.
+ * Copyright (C) 1999, 2010 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,6 +27,11 @@
 #include <linux/param.h>
 #include <linux/time.h>
 #include <linux/in.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) 
+#include <linux/exportfs.h>
+#include <linux/hash.h>
+#endif
+
 
 #define MDKI_PTR_TYPE(name) struct name ## _struct *name
 #define MDKI_GEN_TYPE(name) struct name ## _struct name
@@ -136,8 +141,12 @@ struct mvfs_linux_vattr;                 /* forward decl */
 #define VATTR_SET_BLKSIZE(vap, bs)	(vap)->va_blksize = (bs)
 #define VATTR_GET_NBLOCKS(vap)		((vap)->va_nblocks)
 #define VATTR_SET_NBLOCKS(vap, nb)	(vap)->va_nblocks = (nb)
-/* Convert bytes to blocks */
-#define VATTR_BTODB(n)                  (((n)+DEV_BSIZE-1) >> 10)
+/* Convert bytes to blocks - on Linux, the kstat block size is hardcoded
+ * as 512.  See ST_NBLOCKSIZE in $COREUTILS/src/system.h, S_BLKSIZE in
+ * /usr/include/sys/stat.h, and especially the code in inode_add_bytes()
+ * in $LINUX/fs/stat.c.
+ */
+#define VATTR_BTODB(n)                  (((n) + 512 - 1) >> 9)
 
 #define VATTR_GET_ATIME(vap)		((vap)->va_atime.tv_sec)
 #define VATTR_GET_ATIME_TV(vap, tvp)	*(tvp) = (vap)->va_atime
@@ -190,12 +199,8 @@ typedef enum symfollow {
 #define VFSOPS_T struct vfsops
 #define VNODE_T struct mdki_vnode
 #define V_OP_T struct vnodeops
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0)
-#define LINUX_STATFS_T  struct statfs
-#else
 #include <linux/statfs.h>
 #define LINUX_STATFS_T  struct kstatfs
-#endif
 #define STATVFS_T LINUX_STATFS_T
 
 typedef u_short mdki_vtype_t;
@@ -331,7 +336,11 @@ typedef struct semaphore mdki_sleeplock_t;
  * I'd say no, since if it's set it means that someone is about to wake up
  * and get the lock anyway.
  */
-#define MDKI_SLEEP_ISLOCKED(semap) (atomic_read(&(semap)->count) < 1)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27) 
+# define MDKI_SLEEP_ISLOCKED(semap) (atomic_read(&(semap)->count) < 1)
+#else
+# define MDKI_SLEEP_ISLOCKED(semap) ((semap)->count < 1)
+#endif
 #define MDKI_SLEEP_LOCK(semap) down(semap)
 #define MDKI_SLEEP_UNLOCK(semap) up(semap)
 #define MDKI_SLEEP_TRYLOCK(semap) down_trylock(semap)
@@ -355,6 +364,7 @@ extern int
 mdki_vcount(VNODE_T *vp);
 
 #define V_COUNT(vp)     mdki_vcount(vp)
+
 
 extern VNODE_T *
 mdki_vn_hold(VNODE_T *vp);
@@ -522,6 +532,12 @@ mdki_set_ichg(
 #define REAL_KMEM_ALLOC(bsize,flag)  mdki_linux_kmalloc((bsize),(flag))
 #define REAL_KMEM_FREE(ptr,bsize)    mdki_linux_kfree((ptr),(bsize))
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+#define MVFS_KMEM_CACHE_T kmem_cache_t
+#else
+#define MVFS_KMEM_CACHE_T struct kmem_cache
+#endif
+
 #ifndef KMEMDEBUG
 
 #define KMEM_ALLOC(bsize,flag) REAL_KMEM_ALLOC(bsize,flag)
@@ -677,10 +693,18 @@ mdki_get_urdir_vnode(void);
 
 extern VNODE_T *
 mdki_get_ucdir_vnode(void);
-extern const char *
-mdki_get_ucomm_ptr(void);
-extern int
-mdki_get_ucmask(void);
+
+static inline const char *
+mdki_get_ucomm_ptr(void)
+{   
+    return(current->comm);
+} 
+
+static inline int 
+mdki_get_ucmask(void)
+{
+    return(current->fs->umask);
+}
 
 extern int
 mdki_linux_readdir_uiomove(
@@ -882,6 +906,34 @@ mdki_getmycallerscaller(void);
 
 #define MVFS_MAXOFF_T 0x7fffffffffffffffLL
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+# define MDKI_TASKLIST_LOCK()        read_lock(&tasklist_lock)   
+# define MDKI_TASKLIST_UNLOCK()      read_unlock(&tasklist_lock)
+#else
+# define MDKI_TASKLIST_LOCK()        rcu_read_lock()
+# define MDKI_TASKLIST_UNLOCK()      rcu_read_unlock()
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
+# define MDKI_GET_CURRENT_FSUID() current->fsuid
+# define MDKI_GET_CURRENT_FSGID() current->fsgid
+# define MDKI_GET_CURRENT_EUID()  current->euid
+# define MDKI_GET_CURRENT_EGID()  current->egid
+# define MDKI_GET_CURRENT_UID()   current->uid
+# define MDKI_GET_CURRENT_GID()   current->gid
+# define MDKI_GET_CURRENT_SUID()  current->suid
+# define MDKI_GET_CURRENT_SGID()  current->sgid
+#else
+# define MDKI_GET_CURRENT_FSUID() current_fsuid()
+# define MDKI_GET_CURRENT_FSGID() current_fsgid()
+# define MDKI_GET_CURRENT_EUID()  current_euid()
+# define MDKI_GET_CURRENT_EGID()  current_egid()
+# define MDKI_GET_CURRENT_UID()   current_uid()
+# define MDKI_GET_CURRENT_GID()   current_gid()
+# define MDKI_GET_CURRENT_SUID()  current_suid()
+# define MDKI_GET_CURRENT_SGID()  current_sgid()
+#endif
+
 typedef MDKI_GEN_TYPE(vnode_kdirent_t);
 
 #define KDIRENT_T	vnode_kdirent_t
@@ -957,6 +1009,7 @@ mdki_linux_uioset(
 #define MVFS_DEF_BLKSIZE_BITS 12
 #define MVFS_DEF_MAX_FILESIZE 0x7fffffffffffffffLL
 
+extern MVFS_KMEM_CACHE_T *vnlayer_vnode_cache;
 extern u_int mdki_linux_boottime;
 
 extern int
@@ -1080,19 +1133,48 @@ typedef MDKI_GEN_TYPE(mvfs_process_t);
 
 typedef long mvfs_procid_t;
 
-extern mvfs_process_t *
-mdki_curproc(void);
-extern mvfs_procid_t
-mdki_curpid(void);
+/* The following functions are inlined because they are called often
+ * and they make no use of the stack.  This should improve usage of the
+ * L1 cache.
+ */
 
-extern mvfs_process_t *
-mdki_get_parent(mvfs_process_t *p);
+static inline mvfs_procid_t
+mdki_curpid(void)
+{
+    return((mvfs_procid_t)current->pid);
+}
+    
+static inline mvfs_process_t *
+mdki_curproc(void)
+{
+    return((mvfs_process_t *)current);
+}
 
-extern mvfs_procid_t
-mdki_get_proc_pid(mvfs_process_t *p);
+static inline mvfs_process_t *
+mdki_get_parent(mvfs_process_t *p)
+{
+    struct task_struct *task = (struct task_struct *) p;
+#if defined(RATL_REDHAT) || (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))
+    return((mvfs_process_t *)task->parent);
+#else
+    return((mvfs_process_t *)task->p_pptr);
+#endif
+}
 
-extern mvfs_proctag_t
-mdki_get_proctag(mvfs_process_t *p);
+static inline mvfs_procid_t
+mdki_get_proc_pid(mvfs_process_t *p)
+{
+    struct task_struct *task = (struct task_struct *) p;
+    return((mvfs_procid_t)task->pid);
+}
+
+
+static inline mvfs_proctag_t
+mdki_get_proctag(mvfs_process_t *p)
+{   
+    struct task_struct *task = (struct task_struct *) p;
+    return((mvfs_proctag_t)task->fs);
+}
 
 extern mdki_boolean_t
 mdki_linux_procactive(mvfs_process_t *p);
@@ -1103,9 +1185,24 @@ mdki_linux_procexists(
     mvfs_process_t *proc
 );
 
-extern unsigned long
-mdki_get_proc_state(mvfs_process_t *p);
-
+extern inline unsigned long
+mdki_get_proc_state(mvfs_process_t *p)
+{
+    struct task_struct *task = (struct task_struct *) p;
+#ifdef EXIT_ZOMBIE
+    /* In RHEL4 Update 1 Red Hat moved the TASK_ZOMBIE and TASK_DEAD
+     * flags from the state field to the exit_state field and renamed
+     * them EXIT_ZOMBIE and EXIT_DEAD.  For now, the bit offsets have
+     * not changed and the bits that were moved out of the state word
+     * have not been reused.  Of course, this can change at any time
+     * but until then, this simple minded fix should work.
+     */
+    return(task->state | task->exit_state);
+#else
+    return(task->state);
+#endif
+}
+ 
 /*
  * We use this in places where we switch between UNIX convention
  * (positive error codes) and Linux convention (negative error codes).
@@ -1135,10 +1232,10 @@ mdki_linux_clnt_call(
 extern int
 mdki_linux_destroy_client(CLIENT *cl);
 
-extern void
+extern int
 mdki_linux_clntkudp_init(
     CLIENT *cl,
-    struct sockaddr_in *addr,
+    struct sockaddr *addr,
     int retrans_count,
     bool_t intr
 );
@@ -1233,6 +1330,68 @@ mdki_file_ctx_open_for_lfs(
      file_ctx *ctx
 );
 
+/* The mvfs_call_data structure is used to passed thread and cred informaton
+ * to users who need both.  In many cases, it is passed around instead of a
+ * simple thread structure.  This reduces the number of times that we have to
+ * call mvfs_enter_fs and mvfs_exit_fs.  See the comments in mvfs_systm.h for
+ * how the functions and macros defined here should be used.
+ */
+
+struct mvfs_thread;
+
+typedef struct mvfs_call_data {
+    vnode_cred_t *cred;
+    struct mvfs_thread *thr;
+} mvfs_call_data_t;
+
+#define CALL_DATA_T mvfs_call_data_t
+#define MVFS_CD2CRED(cb) (cb)->cred
+#define MVFS_CD2THREAD(cb) (cb)->thr
+
+extern void
+mdki_linux_init_call_data(CALL_DATA_T *cd);
+extern void
+mdki_linux_destroy_call_data(CALL_DATA_T *cd);
+extern CALL_DATA_T *
+mdki_linux_make_substitute_cred(
+    CALL_DATA_T *ocd,
+    CRED_T *cred
+);
+extern void
+mdki_linux_free_substitute_cred(
+    CALL_DATA_T *cd
+);
+
+#define MVFS_ALLOC_SUBSTITUTE_CRED(CD,CR) mdki_linux_make_substitute_cred(CD,CR)
+#define MVFS_FREE_SUBSTITUTE_CRED(CD) mdki_linux_free_substitute_cred(CD)
+
+/* Declare functions that will manipulate the thread structure when
+ * initializing and releasing call data structures.
+ */
+
+struct mvfs_thread * 
+mvfs_get_thread_ptr(void);
+void
+mvfs_release_thread_ptr(struct mvfs_thread *thr);
+
+/* this is in mvfs_vfsops.c, but we have to call it directly */
+extern void *
+mvfs_find_mount(
+    void *(* eval_func)(VFS_T *vfsp, void *data),
+    void *data
+);
+
+/* This is put here because it needs the definition of file_ctx. */
+
+extern int
+mvop_linux_lockctl(
+    VNODE_T *vp,
+    void *ld,
+    int cmd,
+    CALL_DATA_T *cd,
+    file_ctx *ctx
+);
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
 /* These functions are declared here so they can be called by
 ** mvop_linux_lockctl().  However, they are defined in mvfs_mdep_linux.c (like
@@ -1266,4 +1425,4 @@ extern u_int mvfs_view_shift_bits;
 #endif
 
 #endif /* MVFS_MDKI_H_ */
-/* $Id: 4f004106.7aa111dd.871a.00:01:83:09:5e:0d $ */
+/* $Id: a86bf7cb.dc5411df.9210.00:01:83:0a:3b:75 $ */

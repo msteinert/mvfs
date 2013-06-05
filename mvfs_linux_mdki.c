@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2011 IBM Corporation.
+ * Copyright (C) 1999, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -43,6 +43,172 @@ STATIC MVFS_KMEM_CACHE_T *vnlayer_cred_cache;
 ** mvfs_linux_sops.c
 */
 MVFS_KMEM_CACHE_T *vnlayer_vnode_cache;
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/kprobes.h>
+#include <linux/kallsyms.h>
+#include <linux/mempolicy.h>
+
+#define KPROBE_TYPE_J 0
+#define KPROBE_TYPE_R 1
+
+#if defined(CONFIG_X86_32) || defined(CONFIG_X86_64) 
+#define SET_RETURN_VALUE(R, V) (R)->ax = (V)
+#elif defined(__powerpc64__)
+#define SET_RETURN_VALUE(R, V) regs_return_value(R) = (V)
+#elif defined(__s390x__)
+#define SET_RETURN_VALUE(R, V) regs_return_value(R) = (V)
+#endif
+
+static int
+mdki_probe_prepend_path_return(
+    struct kretprobe_instance *ri,
+    struct pt_regs *regs
+);
+
+static struct {
+	int type;
+	const char *fname;
+	union {
+	struct kretprobe kretprobe;
+        struct jprobe jprobe;
+	} p;
+} probed_funcs[] = {
+    {
+        .type = KPROBE_TYPE_R,
+        .fname = "prepend_path",
+        .p.kretprobe = {
+            .entry_handler = NULL,
+            .handler = mdki_probe_prepend_path_return,
+            .maxactive = 0,
+            .data_size = 0,
+        }
+    },
+    {
+        .fname = NULL,
+    },
+};
+
+static int
+mdki_probe_dummy_pre(
+    struct kprobe *p,
+    struct pt_regs *regs
+)
+{
+    return 0;
+}
+
+static void
+mdki_probe_dummy_post(
+    struct kprobe *p,
+    struct pt_regs *regs,
+    unsigned long flags
+)
+{
+}
+
+static int
+mdki_probe_dummy_fault(
+    struct kprobe *p,
+    struct pt_regs *regs,
+    int trapnr
+)
+{
+    return 0;
+}
+
+static int
+mdki_probe_prepend_path_return(
+    struct kretprobe_instance *ri,
+    struct pt_regs *regs
+)
+{
+    if (current->fs && current->fs->root.dentry && DENT_IS_ROOT_ALIAS(MDKI_FS_ROOTDENTRY(current->fs))) {
+        if (regs_return_value(regs) == 1) {
+            SET_RETURN_VALUE(regs, 0);
+        }
+    }
+    return 0;
+}
+
+static int
+mdki_probe_init(void)
+{
+    int i;
+    int ret;
+    struct kprobe k;
+
+    for (i = 0; probed_funcs[i].fname; i++) {
+        switch (probed_funcs[i].type) {
+            case KPROBE_TYPE_R:
+                probed_funcs[i].p.kretprobe.kp.symbol_name = probed_funcs[i].fname;
+                if ((ret = register_kretprobe(&probed_funcs[i].p.kretprobe)) < 0) {
+                    MDKI_VFS_LOG(VFS_LOG_ERR, "%s: register_kretprobe for "
+                                              "\"%s\" failed with result=%d\n",
+                                              __func__, probed_funcs[i].fname,
+                                              ret);
+                    continue;
+                }
+            break;
+
+            case KPROBE_TYPE_J:
+                /*
+                 * Without kallsyms_lookup_name, use register_kprobe
+                 * to find symbol's address. I know, it is ugly.
+                 */
+                memset(&k, 0, sizeof(k));
+                k.symbol_name = probed_funcs[i].fname;
+                k.pre_handler = mdki_probe_dummy_pre;
+                k.post_handler = mdki_probe_dummy_post;
+                k.fault_handler = mdki_probe_dummy_fault;
+                if (register_kprobe(&k) == 0) {
+                    probed_funcs[i].p.jprobe.kp.addr = k.addr;
+                    unregister_kprobe(&k);
+                } else {
+                    MDKI_VFS_LOG(VFS_LOG_ERR, "%s: address of "
+                                              "\"%s\" not found\n",
+                                              __func__, probed_funcs[i].fname);
+                }
+                if ((ret = register_jprobe(&probed_funcs[i].p.jprobe)) < 0) {
+                    MDKI_VFS_LOG(VFS_LOG_ERR, "%s: register_jprobe for "
+                                              "\"%s\" failed with result=%d\n",
+                                              __func__, probed_funcs[i].fname,
+                                              ret);
+                    continue;
+                }
+            break;
+        }
+    }
+    return 0;
+}
+
+static void
+mdki_probe_fini(void)
+{
+    int i;
+
+    for (i = 0; probed_funcs[i].fname; i++) {
+        if (probed_funcs[i].type == KPROBE_TYPE_R) {
+            unregister_kretprobe(&probed_funcs[i].p.kretprobe);
+            /*
+             * printk("kretprobe at %s(%p) unregistered\n",
+             *       probed_funcs[i].fname, probed_funcs[i].p.kretprobe.kp.addr);
+             */
+            /* nmissed > 0 suggests that maxactive was set too low. */
+            if (probed_funcs[i].p.kretprobe.nmissed > 0)
+                MDKI_VFS_LOG(VFS_LOG_ERR, "%s: missed probing %d instances of "
+                                          "\"%s\"\n", __func__,
+                                          probed_funcs[i].p.kretprobe.nmissed,
+                                          probed_funcs[i].fname);
+        }
+    }
+}
+#else
+    #define mdki_probe_init()
+    #define mdki_probe_fini()
+#endif  /* else LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38) */
 
 #ifdef MVFS_DEBUG
 #if defined(__i386__)
@@ -320,7 +486,7 @@ vnlayer_release_root_dentry(void)
     /* use real dput, internal printf is closed down at this point */
     dput(vnlayer_sysroot_dentry);
     vnlayer_sysroot_dentry = NULL;
-    mntput(vnlayer_sysroot_mnt);
+    MDKI_MNTPUT(vnlayer_sysroot_mnt);
     vnlayer_sysroot_mnt = NULL;
 }
 
@@ -422,16 +588,14 @@ mdki_linux_mdep_init(void)
     /* vnlayer_cltxt_vfs.vfs_sb = something; ??? */
 
     init_waitqueue_head(&vnlayer_inactive_waitq);
-    /* Set up mdki_linux_boottime */
-    /* Not really boot time, but MVFS start time.  Used for RPC duplicate or
-       replay detection by the view_server */
-    mdki_linux_boottime = MDKI_CTIME();
+    mdki_probe_init();
     return 0;
 }
 
 void
 mdki_linux_mdep_unload(void)
 {
+    mdki_probe_fini();
     vnlayer_release_root_dentry();
 }
 
@@ -509,17 +673,30 @@ vnlayer_get_view_dentry(
 
 #ifdef USE_ROOTALIAS_CURVIEW
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) 
 STATIC int
 vnlayer_root_alias_hash(
     struct dentry *base,
     struct qstr *name
 )
+#else
+STATIC int
+vnlayer_root_alias_hash(
+    const struct dentry *base,
+    const struct inode *inode,
+    struct qstr *name
+)
+#endif
 {
     vnlayer_root_alias_t *alias;
     ASSERT(DENT_IS_ROOT_ALIAS(base));
     alias = DENT_GET_ALIAS(base);
     ASSERT(alias->rootdentry->d_op->d_hash != NULL)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) 
     return (*alias->rootdentry->d_op->d_hash)(alias->rootdentry, name);
+#else
+    return (*alias->rootdentry->d_op->d_hash)(alias->rootdentry, inode, name);
+#endif
 }
 
 STATIC struct dentry *
@@ -536,21 +713,34 @@ vnlayer_find_alias(
      * Scan through the dentry aliases for the root inode, looking for an
      * alias dentry that matches the view we want to use.
      */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+    /* i_lock protects i_dentry */
+    spin_lock(&inode->i_lock);
+#else
     spin_lock(&dcache_lock);
+#endif
     if (!list_empty(&inode->i_dentry)) {
         list_for_each(le, &inode->i_dentry) {
             found = list_entry(le, struct dentry, d_alias);
             if (DENT_IS_ROOT_ALIAS(found)) {
                 alias = DENT_GET_ALIAS(found);
                 if (alias->curview == viewdent) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+                    dget(found);
+#else
                     dget_locked(found);
+#endif
                     break;
                 }
             }
             found = NULL;
         }
     }
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+    spin_unlock(&inode->i_lock);
+#else
     spin_unlock(&dcache_lock);
+#endif
     return found;
 }
 
@@ -650,7 +840,7 @@ vnlayer_root_dop_setup(
     {
         alias->dops.d_hash = &vnlayer_root_alias_hash;
     }
-    dentry->d_op = &alias->dops;
+    MDKI_SET_DOPS(dentry, &alias->dops);
     /* leave dentry->d_fsdata for file system, if it wants it ... */
     MDKI_SLEEP_UNLOCK(&vnlayer_dop_setup_lock);
 
@@ -661,7 +851,8 @@ STATIC void
 vnlayer_root_dop_release(struct dentry *dentry)
 {
     vnlayer_root_alias_t *alias = DENT_GET_ALIAS(dentry);
-    dentry->d_op = NULL;
+
+    MDKI_UNSET_DOPS(dentry);
     VNODE_DPUT(alias->curview);
     VNODE_DPUT(alias->rootdentry);
     MDKI_MNTPUT(alias->mnt);
@@ -675,12 +866,25 @@ vnlayer_root_dop_delete(struct dentry *dentry)
     return 1;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) 
 int
 vnlayer_root_dop_compare(
     struct dentry *dent,
     struct qstr *name1,
     struct qstr *name2
 )
+#else
+int
+vnlayer_root_dop_compare(
+    const struct dentry *dparent,
+    const struct inode *iparent,
+    const struct dentry *dentry,
+    const struct inode *inode,
+    unsigned int tlen,
+    const char *tname,
+    const struct qstr *namep
+)
+#endif
 {
     return 1;                      /* please use our lookup routine */
 }
@@ -688,7 +892,11 @@ vnlayer_root_dop_compare(
 struct dentry_operations vnlayer_root_alias_dops = {
     .d_compare = &vnlayer_root_dop_compare,
     .d_release = &vnlayer_root_dop_release,
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+    .d_delete = (int (*)(const struct dentry *)) &vnlayer_root_dop_delete,
+#else
     .d_delete = &vnlayer_root_dop_delete,
+#endif
 };
 
 /*
@@ -1135,6 +1343,35 @@ mdki_linux_rename_needed(
     return rv;
 }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+extern int
+mdki_linux_set_vobrt_vfsmnt(const char *vpath)
+{
+    int err = 0;
+    VFS_T *vfsp;
+    VNODE_T *rootvp;
+    struct path path;
+
+    err = kern_path(vpath, LOOKUP_FOLLOW, &path);
+    if (!err) {
+        if (!MDKI_SBISMVFS(path.dentry->d_sb))
+            err = -EINVAL;
+        else {
+            vfsp = SBTOVFS(path.dentry->d_sb);
+            err = VFS_ROOT(vfsp, &rootvp);
+            err = mdki_errno_unix_to_linux(err);
+            if (err == 0) {
+                ASSERT(!VTOVFSMNT(rootvp));
+                SET_VTOVFSMNT(rootvp, MDKI_MNTGET(path.mnt));
+                VN_RELE(rootvp);
+            }
+        }
+	/* only needs to put if lookup succeeded */
+    	path_put(&path);
+    }
+    return vnlayer_errno_linux_to_unix(err);
+}
+#else /* LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38) */
 extern int
 mdki_linux_set_vobrt_vfsmnt(const char *vpath)
 {
@@ -1162,6 +1399,7 @@ mdki_linux_set_vobrt_vfsmnt(const char *vpath)
     MDKI_PATH_RELEASE(&nd);
     return vnlayer_errno_linux_to_unix(err);
 }
+#endif /* else LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38) */
 
 int
 mdki_linux_statvfs_vnode(
@@ -1392,12 +1630,20 @@ mdki_set_accessed(
 )
 {
     struct iattr attr;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
     int err;
+#endif
 
     attr.ia_valid = ATTR_ATIME;
     VATTR_GET_ATIME_TS(vap, &(attr.ia_atime));
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
     err = inode_setattr(VTOI(vp), &attr);
     return vnlayer_errno_linux_to_unix(err);
+#else
+    setattr_copy(VTOI(vp), &attr);
+    mark_inode_dirty(VTOI(vp));
+    return 0;
+#endif
 }
 
 extern int
@@ -1407,11 +1653,20 @@ mdki_set_ichg(
 )
 {
     struct iattr attr;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
     int err;
+#endif
+
     attr.ia_valid = ATTR_CTIME;
     VATTR_GET_CTIME_TS(vap, &(attr.ia_ctime));
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
     err = inode_setattr(VTOI(vp), &attr);
     return vnlayer_errno_linux_to_unix(err);
+#else
+    setattr_copy(VTOI(vp), &attr);
+    mark_inode_dirty(VTOI(vp));
+    return 0;
+#endif
 }
 
 extern int
@@ -1421,12 +1676,20 @@ mdki_set_modified(
 )
 {
     struct iattr attr;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
     int err;
+#endif
 
     attr.ia_valid = ATTR_MTIME;
     VATTR_GET_MTIME_TS(vap, &(attr.ia_mtime));
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
     err = inode_setattr(VTOI(vp), &attr);
     return vnlayer_errno_linux_to_unix(err);
+#else
+    setattr_copy(VTOI(vp), &attr);
+    mark_inode_dirty(VTOI(vp));
+    return 0;
+#endif
 }
 
 int
@@ -1463,7 +1726,13 @@ mdki_sync_size(
     if (actual || size > READ_I_SIZE(ip)) {
         attr.ia_valid = ATTR_SIZE;
         attr.ia_size = size;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
         err = inode_setattr(ip, &attr);
+#else
+        truncate_setsize(ip, attr.ia_size);
+        mark_inode_dirty(ip);
+        err = 0;
+#endif
     } else {
         err = 0;
     }
@@ -1493,7 +1762,6 @@ mdki_vpismfs(VNODE_T *vp)
 int mdki_maxminor;		/* This is set during MVFS initialization */
 
 VFS_T *mdki_logging_vfsp;
-u_int mdki_linux_boottime;
 const char *mdki_panicstr;              /* NULL unless we're panic()ing */
 unsigned int mdki_tracing = 0;
 
@@ -1985,11 +2253,19 @@ mvfs_unlink_dev_file(void)
     DENT_T *dent;
     struct nameidata nd;
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38) 
+    err = kern_path_parent("/dev/mvfs", &nd);
+#else
     /* path_lookup() now does all the work. */
     err = path_lookup("/dev/mvfs", LOOKUP_PARENT, &nd);
+#endif
     if (err)
         return(err);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+    mutex_lock_nested(&MDKI_NAMEI_DENTRY(&nd)->d_inode->i_mutex, I_MUTEX_PARENT);
+#else
     LOCK_INODE(MDKI_NAMEI_DENTRY(&nd)->d_inode);
+#endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
     dent = lookup_hash(&nd.last, nd.dentry);
 #else
@@ -1998,14 +2274,8 @@ mvfs_unlink_dev_file(void)
     if (IS_ERR(dent))
         err = PTR_ERR(dent);
     if (!err) {
-#if defined(SLES10SP2) || \
-    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
-     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
-        err = vfs_unlink(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
+        err = MDKI_VFS_UNLINK(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
                          MDKI_NAMEI_MNT(&nd));
-#else
-        err = vfs_unlink(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent);
-#endif
         VNODE_DPUT(dent);
     }
     UNLOCK_INODE(MDKI_NAMEI_DENTRY(&nd)->d_inode);
@@ -2020,8 +2290,12 @@ mvfs_make_dev_file(void)
     DENT_T *dent;
     struct nameidata nd;
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38) 
+    err = kern_path_parent("/dev/mvfs", &nd);
+#else
     /* path_lookup() now does all the work. */
     err = path_lookup("/dev/mvfs", LOOKUP_PARENT, &nd);
+#endif
     if (err)
         return(err);
     LOCK_INODE(MDKI_NAMEI_DENTRY(&nd)->d_inode);
@@ -2033,25 +2307,12 @@ mvfs_make_dev_file(void)
     if (IS_ERR(dent))
         err = PTR_ERR(dent);
     if (!err) {
-#if defined(SLES10SP2) || \
-    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
-     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
-        err = vfs_mknod(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
+        err = MDKI_VFS_MKNOD(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
                         MDKI_NAMEI_MNT(&nd), S_IFBLK|S_IRUGO,
                         MKDEV(mvfs_major, 0));
-#else
-        err = vfs_mknod(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
-                        S_IFBLK|S_IRUGO, MKDEV(mvfs_major, 0));
-#endif
         if (err == -EEXIST) {
-#if defined(SLES10SP2) || \
-    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
-     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
-            err = vfs_unlink(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
+            err = MDKI_VFS_UNLINK(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
                              MDKI_NAMEI_MNT(&nd));
-#else
-            err = vfs_unlink(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent);
-#endif
             /* Get rid of the old dentry and find a new one */
             VNODE_DPUT(dent);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
@@ -2060,16 +2321,9 @@ mvfs_make_dev_file(void)
             dent = lookup_one_len(nd.last.name, MDKI_NAMEI_DENTRY(&nd),
                                   nd.last.len);
 #endif
-#if defined(SLES10SP2) || \
-    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
-     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
-            err = vfs_mknod(MDKI_NAMEI_DENTRY(&nd)->d_inode,
+            err = MDKI_VFS_MKNOD(MDKI_NAMEI_DENTRY(&nd)->d_inode,
                             dent, MDKI_NAMEI_MNT(&nd),
                             S_IFBLK|S_IRUGO, MKDEV(mvfs_major, 0));
-#else
-            err = vfs_mknod(MDKI_NAMEI_DENTRY(&nd)->d_inode, dent,
-                            S_IFBLK|S_IRUGO, MKDEV(mvfs_major, 0));
-#endif
         }
         VNODE_DPUT(dent);
     }
@@ -2133,14 +2387,14 @@ static inline mdki_boolean_t
 vnlayer_task_matches(struct task_struct *task)
 {
     struct fs_struct *fs = task->fs;
-    mdki_boolean_t val;
+    mdki_boolean_t val = FALSE;
+    MDKI_FS_LOCK_R_VAR(seq);
 
-    if (fs == NULL)
-        return FALSE;
-
-    read_lock(&fs->lock);
-    val = DENT_IS_ROOT_ALIAS(MDKI_FS_ROOTDENTRY(fs));
-    read_unlock(&fs->lock);
+    if (fs != NULL) {
+        MDKI_FS_LOCK_R(fs, seq);
+        val = DENT_IS_ROOT_ALIAS(MDKI_FS_ROOTDENTRY(fs));
+        MDKI_FS_UNLOCK_R(fs, seq);
+    }
     return val;
 }
 #endif /* USE_ROOTALIAS_CURVIEW */
@@ -2150,14 +2404,14 @@ static inline mdki_boolean_t
 vnlayer_task_matches(struct task_struct *task)
 {
     struct fs_struct *fs = task->fs;
-    mdki_boolean_t val;
+    mdki_boolean_t val = FALSE
+    MDKI_FS_LOCK_R_VAR(seq);
 
-    if (fs == NULL)
-        return FALSE;
-
-    read_lock(&fs->lock);
-    val = MDKI_INOISMVFS(fs->root->d_inode);
-    read_unlock(&fs->lock);
+    if (fs != NULL) {
+        MDKI_FS_LOCK_R(fs, seq);
+        val = MDKI_INOISMVFS(fs->root->d_inode);
+        MDKI_FS_UNLOCK_R(fs, seq);
+    }
     return val;
 }
 #endif /* USE_CHROOT_CURVIEW */
@@ -2566,4 +2820,5 @@ mdki_linux_free_substitute_cred(
 {
     KMEM_FREE(cd, sizeof(*cd));
 }
-static const char vnode_verid_mvfs_linux_mdki_c[] = "$Id:  221ac7da.32d111e0.9ded.00:09:6b:4f:fe:99 $";
+
+static const char vnode_verid_mvfs_linux_mdki_c[] = "$Id:  2900d35d.ec6311e1.905b.00:01:84:c3:8a:52 $";

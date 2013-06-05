@@ -1,7 +1,7 @@
 #ifndef MVFS_LINUX_ONLY_H_
 #define MVFS_LINUX_ONLY_H_
 /*
- * Copyright (C) 1999, 2010 IBM Corporation.
+ * Copyright (C) 1999, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -392,9 +392,11 @@ vnlayer_get_ucdir_inode(void);
 #endif
 #define F_COUNT(x) file_count(x)
 #define F_COUNT_INC(x) get_file(x)
-#define D_COUNT(x) ((x) ? atomic_read(&(x)->d_count) : 0)
-#define D_COUNT_INC(x) atomic_inc(&(x)->d_count)
-#define D_COUNT_DEC(x) atomic_dec(&(x)->d_count)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+# define D_COUNT(x) ((x) ? *(volatile unsigned int *)&((x)->d_count) : 0)
+#else
+# define D_COUNT(x) ((x) ? atomic_read(&(x)->d_count) : 0)
+#endif /* else LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38) */
 #define I_WRITECOUNT(x) atomic_read(&(x)->i_writecount)
 #define I_WRITECOUNT_DEC(x) atomic_dec(&(x)->i_writecount)
 #define I_WRITECOUNT_INC(x) atomic_inc(&(x)->i_writecount)
@@ -468,7 +470,8 @@ extern mdki_boolean_t mvfs_panic_assert;
 
 #if defined(MVFS_DEBUG)
 
-#if defined(CONFIG_SMP) && (CONFIG_SMP != 0)
+#if defined(CONFIG_SMP) && (CONFIG_SMP != 0) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38))
 #define ASSERT_KERNEL_LOCKED()   ASSERT(kernel_locked())
 /* It's not possible to safely assert BKL not held, because another
  * CPU might hold it for another process.  (No ownership is recorded
@@ -482,7 +485,8 @@ extern mdki_boolean_t mvfs_panic_assert;
 #else /* not SMP */
 /* non-SMP kernels do not include any spinlocks, and they define
  * spin_is_locked() to always return false.  So we don't do any asserts
- * for BKL or spin-locks on non-SMP kernels.
+ * for BKL or spin-locks on non-SMP kernels. Additionally, after 2.6.38
+ * the dcache_lock and the BKL were eliminated.
  */
 #define ASSERT_KERNEL_LOCKED()
 #define ASSERT_KERNEL_UNLOCKED()
@@ -969,6 +973,78 @@ typedef struct mdki_vop_close_ctx {
 # define MDKI_FS_SET_PWDMNT(F, M)       ((F)->pwd.mnt = M)
 #endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27) */
 
+/* 
+ * MDKI_FS_LOCK_R/MDKI_FS_UNLOCK_R must be used in pairs,
+ * each LOCK must have one, and only one, corresponding UNLOCK.
+ */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,37)
+# define MDKI_FS_LOCK_R_VAR(X)
+# define MDKI_FS_LOCK_W(FS) write_lock(&(FS)->lock)
+# define MDKI_FS_UNLOCK_W(FS) write_unlock(&(FS)->lock)
+# define MDKI_FS_LOCK_R(FS, X) read_lock(&(FS)->lock)
+# define MDKI_FS_UNLOCK_R(FS, X) read_unlock(&(FS)->lock)
+#elif ! defined (MRG) /* else LINUX_VERSION_CODE < KERNEL_VERSION(2,6,37) */
+# define MDKI_FS_LOCK_R_VAR(X)
+# define MDKI_FS_LOCK_W(FS) do { \
+                                 spin_lock(&(FS)->lock); \
+                                 write_seqcount_begin(&(FS)->seq); \
+                              } while (0)
+# define MDKI_FS_UNLOCK_W(FS) do { \
+                                   write_seqcount_end(&(FS)->seq); \
+                                   spin_unlock(&(FS)->lock); \
+                              } while (0)
+# define MDKI_FS_LOCK_R(FS, X) spin_lock(&(FS)->lock)
+# define MDKI_FS_UNLOCK_R(FS, X) spin_unlock(&(FS)->lock)
+#else /* else ! defined (MRG) */
+# define MDKI_FS_LOCK_R_VAR(X) unsigned X
+# define MDKI_FS_LOCK_W(FS) seq_spin_lock(&(FS)->lock)
+# define MDKI_FS_UNLOCK_W(FS) seq_spin_unlock(&(FS)->lock)
+# define MDKI_FS_LOCK_R(FS, X) do { X = read_seqbegin(&(FS)->lock)
+# define MDKI_FS_UNLOCK_R(FS, X) } while (read_seqretry(&(FS)->lock, (X)))
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37) && defined (MRG) */
+
+/*
+ * vfs_* API change frequently so for the sake of clarity
+ * and maintainalibity the references were moved from the
+ * C files to here.
+ */
+#if (!(defined(RATL_REDHAT) && (RATL_VENDOR_VER == 500))) && \
+     (defined(SLES10SP2) || \
+     (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
+     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)))
+/* SLES10SP2, SLES11, Ubuntu 8.04 */
+# define MDKI_VFS_MKNOD(P, D, MNT, M, DEV) vfs_mknod(P, D, MNT, M, DEV)
+# define MDKI_VFS_UNLINK(RDIR, RDENT, MNT) vfs_unlink(RDIR, RDENT, MNT)
+# define MDKI_VFS_MKDIR(P, D, MNT, MODE) vfs_mkdir(P, D, MNT, MODE)
+# define MDKI_VFS_RMDIR(P, D, MNT) vfs_rmdir(P, D, MNT)
+# define MDKI_VFS_RENAME(OI, OD, OMNT, NI, ND, NMNT) vfs_rename(OI, OD, OMNT, NI, ND, NMNT)
+# define MDKI_NOTIFY_CHANGE(D, M, I) notify_change(D, M, I)
+#else
+/* SLES9, SLES10, SLES11SP1, RHEL4, RHEL5, RHEL5-MRG, RHEL6, Ubuntu 10.04 */
+# define MDKI_VFS_MKNOD(P, D, MNT, M, DEV) vfs_mknod(P, D, M, DEV)
+# define MDKI_VFS_UNLINK(RDIR, RDENT, MNT) vfs_unlink(RDIR, RDENT)
+# define MDKI_VFS_MKDIR(P, D, MNT, MODE) vfs_mkdir(P, D, MODE)
+# define MDKI_VFS_RMDIR(P, D, MNT) vfs_rmdir(P, D)
+# define MDKI_VFS_RENAME(OI, OD, OMNT, NI, ND, NMNT) vfs_rename(OI, OD, NI, ND)
+# define MDKI_NOTIFY_CHANGE(D, M, I) notify_change(D, I)
+#endif
+
+#if defined(SLES10SP2) || ((LINUX_VERSION_CODE == KERNEL_VERSION(2,6,24)) && \
+    !(defined(RATL_REDHAT) && (RATL_VENDOR_VER == 500)))
+/* SLES10SP2, Ubuntu 8.04 */
+# define MDKI_VFS_SYMLINK(P, D, MNT, NAME, MODE) vfs_symlink(P, D, MNT, NAME, MODE)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32) || \
+      LINUX_VERSION_CODE < KERNEL_VERSION(2,6,7)
+/* SLES9, SLES11SP1, RHEL6, Ubuntu 10.04 */
+# define MDKI_VFS_SYMLINK(P, D, MNT, NAME, MODE) vfs_symlink(P, D, NAME)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
+/* SLES11 */
+# define MDKI_VFS_SYMLINK(P, D, MNT, NAME, MODE) vfs_symlink(P, D, MNT, NAME)
+#else
+/* SLES10, RHEL4, RHEL5, RHEL5-MRG */
+# define MDKI_VFS_SYMLINK(P, D, MNT, NAME, MODE) vfs_symlink(P, D, NAME, MODE)
+#endif
+
 /*
  * NO_STACK_CHECKING can be turned on (before including this header
  * file) in individual source modules to delete checks from those
@@ -978,4 +1054,4 @@ typedef struct mdki_vop_close_ctx {
 #define STACK_CHECK()
 
 #endif /* MVFS_LINUX_ONLY_H_ */
-/* $Id: f83723c6.d6d511df.8121.00:01:83:0a:3b:75 $ */
+/* $Id: 0e758277.e6e311e1.8799.00:01:84:c3:8a:52 $ */

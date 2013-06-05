@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2003, 2009 IBM Corporation.
+# Copyright (C) 2003, 2011 IBM Corporation.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -39,7 +39,7 @@
 KERNEL_REV := $(shell uname -r |cut -d . -f 1-2)
 RELEASE := $(shell uname -r)
 MACH := $(shell uname -m)
-MVFS_ARCH=($shell echo $(MACH) |sed -e s:i.86:i386:)
+ARCH=$(shell echo $(MACH) |sed -e s:i.86:i386:)
 LINUX_KERNEL_DIR=/lib/modules/$(RELEASE)/build
 INSTALL_DIR=/lib/modules/$(RELEASE)/kernel/fs/mvfs
 SRCDIR=.
@@ -138,11 +138,12 @@ MVFS_OBJECTS= \
 
 MVFS_ARCH_64BIT=-DATRIA_LP64 -DRATL_COMPAT32
 MVFS_ARCH_DEF.i386=-DATRIA_LINUX_IA32
-MVFS_ARCH_DEF.s390=-DATRIA_LINUX_390
+# only 64 bits is supported
+MVFS_ARCH_DEF.s390=-DATRIA_LINUX_390 $(MVFS_ARCH_64BIT)
 MVFS_ARCH_DEF.ppc64=-DATRIA_LINUX_PPC $(MVFS_ARCH_64BIT)
-MVFS_ARCH_DEF.s390x=$(MVFS_ARCH_DEF.s390) $(MVFS_ARCH_64BIT)
-MVFS_ARCH_DEF.x86_64=$(MVFS_ARCH_DEF.ia32) $(MVFS_ARCH_64BIT)
-MVFS_ARCH_DEF=$(MVFS_ARCH_DEF.$(MVFS_ARCH))
+MVFS_ARCH_DEF.s390x=$(MVFS_ARCH_DEF.s390)
+MVFS_ARCH_DEF.x86_64=$(MVFS_ARCH_DEF.i386) $(MVFS_ARCH_64BIT)
+MVFS_ARCH_DEF=$(MVFS_ARCH_DEF.$(ARCH))
 
 MVFS_DEFS= \
 	-DATRIA_ANSI_C \
@@ -169,6 +170,22 @@ endif
 all: mvfs_param.mk.config
 	$(MAKE) -C $(LINUX_KERNEL_DIR) SUBDIRS=`pwd`
 
+# try to build a reasonable RATL_EXTRAFLAGS if it is set to empty (but not undefined)
+ifeq (,$(if $(findstring undefined,$(origin RATL_EXTRAFLAGS)),undefined,$(RATL_EXTRAFLAGS)))
+# but only for x86
+ifneq (,$(if $(findstring x86_64,$(ARCH)),x86_64,$(findstring i386,$(ARCH))))
+# and only for RH with kernel 2.6.33
+__KBASE=$(shell uname -r | grep -o '2\.6\.33')
+__DIST_R=$(shell if [ -f /etc/redhat-release ] ; then sed -ne 's/^Red Hat.*release \([56]\).*/\1/p' /etc/redhat-release ; fi)
+ifneq (,$(if $(__KBASE),$(__DIST_R)))
+RATL_EXTRAFLAGS:=-DRATL_REDHAT -DRATL_VENDOR_VER=$(__DIST_R)00 -DRATL_EXTRA_VER=0
+ifeq ($(ARCH),x86_64)
+RATL_EXTRAFLAGS+=-DRATL_COMPAT32
+endif
+endif
+endif
+endif
+
 # If your system is running RHEL4 and has had certain errata installed to
 # fix problems with flock on NFS, uncomment the following line.
 #RATL_EXTRAFLAGS += -DMVFS_REMOVE_FLOCK_DEFENSIVE_CODE
@@ -186,9 +203,9 @@ endif
 # and prevent our -Werror option from generating an error.  The fno-tree-ter
 # option is used to deactivate the temporary expression replacement to keep
 # the frame size under limit.
-ifneq (,$(if $(findstring linux_390,$(CC)),linux_390,$(findstring s390x,$(MACH))))
-SLES11_390:=$(CC) $(RATL_EXTRAFLAGS)
-ifneq (,$(if $(findstring RATL_VENDOR_VER=1100,$(SLES11_390)),$(findstring RATL_SUSE,$(SLES11_390))))
+ifneq (,$(findstring s390,$(ARCH)))
+__SLES11_390:=$(CC) $(RATL_EXTRAFLAGS)
+ifneq (,$(if $(findstring RATL_SUSE,$(__SLES11_390)),$(findstring RATL_VENDOR_VER=11,$(__SLES11_390))))
 RATL_EXTRAFLAGS += -mwarn-framesize=257 -fno-tree-ter
 endif
 endif
@@ -233,4 +250,4 @@ clean: cleano
 
 cleano:
 	-rm -rf *.o *.kobj *.obj *.ko *.mod.? .*.cmd .tmp_versions
-# $Id: 905be985.b45711de.8ddb.00:01:83:29:c0:fc $ 
+# $Id: ca8c608c.c8da11e0.89b9.00:01:83:0a:3b:75 $ 

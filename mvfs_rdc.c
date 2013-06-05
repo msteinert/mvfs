@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 2001, 2009. */
+/* * (C) Copyright IBM Corporation 2001, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -133,26 +133,35 @@ mvfs_rddir_cache_get(
 {
     register int i;
     struct mvfs_rce *ep;
+    mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
     int size;
 
     ASSERT(MFS_ISVOB(mnp));
     ASSERT(MISLOCKED(mnp));
 
+    if (!mcdp->mvfs_rdcenabled) {
+        return FALSE;
+    }
+
     if (mnp->mn_vob.rddir_cache != NULL)
     {
-	for (i = 0, ep = &mnp->mn_vob.rddir_cache->entries[0];
-	     i < mnp->mn_vob.rddir_cache->nentries;
-	     i++, ep++)
-	{
-	    /* if valid, at the right offset, and small enough, use it */
-	    if (ep->valid &&
-		MVFS_UIO_OFFSET(uiop) == ep->offset &&
-		uiop->uio_resid >= ep->size)
-	    {
-		MDB_XLOG((MDB_MNOPS,
-			  "rddir cache hit mnp %"MVFS_FMT_UIO_OFFSET_X" off %"MVFS_FMT_MOFFSET_T_X" size %lx\n", mnp,
-			  MVFS_UIO_OFFSET(uiop), ep->size));
-		if (ep->size) {
+        for (i = 0, ep = &mnp->mn_vob.rddir_cache->entries[0];
+             i < mnp->mn_vob.rddir_cache->nentries;
+             i++, ep++)
+        {
+            /* if valid, at the right offset, and small enough, use it */
+            if (ep->valid &&
+                MVFS_UIO_OFFSET(uiop) == ep->offset &&
+                uiop->uio_resid >= ep->size)
+            {
+                MDB_XLOG((MDB_MNOPS,
+                          "rddir cache hit mnp %"MVFS_FMT_UIO_OFFSET_X
+                          " off %"MVFS_FMT_MOFFSET_T_X" size %lx\n",
+                          mnp,
+                          MVFS_UIO_OFFSET(uiop),
+                          ep->size));
+
+                if (ep->size) {
                     /* We put the size on the stack instead of using it
                      * directly because the linux readdir_uiomove will 0
                      * the size value passed in on a buffer overflow so
@@ -162,27 +171,38 @@ mvfs_rddir_cache_get(
                     size = ep->size;
                     *errorp = READDIR_UIOMOVE(ep->block, &size,
                                               UIO_READ, uiop, ep->offset);
-                    if (!READDIR_BUF_FULL(uiop))
+                    if (!READDIR_BUF_FULL(uiop)) {
                         /* Should we advance offset if there was
                          * an error?  The previous code did this
                          * unconditionally (before addition of
                          * READDIR_BUF_FULL() macro).
                          */
                         MVFS_UIO_OFFSET(uiop) = ep->endoffset;
-		} else
-		    *errorp = 0;
-		if (eofp != NULL)
-		    *eofp = ep->eof;
-		BUMPSTAT(mfs_acstat.ac_rddirhit);
-		return TRUE;
-	    }
-	}
+                    }
+                } else {
+                    *errorp = 0;
+                }
+
+                if (eofp != NULL) {
+                    *eofp = ep->eof;
+                }
+
+                BUMPSTAT(mfs_acstat.ac_rddirhit);
+                 return TRUE;
+          }
+        }
     } else {
-	MDB_XLOG((MDB_MNOPS, "rddir cache get (empty) mnp %lx\n", mnp));
+        MDB_XLOG((MDB_MNOPS, "rddir cache get (empty) mnp %lx\n", mnp));
     }
+
     BUMPSTAT(mfs_acstat.ac_rddirmiss);
-    MDB_XLOG((MDB_MNOPS, "rddir cache miss mnp %lx off %"MVFS_FMT_UIO_OFFSET_X" size %"MVFS_FMT_UIO_RESID_X"\n", mnp,
-	      MVFS_UIO_OFFSET(uiop), uiop->uio_resid));
+    MDB_XLOG((MDB_MNOPS,
+              "rddir cache miss mnp %lx off %"MVFS_FMT_UIO_OFFSET_X
+              " size %"MVFS_FMT_UIO_RESID_X"\n",
+              mnp,
+              MVFS_UIO_OFFSET(uiop),
+              uiop->uio_resid));
+
     return FALSE;
 }
 
@@ -192,57 +212,89 @@ mvfs_rddir_cache_enter(
     struct mvfs_rce *entryp
 )
 {
+    MLOCK(mnp);
+    mvfs_rddir_cache_enter_mnlocked(mnp, entryp);
+    MUNLOCK(mnp);
+}
+
+void
+mvfs_rddir_cache_enter_mnlocked(
+    struct mfs_mnode *mnp,
+    struct mvfs_rce *entryp
+)
+{
     register int i;
     register struct mvfs_rce *ep;
     register mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
 
     ASSERT(MFS_ISVOB(mnp));
-    MLOCK(mnp);
+    ASSERT(MISLOCKED(mnp));
+
+    if (!mcdp->mvfs_rdcenabled) {
+        return;
+    }
 
     if (mnp->mn_vob.rddir_cache == NULL) {
-	mnp->mn_vob.rddir_cache = (struct mvfs_rddir_cache *)
-	    KMEM_ALLOC(RDDIR_CACHE_SIZE_N(mcdp->mvfs_rddir_blocks),
-		       KM_SLEEP|KM_PAGED);
-	mnp->mn_vob.rddir_cache->nentries = mcdp->mvfs_rddir_blocks;
-	for (i = 0, ep = &mnp->mn_vob.rddir_cache->entries[0];
-	     i < mnp->mn_vob.rddir_cache->nentries;
-	     i++, ep++)
-	{
-	    ep->valid = FALSE;
-	    ep->block = NULL;
-	}
-    }
-    if (entryp->offset == (MOFFSET_T)0) {
-	/* always use first entry for offset 0 (try to keep it around
-	   since it probably has `.' and `..') */
-	ep = &mnp->mn_vob.rddir_cache->entries[0];
-    } else {
-	/* If cache has an unused slot, use it.
-	 *
-	 * If it's full, replace the last entry.  readdir() is almost
-	 * always used sequentially and traverses the entire
-	 * directory, so if it won't all fit, leave at least the first
-	 * portion in cache with the hope that it will find `..'  in a
-	 * cached block (for pwd)
-	 */
-	for (i = 1, ep = &mnp->mn_vob.rddir_cache->entries[0];
-	     i < mnp->mn_vob.rddir_cache->nentries;
-	     i++, ep++)
-	{
-	    if (!ep[1].valid) {
-		ep++;
-		break;
-	    }
-	}
+        mnp->mn_vob.rddir_cache =
+         (struct mvfs_rddir_cache *)KMEM_ALLOC(
+           RDDIR_CACHE_SIZE_N(mcdp->mvfs_rddir_blocks),
+           KM_SLEEP|KM_PAGED);
+
+        if (mnp->mn_vob.rddir_cache == NULL) {
+            MDB_XLOG((MDB_MNOPS,
+                      "mvfs_rddir_cache_enter: Failed to allocate memory for "
+                      "rddir cache, not caching dirents for mnp = "
+                      "%"KS_FMT_PTR_T"\n",
+                      mnp));
+            return;
+        }
+
+        mnp->mn_vob.rddir_cache->nentries = mcdp->mvfs_rddir_blocks;
+
+        for (i = 0, ep = &mnp->mn_vob.rddir_cache->entries[0];
+             i < mnp->mn_vob.rddir_cache->nentries;
+             i++, ep++)
+        {
+            ep->valid = FALSE;
+            ep->block = NULL;
+        }
     }
 
-    if (ep->valid && ep->block != NULL)
-	KMEM_FREE(ep->block, ep->bsize);
+    if (entryp->offset == (MOFFSET_T)0) {
+        /* always use first entry for offset 0 (try to keep it around
+         * since it probably has `.' and `..')
+         */
+        ep = &mnp->mn_vob.rddir_cache->entries[0];
+    } else {
+        /* If cache has an unused slot, use it.
+         *
+         * If it's full, replace the last entry.  readdir() is almost
+         * always used sequentially and traverses the entire
+         * directory, so if it won't all fit, leave at least the first
+         * portion in cache with the hope that it will find `..'  in a
+         * cached block (for pwd)
+         */
+        for (i = 1, ep = &mnp->mn_vob.rddir_cache->entries[0];
+             i < mnp->mn_vob.rddir_cache->nentries;
+             i++, ep++)
+        {
+            if (!ep[1].valid) {
+                ep++;
+                break;
+            }
+        }
+    }
+
+    if (ep->valid && ep->block != NULL) {
+        KMEM_FREE(ep->block, ep->bsize);
+    }
 
     *ep = *entryp;
-    MUNLOCK(mnp);
-    MDB_XLOG((MDB_MNOPS, "rddir cache enter mnp %lx off %lx size %lx\n", mnp,
-	      ep->offset, ep->size));
+    MDB_XLOG((MDB_MNOPS,
+              "rddir cache enter mnp %lx off %lx size %lx\n",
+              mnp,
+              ep->offset,
+              ep->size));
 }
 
 int
@@ -306,4 +358,4 @@ mvfs_rddir_compute_caches(
     }
     return 0;
 }
-static const char vnode_verid_mvfs_rdc_c[] = "$Id:  922924ad.b44911de.8ddb.00:01:83:29:c0:fc $";
+static const char vnode_verid_mvfs_rdc_c[] = "$Id:  7172f05e.d67011e1.9c09.00:01:84:c3:8a:52 $";

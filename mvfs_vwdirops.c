@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2010. */
+/* * (C) Copyright IBM Corporation 1991, 2011. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -311,13 +311,14 @@ mvfs_ramdir_insert(
  */
     
 int
-mfs_viewdirmkdir(dvp, nm, vap, vpp, cred, hostnm)
+mfs_viewdirmkdir(dvp, nm, vap, vpp, cred, hostnm, is_windows_view)
 VNODE_T *dvp;
 char *nm;
 VATTR_T *vap;	/* May be NULL from mfs_viewdirhmview() */
 VNODE_T **vpp;
 CRED_T *cred;
 char *hostnm;
+tbs_boolean_t is_windows_view;
 {
     mfs_mnode_t *mnp;
     int error;
@@ -352,6 +353,9 @@ char *hostnm;
          * try to release this vp but since hostname (viewserver) details
          * not filled yet, causes BSOD
          */
+
+        /* mark whether windows view or not */
+        mnp->mn_view.windows_view = is_windows_view ? 1 : 0; 
         mnp->mn_view.svr.host = PN_STRDUP(hostnm);  /* Host name copy */
         mnp->mn_view.viewname = PN_STRDUP(nm);      /* View tag name copy */
         mnp->mn_view.usedtime = MDKI_CTIME();
@@ -1016,7 +1020,7 @@ CRED_T *cred;
      */
 
     MUNLOCK(viewrootmnp);	/* Unlock for mkdir */
-    error = mfs_viewdirmkdir(vdir, hmnm, NULL, &hmvw, cred, vwmnp->mn_view.svr.host);
+    error = mfs_viewdirmkdir(vdir, hmnm, NULL, &hmvw, cred, vwmnp->mn_view.svr.host, vwmnp->mn_view.windows_view);
     VN_RELE(vdir);	/* Done with view root dir */
     STRFREE(hmnm);	/* Done with history mode name */
     if (error) return(error);
@@ -1028,6 +1032,7 @@ CRED_T *cred;
 
 update_hmview:
     hmmnp = VTOM(hmvw);		/* Now work on new history mode view */
+
     /*
      * lock both regular and new hm view nodes, so we can copy safely
      * (some items can be updated, e.g. svr.addr)
@@ -1049,14 +1054,13 @@ update_hmview:
     if (hmmnp->mn_view.svr.rpn) STRFREE(hmmnp->mn_view.svr.rpn);
     hmmnp->mn_view.svr.rpn = STRDUP(vwmnp->mn_view.svr.rpn);
     hmmnp->mn_view.svr.uuid = vwmnp->mn_view.svr.uuid;
-    hmmnp->mn_view.windows_view = vwmnp->mn_view.windows_view;
     /* Now that we have complete information about the hmview, update
      * the credentials to UNIX or NT depending upon view type (based
      * on view info we just set up above).
      */
-    MVFS_COPY_UID_TO_VIEW(hmmnp, MVFS_VIEW_CREDS(hmvw, cred), &error);
+    MVFS_COPY_UID_TO_VIEW(hmmnp, MVFS_VIEW_CREDS(hmvw, cred, TRUE), &error);
     if (error == 0) {
-        MVFS_COPY_GID_TO_VIEW(hmmnp, MVFS_VIEW_CREDS(hmvw, cred), &error);
+        MVFS_COPY_GID_TO_VIEW(hmmnp, MVFS_VIEW_CREDS(hmvw, cred, TRUE), &error);
         if (error != 0)
             mvfs_log(MFS_LOG_DEBUG, "hmview: error %d updating GID in vw=%s\n",
                                   error, mfs_vw2nm(hmvw));
@@ -1067,7 +1071,6 @@ update_hmview:
 
     MUNLOCK(vwmnp);
     MUNLOCK(hmmnp);
-
     if (error != 0) {
        VN_RELE(hmvw);
        *vpp = NULL;
@@ -1414,4 +1417,4 @@ mvfs_viewuuidrecover(
     VN_RELE(dvp);
     return error;
 }
-static const char vnode_verid_mvfs_vwdirops_c[] = "$Id:  14c3a167.a23a11df.8bc7.00:01:84:7a:f2:e4 $";
+static const char vnode_verid_mvfs_vwdirops_c[] = "$Id:  c0e0e8d4.737211e1.90e6.00:01:83:0a:3b:75 $";

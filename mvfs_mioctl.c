@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2010. */
+/* * (C) Copyright IBM Corporation 1991, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -550,7 +550,7 @@ mvfs_ioctl_lookup(
      * These calls work even without a view on the vob root. 
      */
     if (MFS_VPISMFS(vp) && MFS_ISVOBRT(VTOM(vp)) && bindroot) {
-        xvp = mfs_bindroot(vp, MVFS_VIEW_CREDS(vp, cd), &error);
+        xvp = mfs_bindroot(vp, MVFS_VIEW_CREDS(vp, cd, FALSE), &error);
 
 	/* The looked up vnode is no longer needed.
 	   If bindroot failed, then we need to release the
@@ -589,7 +589,7 @@ out:
      */
 
     if (MFS_VPISMFS(vp) && MFS_ISVOB(VTOM(vp))) {
-	mfs_rebind_vpp(1, &vp, MVFS_VIEW_CREDS(vp, cd));
+	mfs_rebind_vpp(1, &vp, MVFS_VIEW_CREDS(vp, cd, FALSE));
         ASSERT(MFS_VPISMFS(vp));
     }
     if (vp != NULL) {
@@ -734,7 +734,7 @@ mvfs_do_inval(
 	if (error) break;
 	error = mfs_clnt_inval(vp,VIEW_INVALIDATE_TYPE_NAME,
 			       replica_oid_p, &invp->obj_oid, inv_nm,
-			       MVFS_VIEW_CREDS(vp, cd));
+			       MVFS_VIEW_CREDS(vp, cd, FALSE));
 	mnum = 0;
         vfsp = NULL;
         safe = FALSE;
@@ -744,11 +744,11 @@ mvfs_do_inval(
 	    if ((error = MVFS_VNGET(mnp->mn_hdr.vfsp, NULL, mnp, &xvp)) != 0) {
 		continue;
 	    }
+
 	    MLOCK(VTOM(xvp));
 	    MFS_ATTRINVAL(xvp);  /* Before DNLC so that rddir cache does not lag */
             /* remove name */
-	    safe = (mfs_dncremove(xvp, inv_nm,
-                                  MVFS_VIEW_CREDS(xvp, MVFS_CD2CRED(cd))) != 0);
+	    safe = (mfs_dncremove(xvp, inv_nm, MVFS_VIEW_CREDS(xvp, MVFS_CD2CRED(cd), TRUE)) != 0);
             /*
              * If we were able to find the entry in the DNC, then
              * the RVC was purged if appropriate and safe == TRUE.
@@ -791,7 +791,7 @@ mvfs_do_inval(
     case MVFS_INV_ELEM:
 	error = mfs_clnt_inval(vp, VIEW_INVALIDATE_TYPE_OBJ,
 			       replica_oid_p, &invp->obj_oid, NULL,
-			       MVFS_VIEW_CREDS(vp, cd));
+			       MVFS_VIEW_CREDS(vp, cd, FALSE));
 	mnum = 0;
         safe = FALSE;
 	while ((mnp = mfs_mngetnextoid(&mnum, vp, 
@@ -870,7 +870,7 @@ mvfs_do_inval(
     case MVFS_INV_VIEW:
 	error = mfs_clnt_inval(vp, VIEW_INVALIDATE_TYPE_VIEW,
 			       &TBS_OID_NULL, &TBS_OID_NULL, NULL,
-			       MVFS_VIEW_CREDS(vp, cd));
+			       MVFS_VIEW_CREDS(vp, cd, FALSE));
 	/* What about active vnodes?  HACK: Just do cdir! */
 	if (MFS_VPISMFS(cdir) && MFS_ISVOB(VTOM(cdir))) {
 	    MFS_ATTRINVAL(cdir);  /* Before DNLC so that rddir cache does not lag */
@@ -884,7 +884,7 @@ mvfs_do_inval(
     case MVFS_INV_VFS:
 	error = mfs_clnt_inval(vp, VIEW_INVALIDATE_TYPE_VOB,
 			       replica_oid_p, &TBS_OID_NULL, NULL,
-			       MVFS_VIEW_CREDS(vp, cd));
+			       MVFS_VIEW_CREDS(vp, cd, FALSE));
 	/* HACK: invalidate attrs on u_cdir if mfs */
 	if (MFS_VPISMFS(cdir) && MFS_ISVOB(VTOM(cdir))) {
 	    MFS_ATTRINVAL(cdir);  /* Before DNLC so that rddir cache does not lag */
@@ -1039,7 +1039,7 @@ mvfs_mioctl(
 
 	    error = mfs_clnt_change_mtype(vp, change_mtype.mtype,
                                      &data->status,  
-                                     MVFS_VIEW_CREDS(vp, cd));
+                                     MVFS_VIEW_CREDS(vp, cd, FALSE));
 	    break;
 	}
 
@@ -1100,6 +1100,7 @@ mvfs_mioctl(
 	    if (mcdp->mvfs_dncnoentenabled) *ulp |= MVFS_CE_NOENT;
 	    if (mcdp->mvfs_rvcenabled) *ulp |= MVFS_CE_RVC;
 	    if (mcdp->mvfs_rlenabled) *ulp |= MVFS_CE_SLINK;
+            if (mcdp->mvfs_rdcenabled) *ulp |= MVFS_CE_RDC;
 	    if (mcdp->mvfs_ctoenabled) *ulp |= MVFS_CE_CTO;
 	    if (mcdp->mvfs_rebind_dir_enable) *ulp |= MVFS_CE_CWDREBIND;
 	    error = CopyOutMvfs_u_long(ulp, data->infop,callinfo);
@@ -1122,6 +1123,7 @@ mvfs_mioctl(
 	    mcdp->mvfs_dncnoentenabled = (*ulp & MVFS_CE_NOENT) ? 1 : 0;
 	    mcdp->mvfs_rvcenabled = (*ulp & MVFS_CE_RVC) ? 1 : 0;
 	    mcdp->mvfs_rlenabled = (*ulp & MVFS_CE_SLINK) ? 1 : 0;
+            mcdp->mvfs_rdcenabled = (*ulp & MVFS_CE_RDC) ? 1 : 0;
 	    mcdp->mvfs_ctoenabled = (*ulp & MVFS_CE_CTO) ? 1 : 0;
 	    mcdp->mvfs_rebind_dir_enable = (*ulp & MVFS_CE_CWDREBIND) ? 1 : 0;
 	    break;
@@ -1398,7 +1400,7 @@ mvfs_setprocview(
     if ((error = CopyInMvfs_viewtag_info(data->infop, 
                  &viewtag_info, callinfo)) != 0)
     {
-        return(error);
+        goto out;
     }
 
     strbuf = &viewtag_info.viewtag;
@@ -1418,7 +1420,8 @@ mvfs_setprocview(
         PN_STRFREE(tagn);		/* Done with tagname */
         if (error) { 
             data->status = tbs_errno2status(error);
-	    return(0);
+            error = 0;
+            goto out;
         }
     } else {
 	vw = NULL;		/* Unset current view */
@@ -1432,6 +1435,9 @@ mvfs_setprocview(
 
     if (error == 0)
         error = MVFS_SET_PROCVIEW(vw, &data->status);
+
+out:
+
     return(error);
 }
 
@@ -1561,10 +1567,10 @@ mvfs_xstat(
      *     kludging size, devs etc. for the external world.
      */
     if (MFS_VPISMFS(vp))
-        error = mfs_getattr(vp, vap, 0, MVFS_VIEW_CREDS(vp, cd));
+        error = mfs_getattr(vp, vap, 0, MVFS_VIEW_CREDS(vp, cd, FALSE));
     else
         error = MVOP_GETATTR(vp, cvp, vap, 0,
-                             MVFS_VIEW_CREDS(vp, MVFS_CD2CRED(cd)));
+                             MVFS_VIEW_CREDS(vp, MVFS_CD2CRED(cd), FALSE));
     if (error) {
         MVFS_FREE_VATTR_FIELDS(vap);
         MVFS_VATTR_FREE(vap);
@@ -1576,6 +1582,7 @@ mvfs_xstat(
      * Now, create initial vstatp for copyout.
      * Create this from the VATTR_T record,
      * and add in any oids as needed.
+     * CCM28830: size is now ks_off64_t, we should no longer cast to u_long
      */
 
     BZERO(vstatp, sizeof(*vstatp));
@@ -1593,7 +1600,7 @@ mvfs_xstat(
     vstatp->fstat.nlink = VATTR_GET_NLINK(vap);
     MVFS_VATTR_TO_FSTAT_DB_UID(vap, &vstatp->fstat.usid); 
     MVFS_VATTR_TO_FSTAT_DB_GID(vap, &vstatp->fstat.gsid); 
-    vstatp->fstat.size = (u_long) VATTR_GET_SIZE(vap);
+    vstatp->fstat.size = VATTR_GET_SIZE(vap);
     vstatp->fstat.nodeid = VATTR_GET_NODEID(vap);
     VATTR_GET_ATIME_TV(vap, &vstatp->fstat.atime);
     VATTR_GET_MTIME_TV(vap, &vstatp->fstat.mtime);
@@ -1690,8 +1697,7 @@ mvfs_get_clrname(VNODE_T *vp,
         if (MVFS_ISVTYPE(vp, VREG) && 
             mnp->mn_vob.cleartext.nm == NULL) 
         {
-            error = mfs_getcleartext(vp, NULL,  
-                                     MVFS_VIEW_CREDS(vp, cd));
+            error = mfs_getcleartext(vp, NULL, MVFS_VIEW_CREDS(vp, cd, TRUE));
         } else {
             /* No cleartext expected, or already have it. */
             error = 0;
@@ -1766,19 +1772,18 @@ mvfs_ioinval(
     tbs_boolean_t unique;
     int indx, first;
 
-    if (!MFS_ISVIEW(VTOM(vp))) {       /* Pname must be a view */
+    if (!MFS_VPISMFS(vp)) {
         return(EINVAL);
     }
 
-    if ((error = CopyInMvfs_ioinval(data->infop, &ioinval, callinfo)) == 0)
-    {
+    mnp = VTOM(vp);
 
-        /*
-         * (int) cast is necessary for some broken compilers
-         * which generate incorrect comparisons otherwise.
-         */
-        if (ioinval.utype == (int) MVFS_IOINVAL_VOB_OID) 
-        {   
+    if ((error = CopyInMvfs_ioinval(data->infop, &ioinval, callinfo)) == 0) {
+        switch (ioinval.utype) {
+          case MVFS_IOINVAL_VOB_OID:
+            if (!MFS_ISVIEW(mnp)) {
+                return(EINVAL);
+            }
             /*
              * Locate vob uuid 
              * We may have multiple replicas of the same VOB
@@ -1809,15 +1814,39 @@ mvfs_ioinval(
                 if (error)
                     break;
             } while (vobvfs != NULL);
-        }
-        else /* just invalidate on requested replica */
+            break;
+          case MVFS_IOINVAL_REPLICA_UUID:
+            if (!MFS_ISVIEW(mnp)) {
+                return(EINVAL);
+            }
             error = mvfs_do_inval((tbs_oid_t *)
                                   &ioinval.un.replica_uuid,
             		          &ioinval, cdir, vp, cd);
+            break;
+          case MVFS_IOINVAL_ATTRCACHE_PN:
+            /* In this case, vp is the vnode corresponding to the path which
+             * we need to invalidate the attributes for.  Note, that no locks
+             * are needed here since MFS_ATTRINVAL only involves a one word
+             * write.
+             */
+            if (MFS_ISVOB(mnp)) {
+                MFS_ATTRINVAL(vp);
+            } else {
+                error = EINVAL;
+            }
+            break;
+          default:
+            error = EINVAL;
+            mvfs_log(MFS_LOG_ERR,
+                     "mvfs_mioctl MVFS_CMD_IOINVAL: Unknown invalidation "
+                     "target (%u)\n",
+                     ioinval.utype);
+            break;
+        }
     }
+
     return(error);
 }
-
 /* 
  * UNIX version of mkviewtag 
  */
@@ -1985,7 +2014,7 @@ mvfs_mkviewtag(
             data->status = TBS_ST_MFS_ERR;
             error = 0;
             /* Make the view-tag */
-        } else if ((error = mfs_viewdirmkdir(dvp, tagn, NULL, &vw, cred, host)) != 0) {
+        } else if ((error = mfs_viewdirmkdir(dvp, tagn, NULL, &vw, cred, host, FALSE)) != 0) {
             data->status = tbs_errno2status(error);
             error = 0;
         } else {
@@ -2302,7 +2331,7 @@ mvfs_set_xattr(
                     error = mfs_clnt_change_mtype(vp, 
 				    (vob_mtype_t)io_xattr.xvalue
                                     , &data->status, 
-				    MVFS_VIEW_CREDS(vp, cd));
+				    MVFS_VIEW_CREDS(vp, cd, FALSE));
 		    break;
 	        case MVFS_IO_XATTR_XMODE:
 		    if (io_xattr.xvalue != TBS_FMODE_AUDITED_OBJ)
@@ -2315,7 +2344,7 @@ mvfs_set_xattr(
 		    error = mvfs_clnt_setattr_locked(vp,
 				    NULL, io_xattr.xvalue,
 				    MFS_USE_PROCBH, 0,  
-				    MVFS_VIEW_CREDS(vp, cd), 0);
+				    MVFS_VIEW_CREDS(vp, cd, FALSE), 0);
 		    MUNLOCK(mnp);
 		    break;
 	    case MVFS_IO_XATTR_NTFILEATTRS:
@@ -3484,4 +3513,4 @@ mvfs_pview_stat_zero(struct mvfs_pvstat *pvp)
         pvp->acstat.version = MFS_ACSTAT_VERS;
         pvp->dncstat.version = MFS_DNCSTAT_VERS;
 }
-static const char vnode_verid_mvfs_mioctl_c[] = "$Id:  66dbe673.dc5411df.9210.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_mioctl_c[] = "$Id:  6372ed5e.d67011e1.9c09.00:01:84:c3:8a:52 $";

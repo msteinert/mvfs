@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003, 2010 IBM Corporation.
+ * Copyright (C) 2003, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,7 +24,11 @@
 #include <linux/version.h>
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18)
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+#include <generated/autoconf.h>
+#else
 #include <linux/autoconf.h>
+#endif
 #else
 #include <linux/config.h>
 #if CONFIG_MODVERSIONS == 1
@@ -42,7 +46,10 @@
 #include <linux/sched.h>
 #include <linux/file.h>
 #include <linux/poll.h>
+/* smp_lock.h removed on 2.6.37 */
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,36)
 #include <linux/smp_lock.h>
+#endif
 #include <linux/ctype.h>        /* For isdigit and toupper. */
 #include <asm/bitops.h>
 #include <asm/page.h>
@@ -75,4 +82,4 @@
 #include "mvfs_mdki.h"
 #include "mvfs_vnode.h"
 #include "mvfs_linux_only.h"
-/* $Id: f967243e.d6d511df.8121.00:01:83:0a:3b:75 $ */
+/* $Id: 10db5233.a4e111e1.89d5.00:01:84:c3:8a:52 $ */

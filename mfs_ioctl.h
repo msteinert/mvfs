@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2010. */
+/* * (C) Copyright IBM Corporation 1991, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -480,30 +480,36 @@ typedef struct mvfs_iovfh mvfs_iovfh_t;
  */
 
 /*
- * Cache invalidation ioctl.  These perform specific
- * cache invalidates.  Note that symlinks are always chased. 
- *
+ * Cache invalidation ioctl. These perform specific
+ * cache invalidates. Note that symlinks are always chased.
  */
-struct  mvfs_ioinval {
-	int		utype;		/* VOB oid/replica uuid */
-	UNIONIS(utype) union		{
-	    CASEIS(MVFS_IOINVAL_VOB_OID) tbs_oid_t vob_oid; /* VOB oid */
-	    CASEIS(MVFS_IOINVAL_REPLICA_UUID) tbs_uuid_t replica_uuid; /* replica uuid */
-	} un;
-	u_long		invaltype;	/* Invalidate type */
-	tbs_oid_t	obj_oid;	/* Object or element oid */
-	OPTIONAL mfs_strbufpn_t	nm;		/* Name for name cache invalidate */
+struct mvfs_ioinval {
+    int utype; /* Invalidation type (VOB, replica, or attrcache) */
+    UNIONIS(utype) union {
+        CASEIS(MVFS_IOINVAL_VOB_OID) tbs_oid_t vob_oid;
+        CASEIS(MVFS_IOINVAL_REPLICA_UUID) tbs_uuid_t replica_uuid;
+    } un;
+    u_long  invaltype; /* Invalidation sub-type (nc, obj, view, vfs, elem) */
+    tbs_oid_t obj_oid; /* Object or element oid */
+    OPTIONAL mfs_strbufpn_t nm; /* Name for name cache invalidation */
 };
 typedef struct mvfs_ioinval mvfs_ioinval_t;
 
-#define MVFS_INV_NC	1	/* Invalidate name cache entry */
-#define MVFS_INV_OBJ	2	/* Invalidate cache info for obj */
-#define MVFS_INV_VIEW	3	/* Invalidate cache info for view */
-#define MVFS_INV_VFS	4	/* Invalidate cache info for vfs */
-#define MVFS_INV_ELEM   5       /* Invalidate cache info during "rmelem" and "unco" cmds */
+#define MVFS_INV_NC 1 /* Invalidate name cache entry */
+#define MVFS_INV_OBJ 2 /* Invalidate cache info for obj */
+#define MVFS_INV_VIEW 3 /* Invalidate cache info for view */
+#define MVFS_INV_VFS 4 /* Invalidate cache info for vfs */
+#define MVFS_INV_ELEM 5 /* Invalidate cache info for "rmelem" and "unco" */
 
 #define MVFS_IOINVAL_VOB_OID 1
 #define MVFS_IOINVAL_REPLICA_UUID 2
+/* Invalidate an attribute cache entry.  NOTE: This invalidation is only
+ * performed via pathname, the values of invaltype and obj_oid are ignored.
+ * Invalidating the entry for an object in the attribute cache will also
+ * have the effect of invalidating the corresponding entry in the rddir
+ * cache.
+ */
+#define MVFS_IOINVAL_ATTRCACHE_PN 3
 
 #define MVFS_CMD_IOINVAL 5
 /*
@@ -511,8 +517,7 @@ typedef struct mvfs_ioinval mvfs_ioinval_t;
  *     int rc;
  *
  *     MVFS_CMD(mh, rc, status, MVFS_CMD_IOINVAL,
- *		0,
- *		pairp, ioinval_infop, sizeof(*ioinval_infop));
+ *              0, pairp, ioinval_infop, sizeof(*ioinval_infop));
  *     if (rc != 0) {
  *         <error handling>
  *     }
@@ -888,28 +893,28 @@ typedef struct mvfs_iochange_mtype mvfs_iochange_mtype_t;
 /*
  * Constants for get/set cache enable mask word.
  *   If a bit is on, that cache is enabled for the system, but may
- *	be disabled by a mount option.
+ *      be disabled by a mount option.
  *   If a bit is off, that cache is disabled for the system.  This
- *	overrides any mount options.
+ *      overrides any mount options.
  *
  *   The default for the system is all caches enabled.
  */
-#define MVFS_CE_ATTR	0x00000001	/* Enable attribute caching */
-#define MVFS_CE_NAME	0x00000002	/* Enable name caching */
-#define MVFS_CE_NOENT	0x00000004	/* Enable "not found" name caching */
-#define MVFS_CE_RVC	0x00000008	/* Enable "root version cache" */
-#define MVFS_CE_SLINK	0x00000010	/* Enable symlink text caching */
-#define MVFS_CE_CTO	0x00000020	/* Enable "close to open" consistency */
-#define MVFS_CE_CWDREBIND 0x0000040	/* Enable "cwd rebinding" */
+#define MVFS_CE_ATTR      0x00000001 /* Enable attribute caching */
+#define MVFS_CE_NAME      0x00000002 /* Enable name caching */
+#define MVFS_CE_NOENT     0x00000004 /* Enable "not found" name caching */
+#define MVFS_CE_RVC       0x00000008 /* Enable "root version cache" */
+#define MVFS_CE_SLINK     0x00000010 /* Enable symlink text caching */
+#define MVFS_CE_CTO       0x00000020 /* Enable "close to open" consistency */
+#define MVFS_CE_CWDREBIND 0x00000040 /* Enable "cwd rebinding" */
+#define MVFS_CE_RDC       0x00000080 /* Enable rddir caching (dirents) */
 
 #define MVFS_CMD_GET_CACHE_ENB 21
 /*
  * {
  *     int rc;
  *
- *     MVFS_CMD(mh, rc, status, MVFS_CMD_GET_CACHE_ENB,
- *		0,
- *		&MFS_NULL_STRBUFPN_PAIR, cache_maskp, sizeof(*cache_maskp));
+ *     MVFS_CMD(mh, rc, status, MVFS_CMD_GET_CACHE_ENB, 0,
+ *              &MFS_NULL_STRBUFPN_PAIR, cache_maskp, sizeof(*cache_maskp));
  *     if (rc != 0) {
  *         <error handling>
  *     }
@@ -921,9 +926,8 @@ typedef struct mvfs_iochange_mtype mvfs_iochange_mtype_t;
  * {
  *     int rc;
  *
- *     MVFS_CMD(mh, rc, status, MVFS_CMD_SET_CACHE_ENB,
- *		0,
- *		&MFS_NULL_STRBUFPN_PAIR, cache_maskp, sizeof(*cache_maskp));
+ *     MVFS_CMD(mh, rc, status, MVFS_CMD_SET_CACHE_ENB, 0,
+ *              &MFS_NULL_STRBUFPN_PAIR, cache_maskp, sizeof(*cache_maskp));
  *     if (rc != 0) {
  *         <error handling>
  *     }
@@ -1886,4 +1890,4 @@ typedef struct mvfs_mkviewtag_info_ex mvfs_mkviewtag_info_ex_t;
 #define MVFS_CMD_MAX 62
 
 #endif /* MFSMIOCTL_H_ */
-/* $Id: 1393a11f.a23a11df.8bc7.00:01:84:7a:f2:e4 $ */
+/* $Id: 5fe2ec9e.d67011e1.9c09.00:01:84:c3:8a:52 $ */

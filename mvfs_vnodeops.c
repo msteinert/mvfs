@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2011. */
+/* * (C) Copyright IBM Corporation 1990, 2013. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -2964,7 +2964,7 @@ mfs_getattr(
              break;
 	}
         /* Fall through */
-      case MFS_VOBCLAS: {
+      case MFS_VOBCLAS:
 
         (void) mfs_rebind_vpp((vp != avp), &vp, cd);
 
@@ -3066,7 +3066,12 @@ mfs_getattr(
          */
 
         if (vap) {
-            rdir = mfs_getview(NULL, MVFS_CD2CRED(cd), TRUE /* HOLD */);
+            /*
+             * We have an mnode, so we have a View, no need to hold,
+             * and holding causes significant View vnode lock contention on
+             * on audited builds.
+             */
+            rdir = mfs_getview(NULL, MVFS_CD2CRED(cd), FALSE /* NO HOLD */);
             /* if rdir is non-NULL, it's an MFS node of type view */
             if (rdir && MFS_VIEW(vp) == rdir) {
                 dev = FSID_TO_DEV(V_TO_MMI(vp)->mmi_nvfsid);
@@ -3085,12 +3090,9 @@ mfs_getattr(
                 VATTR_ADJUST_DEV(dev, vp);
                 VATTR_SET_FSID(vap, &dev);
             }
-            if (rdir != NULL)
-                VN_RELE(rdir);
-	    }
-	    rdir = NULL;
-	    break;
-	}
+        }
+        rdir = NULL;
+        break;
       default:
         error = ENXIO;
         break;
@@ -3215,7 +3217,8 @@ u_long *clear_mask_p;
      *  is the same second as the current mtime.
      */
     if (mask & AT_MTIME) {
-        if (VATTR_GET_MTIME(vap) != mnp->mn_vob.attr.fstat.mtime.tv_sec) {
+        if (VATTR_GET_MTIME(vap) != mnp->mn_vob.attr.fstat.mtime.tv_sec)
+        {
             *choid_needed_p = TRUE;
             *view_db_mask_p |= AT_MTIME;
             *clear_mask_p |= AT_MTIME;
@@ -7663,4 +7666,4 @@ mvfs_devadjust(dev_t dev, VNODE_T *vp)
 
 }
 
-static const char vnode_verid_mvfs_vnodeops_c[] = "$Id:  94c2efe0.45b111e0.9a57.00:11:25:23:c8:f1 $";
+static const char vnode_verid_mvfs_vnodeops_c[] = "$Id:  b35442e4.7b9511e2.8f39.00:01:83:0d:bf:e7 $";

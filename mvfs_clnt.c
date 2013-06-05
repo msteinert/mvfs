@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2010. */
+/* * (C) Copyright IBM Corporation 1991, 2013. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -1560,7 +1560,7 @@ mfs_clnt_symlink(
  * read on the server.  This is advisory only, the server may return
  * only one block's worth of entries.  Entries may be compressed on
  * the server.
- * Note: Directory size is limited to 31 bits. 
+ * Note: Directory size is limited to 31 bits.
  */
 int
 mfs_clnt_readdir(
@@ -1576,6 +1576,7 @@ mfs_clnt_readdir(
     struct mvfs_rce entry;
     MVFS_UIO_RESID_T count;
     size_t size;
+    mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
     HEAP_ALLOC2(view_readdir_req_t,rap,view_readdir_reply_t,rrp);
 
     ASSERT(MFS_ISVOB(VTOM(dvp)));
@@ -1589,23 +1590,39 @@ mfs_clnt_readdir(
 
     mnp = VTOM(dvp);
 
+    /* 
+     * We need to lock the mnode around this section if the rddir
+     * cache is enabled.  If we don't lock here its possible that
+     * we can race with another process attempting to create or remove 
+     * an entry in this directory, causing us to populate the rddir cache 
+     * with stale information.
+     */
+    if (mcdp->mvfs_rdcenabled) {
+        MLOCK(mnp);
+    }
+
     /* Return with 0 if at EOF of directory. */
 
-    if ((mnp->mn_vob.dir_eof) && ((u_long)MVFS_UIO_OFFSET(uiop) ==
-	mnp->mn_vob.rddir_off)  && (mnp->mn_vob.rddir_off != 0)) {
-	if (eofp) 
-	    *eofp = TRUE;
+    if (mnp->mn_vob.dir_eof &&
+        ((u_long)MVFS_UIO_OFFSET(uiop) == mnp->mn_vob.rddir_off) &&
+        (mnp->mn_vob.rddir_off != 0))
+    {
+        if (eofp) {
+            *eofp = TRUE;
+        }
 
-        entry.eof = TRUE;
-        entry.valid = TRUE;
-        entry.offset = entry.endoffset = MVFS_UIO_OFFSET(uiop);
-        entry.size = 0;
-        entry.block = 0;
-        entry.bsize = 0;
-        mvfs_rddir_cache_enter(mnp, &entry);
-        HEAP_FREE(rap);
-        HEAP_FREE(rrp);
-	return(0);
+        if (mcdp->mvfs_rdcenabled) {
+            entry.eof = TRUE;
+            entry.valid = TRUE;
+            entry.offset = entry.endoffset = MVFS_UIO_OFFSET(uiop);
+            entry.size = 0;
+            entry.block = 0;
+            entry.bsize = 0;
+            mvfs_rddir_cache_enter_mnlocked(mnp, &entry);
+        }
+
+        error = 0;
+        goto cleanup;
     }
 
     rap->hdr.view = VTOM(vw)->mn_view.vh;
@@ -1614,22 +1631,27 @@ mfs_clnt_readdir(
 
     rap->offset = (u_long)MVFS_UIO_OFFSET(uiop);
     count = KS_MIN(uiop->uio_resid, MFS_MAXRPCDATA);
-    rap->max_dirent_size = (size_t) count;
+    rap->max_dirent_size = (size_t)count;
     rrp->ents = (view_dirent_t *)KMEM_ALLOC(count, KM_SLEEP|KM_PAGED);
+
     if (rrp->ents == NULL) {
-        HEAP_FREE(rap);
-        HEAP_FREE(rrp);
-	return(ENOMEM);
+        error = ENOMEM;
+        goto cleanup;
     }
+
     rrp->max_dirent_size = (size_t)count;
 
-    error = mfs_vwcall(vw, dvp->v_vfsp, VIEW_READDIR,
-	(xdrproc_t) xdr_view_readdir_req_t,   (caddr_t)rap, 
-	(xdrproc_t) xdr_view_readdir_reply_t, (caddr_t)rrp, MVFS_CD2CRED(cd));
+    error = mfs_vwcall(vw,
+                       dvp->v_vfsp,
+                       VIEW_READDIR,
+                       (xdrproc_t)xdr_view_readdir_req_t,
+                       (caddr_t)rap,
+                       (xdrproc_t)xdr_view_readdir_reply_t,
+                       (caddr_t)rrp,
+                       MVFS_CD2CRED(cd));
 
-    if (!error) error = mfs_geterrno(rrp->hdr.status);
-    if (!error) {
-        if (rrp->size) {
+    if (error == 0 && (error = mfs_geterrno(rrp->hdr.status)) == 0) {
+        if (rrp->size != 0) {
             /* We put the size on the stack instead of using it
              * directly because the linux readdir_uiomove will 0
              * the size value passed in on a buffer overflow so
@@ -1637,9 +1659,31 @@ mfs_clnt_readdir(
              * value so that the readdir cache is not trashed.
              */
             size = rrp->size;
-	    error = READDIR_UIOMOVE((caddr_t)rrp->ents, &size,
-				    UIO_READ, uiop, MVFS_UIO_OFFSET(uiop));
-            if (!READDIR_BUF_FULL(uiop))
+
+            /*
+             * On Linux, in the non-clearcase access case, NFS calls getattr
+             * on the directory entries during the copyout, causing recursive
+             * lock panic.  Macros for recursive lock flag define a flag local
+             * to the containing block, and need conditional for whether mnode
+             * locked.
+             */
+            if (mcdp->mvfs_rdcenabled) {
+                MVFS_RDDIR_MNLOCK_SET_RECURSIVE(mnp);
+                error = READDIR_UIOMOVE((caddr_t)rrp->ents,
+                                        &size,
+                                        UIO_READ,
+                                        uiop,
+                                        MVFS_UIO_OFFSET(uiop));
+                MVFS_RDDIR_MNLOCK_CLEAR_RECURSIVE(mnp);
+            } else {
+                error = READDIR_UIOMOVE((caddr_t)rrp->ents,
+                                        &size,
+                                        UIO_READ,
+                                        uiop,
+                                        MVFS_UIO_OFFSET(uiop));
+            }
+
+            if (!READDIR_BUF_FULL(uiop)) {
                 /* XXX Why is this necessary? What if there wasn't
                  * enough room for the whole buffer--we might then
                  * miss the end of the buffer?  (Probably never the
@@ -1647,41 +1691,56 @@ mfs_clnt_readdir(
                  * calls.)
                  */
                 MVFS_UIO_OFFSET(uiop) = rrp->offset;
+            }
+
             entry.endoffset = rrp->offset;
-	    
-	    /* Offset for EOF only valid if got some data */
 
-    	    if (rrp->eof) {
-	        mnp->mn_vob.dir_eof = 1;
-	        mnp->mn_vob.rddir_off = rrp->offset;
-	    }
-    	} else {
-	    if (rrp->eof) {
-		mnp->mn_vob.dir_eof = 1;
-		mnp->mn_vob.rddir_off = rap->offset;
-	    }
+            /* Offset for EOF only valid if got some data */
+
+            if (rrp->eof) {
+                mnp->mn_vob.dir_eof = 1;
+                mnp->mn_vob.rddir_off = rrp->offset;
+            }
+        } else {
+            if (rrp->eof) {
+                mnp->mn_vob.dir_eof = 1;
+                mnp->mn_vob.rddir_off = rap->offset;
+            }
+
             entry.endoffset = rap->offset;
-	}
-	if (eofp)
-	    *eofp = rrp->eof;
+        }
 
-        entry.eof = rrp->eof;
-        entry.valid = TRUE;
-        entry.offset = rap->offset;
-        entry.size = rrp->size;
-        entry.block = rrp->ents;
-        entry.bsize = (size_t) count;
+        if (eofp) {
+            *eofp = rrp->eof;
+        }
 
-        mvfs_rddir_cache_enter(mnp, &entry);
-        /* rddir cache holds reference to allocated block of return data,
-           and is responsible for freeing it when done. */
+        if (mcdp->mvfs_rdcenabled) {
+            entry.eof = rrp->eof;
+            entry.valid = TRUE;
+            entry.offset = rap->offset;
+            entry.size = rrp->size;
+            entry.block = rrp->ents;
+            entry.bsize = (size_t) count;
+
+            mvfs_rddir_cache_enter_mnlocked(mnp, &entry);
+            /* rddir cache holds reference to allocated block of return data,
+               and is responsible for freeing it when done. */
+        } else {
+            KMEM_FREE(rrp->ents, count);
+        }
     } else {
         MFS_CHK_STALE(error, dvp);
         KMEM_FREE(rrp->ents, count);
     }
+
+cleanup:
+    if (mcdp->mvfs_rdcenabled) {
+        MUNLOCK(mnp);
+    }
+
     HEAP_FREE(rap);
     HEAP_FREE(rrp);
-    return (error);
+    return(error);
 }
 
 /*
@@ -2347,4 +2406,4 @@ mvfs_clnt_ping_server(
 		  NULL			/* view vp */
 		 );
 }
-static const char vnode_verid_mvfs_clnt_c[] = "$Id:  650be613.dc5411df.9210.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_clnt_c[] = "$Id:  8447ef8b.716011e2.9190.00:01:83:9c:f6:11 $";

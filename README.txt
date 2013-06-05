@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2010 IBM Corporation.
+ * Copyright (C) 1999, 2011 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,7 +46,8 @@ installation and configuration help.  What follows summarizes those
 instructions and provides some additional troubleshooting information.
 
 REBUILD INSTRUCTIONS for ClearCase 7.1 on 2.6 series Linux kernels
-(SLES9, SLES10, RHEL4, RHEL5)
+(SLES9, SLES10, SLES11, RHEL4, RHEL5, RHEL6, MRG 1.3, Ubuntu 8.04.4,
+Ubuntu 10.04)
 
 After you install ClearCase, boot the kernel you want to use and become
 the superuser. Then build the mvfs module for your 2.6 series
@@ -119,10 +120,11 @@ Linux kernel as follows:
         3-part kernel version (for example, 2.6.9).  It should contain the
         following entries:
 
-        -DRATL_REDHAT or -DRATL_SUSE as appropriate
+        -DRATL_REDHAT or -DRATL_SUSE or -DRATL_UBUNTU as appropriate
         -DRATL_VENDOR_VER=<Version times 100 plus the update number>
             For example RHEL4 Update 5 -DRATL_VENDOR_VER=405
             For SLES10 SP2  -DRATL_VENDOR_VER=1002
+            For RH MRG 1.3  -DRATL_VENDOR_VER=500
         -DRATL_EXTRA_VER=0
         -DRATL_COMPAT32
             Only include this for 64-bit systems.

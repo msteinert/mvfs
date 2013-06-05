@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003, 2010 IBM Corporation.
+ * Copyright (C) 2003, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -69,16 +69,10 @@ vnlayer_truncate_inode(
         status = inp->i_op->setattr_raw(inp, &iat);
     }
     else {
-        status = notify_change(dentry, &iat);
+        status = MDKI_NOTIFY_CHANGE(dentry, mnt, &iat);
     }
 #else
-#if defined(SLES10SP2) || \
-    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
-     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
-    status = notify_change(dentry, mnt, &iat);
-#else
-    status = notify_change(dentry, &iat);
-#endif /* end if SLES10SP2 or kernel between 2.6.24 and 2.6.31 */
+    status = MDKI_NOTIFY_CHANGE(dentry, mnt, &iat);
 #endif /* end  KERNEL_VERSION >= (2,6,5) && defined(ATTR_FROM_OPEN) */
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,5) && LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13)
@@ -104,7 +98,11 @@ vnlayer_has_mandlocks(struct inode *ip)
     if (MANDATORY_LOCK(ip) == 0) {
         return 0;
     }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,37)
     lock_kernel();
+#else
+    lock_flocks();
+#endif
 
     status = 0;
     for (flock = ip->i_flock; flock != NULL; flock = flock->fl_next) {
@@ -114,7 +112,11 @@ vnlayer_has_mandlocks(struct inode *ip)
 	    break;
 	}
     }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,37)
     unlock_kernel();
+#else
+    unlock_flocks();
+#endif
     return(status);
 }
 
@@ -205,18 +207,18 @@ vnlayer_set_fs_root(
     struct dentry *old_root;
     struct vfsmount *old_rootmnt;
 
-    write_lock(&fs->lock);
+    MDKI_FS_LOCK_W(fs);
 
     old_root = MDKI_FS_ROOTDENTRY(fs);
     old_rootmnt = MDKI_FS_ROOTMNT(fs);
 
     MDKI_FS_SET_ROOTDENTRY(fs, dget(dent));
-    MDKI_FS_SET_ROOTMNT(fs, mntget(mnt));
+    MDKI_FS_SET_ROOTMNT(fs, MDKI_MNTGET(mnt));
 
-    write_unlock(&fs->lock);
+    MDKI_FS_UNLOCK_W(fs);
 
     dput(old_root);
-    mntput(old_rootmnt);
+    MDKI_MNTPUT(old_rootmnt);
 }
 #endif
 
@@ -278,4 +280,4 @@ mdki_xdr_opaque(
         return FALSE;
     }
 }
-static const char vnode_verid_mvfs_linux_glue_c[] = "$Id:  f9f72456.d6d511df.8121.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_linux_glue_c[] = "$Id:  0ef582d7.e6e311e1.8799.00:01:84:c3:8a:52 $";

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2011 IBM Corporation.
+ * Copyright (C) 1999, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -34,14 +34,33 @@ vnode_dop_revalidate(
     struct nameidata *nd
 );
 
+extern void
+vnode_dop_release(DENT_T *dentry);
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+extern int
+vnode_dop_hash(
+    const DENT_T *dentry,
+    const struct inode *inode,
+    struct qstr *namep
+);
+
+extern int
+vnode_dop_compare(
+    const struct dentry *dparent,
+    const struct inode *iparent,
+    const struct dentry *dentry,
+    const struct inode *inode,
+    unsigned int tlen,
+    const char *tname,
+    const struct qstr *namep
+);
+#else
 extern int
 vnode_dop_hash(
     DENT_T *dentry,
     struct qstr *namep
 );
-
-extern void
-vnode_dop_release(DENT_T *dentry);
 
 extern int
 vnode_dop_compare(
@@ -49,6 +68,7 @@ vnode_dop_compare(
     struct qstr *name1,
     struct qstr *name2
 );
+#endif
 /* other declarations in common code, used by shadow code */
 
 /* This is our oportunity to provide special handling for our dentries.
@@ -56,13 +76,23 @@ vnode_dop_compare(
  * d_release function to get rid of it.
  */
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
 #define DOPS_INITIALIZER                                                \
-    .d_revalidate = &vnode_dop_revalidate,                              \
-    .d_hash = &vnode_dop_hash, /* hash (we overload it for auditing) */ \
-    .d_delete = &vnode_dop_delete,                                      \
-    .d_release = &vnode_dop_release,                                    \
-    .d_compare = &vnode_dop_compare,
+    .d_revalidate = vnode_dop_revalidate,                               \
+    .d_hash = vnode_dop_hash, /* hash (we overload it for auditing) */  \
+    .d_delete = (int (*)(const struct dentry *)) vnode_dop_delete,      \
+    .d_release = vnode_dop_release,                                     \
+    .d_compare = vnode_dop_compare,
     /* leave iput NULL */
+#else /* LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32) */
+#define DOPS_INITIALIZER                                                \
+    .d_revalidate = vnode_dop_revalidate,                               \
+    .d_hash = vnode_dop_hash, /* hash (we overload it for auditing) */  \
+    .d_delete = vnode_dop_delete,                                       \
+    .d_release = vnode_dop_release,                                     \
+    .d_compare = vnode_dop_compare,
+    /* leave iput NULL */
+#endif /* else LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32) */
 
 struct dentry_operations vnode_dentry_ops = { DOPS_INITIALIZER };
 
@@ -84,6 +114,14 @@ struct dentry_operations vnode_setview_dentry_ops = { DOPS_INITIALIZER };
 /* make this use a kmem_cache someday */
 #define VATTR_ALLOC() KMEM_ALLOC(sizeof(VATTR_T), KM_SLEEP)
 #define VATTR_FREE(vap) KMEM_FREE(vap, sizeof(VATTR_T))
+/* Somewhere between 2.6.9 and 2.6.16 the d_child offset in the
+ * struct dentry was put into a union.
+ */
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,9)
+#define D_CHILD d_child
+#else
+#define D_CHILD d_u.d_child
+#endif
 
 extern int
 vnode_dop_revalidate(
@@ -148,32 +186,44 @@ vnode_dop_revalidate(
                     /* Check if there is one.  Our parent might not be a
                      * loopback directory */
                     if (rpdent != 0) {
-#if defined(RATL_REDHAT) && (RATL_VENDOR_VER == 600) && \
-    defined(CONFIG_SPARSEMEM) && defined(CONFIG_X86_32)
                         /*
-                         * Because d_validate always returns 0 on PAE kernels,
-                         * just check if the dentry is in the parent's
-                         * children list.
+                         * We used to have conditional code that would either
+                         * call d_validate or check to see if the dentry is in
+                         * the parent's children list.  There is a bug in 
+                         * d_validate in kernels before 2.6.38 which can cause
+                         * a kernel panic.  The kernel fix for this was to 
+                         * have d_validate verify that the dentry is in the 
+                         * parent's child list and the function is marked
+                         * as deprecated.  So we will just stop calling
+                         * d_validate in any case.
                          */
                         ok = 0;
                         if (rdent->d_parent == rpdent) {
                             struct dentry *dp;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
                             spin_lock(&dcache_lock);
+#else
+                            spin_lock(&rdent->d_lock);
+#endif
                             list_for_each_entry(dp, &rpdent->d_subdirs,
-                                                d_u.d_child) {
+                                                D_CHILD) {
                                 if (rdent == dp) {
                                     /* mimic d_validate's behaviour */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
                                     dget_locked(rdent);
+#else
+                                    dget_dlock(rdent);
+#endif
                                     ok = 1;
                                     break;
                                 }
                             }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
                             spin_unlock(&dcache_lock);
-                        }
 #else
-                        /* d_validate does a dget on rdent if valid */
-                        ok = d_validate(rdent, rpdent);
-#endif /* defined(RATL_REDHAT) && RATL_VENDOR_VER == 600 && defined(CONFIG_SPARSEMEM) && defined(CONFIG_X86_32) */
+                            spin_unlock(&rdent->d_lock);
+#endif
+                        }
                         if (ok != 0) {
                             VNODE_DPUT(rdent);
                         } else {
@@ -275,11 +325,20 @@ vnode_dop_revalidate(
          (*(uint32_t *)mdki_get_ucomm_ptr() == *(uint32_t *)"nfsd"      \
           && mdki_get_ucomm_ptr()[4] == '\0'))
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+extern int
+vnode_dop_hash(
+    const DENT_T *dentry,
+    const struct inode *inode,
+    struct qstr *namep
+)
+#else
 extern int
 vnode_dop_hash(
     DENT_T *dentry,
     struct qstr *namep                  /* unused */
 )
+#endif
 {
     VNODE_T *dvp, *vp;
     struct lookup_ctx ctx;
@@ -306,10 +365,11 @@ vnode_dop_hash(
     return 0;
 }
 
-/* In Linux we are called with the dcache_lock already held.  We
- * cannot block and we cannot call d_drop directly because it will try to
- * get the dcache_lock.  Therefore we return 1 if we want the VFS to handle
- * unhashing this for us.
+/* Before 2.6.38 we may be called with the dcache_lock already held.
+ * In that case we cannot block and we cannot call d_drop directly because it
+ * will try to get the dcache_lock.  Therefore we return 1 if we want the VFS
+ * to handle unhashing this for us. After 2.6.37 only the dentry's spinlock is
+ * acquired, but we do the same as before, just return 1 for unhashing.
  */
 extern int
 vnode_dop_delete(DENT_T *dentry)
@@ -378,6 +438,36 @@ vnode_dop_release(DENT_T *dentry)
  * 0 and 1 and do not deal with the signed results of memcmp.
  * 
  */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+extern int
+vnode_dop_compare(
+    const struct dentry *dparent,
+    const struct inode *iparent,
+    const struct dentry *dentry,
+    const struct inode *inode,
+    unsigned int tlen,
+    const char *tname,
+    const struct qstr *namep
+)
+{
+    if (MDKI_INOISMVFS(iparent)) {
+        VNODE_T *vp = ITOV(iparent);
+        if ((vp->v_flag & (VLOOP | VLOOPROOT)) == 0) {
+            /*
+             * don't call non-loop objects the same, it may not be (we
+             * can't tell in this layer).  Let the lookup routine find
+             * the same dentry if there's one that works.
+             */
+            return 1;
+        }
+    }
+    /*
+     * We can use the existing dentries, so compare them and return the
+     * result.
+     */
+    return (tlen != namep->len) || memcmp(namep->name, tname, tlen);
+}
+#else
 extern int
 vnode_dop_compare(
     struct dentry *dent,
@@ -402,6 +492,7 @@ vnode_dop_compare(
      */
     return !vnlayer_names_eq(name1, name2);
 }
+#endif
 
 /*
  * This function will make a dcache entry for the specified directory.
@@ -442,14 +533,16 @@ vnlayer_make_dcache(
     MDKI_TRACE(TRACE_DCACHE,"%s vp %p dp %p\n",__func__, vp, dentry);
     if (dentry) {
         igrab(ip);                 /* bump count for dcache */
-        dentry->d_op = &vnode_dentry_ops;
+        MDKI_SET_DOPS(dentry, &vnode_dentry_ops);
         VNODE_D_ADD(dentry, ip);
     }
     return dentry;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
 #define LOCK_DCACHE()   spin_lock(&dcache_lock)
 #define UNLOCK_DCACHE() spin_unlock(&dcache_lock)
+#endif
 
 /*
  * Remove the dcache entry pointing to this vnode, dropping its count
@@ -467,10 +560,19 @@ mdki_rm_dcache(VNODE_T *vp)
     if (!dp)
         return;
     if (dp->d_inode != ip) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+        /* i_lock protects i_dentry */
+        spin_lock(&ip->i_lock);
+#else
         LOCK_DCACHE();
+#endif
         /* We're on its alias list, just remove ourselves */
         list_del(&ip->i_dentry);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+        spin_unlock(&ip->i_lock);
+#else
         UNLOCK_DCACHE();
+#endif
     } else {
         /* dcache code takes its lock as required */
         if (!d_unhashed(dp)) {
@@ -536,22 +638,39 @@ mdki_finish_flush_dcache(void *cookie)
          * no match filtering--it takes any dentry and tries to free
          * it.
          */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+        spin_lock(&ip->i_lock);
+#else
         LOCK_DCACHE();
+#endif
         if (!list_empty(&ip->i_dentry)) {
             list_for_each_safe(lh, next, &ip->i_dentry) {
                 dp = list_entry(lh, struct dentry, d_alias);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+                dget(dp);
+                spin_unlock(&ip->i_lock);
+#else
                 dget_locked(dp);
                 UNLOCK_DCACHE();
+#endif
                 (void) d_invalidate(dp);
                 d_drop(dp);
                 MDKI_TRACE(TRACE_DCACHE,
                            "%s cnt %d inode %p\n", __func__, D_COUNT(dp), dp->d_inode);
                 VNODE_DPUT(dp);
                 released = TRUE;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+                spin_lock(&ip->i_lock);
+#else
                 LOCK_DCACHE();
+#endif
             }
         }
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+        spin_unlock(&ip->i_lock);
+#else
         UNLOCK_DCACHE();
+#endif
 
         VN_RELE(vp);
     }
@@ -776,4 +895,4 @@ vnlayer_dent2vfsmnt(DENT_T *dentry)
         mnt = MDKI_MNTGET(mnt);
     return(mnt);
 }
-static const char vnode_verid_mvfs_linux_dops_c[] = "$Id:  5d1ce261.469911e0.9073.00:09:6b:4f:fe:99 $";
+static const char vnode_verid_mvfs_linux_dops_c[] = "$Id:  07638734.1df111e2.8579.00:01:84:c3:8a:52 $";

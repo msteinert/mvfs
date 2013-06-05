@@ -44,7 +44,7 @@
 #define TBS_RATIONAL_RELEASE_MAJOR      "1"
 #define TBS_RATIONAL_RELEASE_MINOR      "2"
 /* Increment RELEASE_BUILD for patches.  Should be '0' for GA release */
-#define TBS_RATIONAL_RELEASE_BUILD      "2"
+#define TBS_RATIONAL_RELEASE_BUILD      "10"
 #define TBS_RATIONAL_RELEASE_BU         ""
 
 /*
@@ -63,4 +63,4 @@
 #define TBS_VER_MAJOR_ID  TBS_RATIONAL_FCC_PRODUCT_ID
 
 #endif /* _TBS_MAJOR_VER_STR_H_ */
-/* $Id: 76eb9914.e37211df.9d9a.00:14:5e:33:98:cc $ */
+/* $Id: 19987702.29e311e2.830a.00:01:76:29:02:20 $ */

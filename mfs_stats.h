@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1994, 2009. */
+/* * (C) Copyright IBM Corporation 1994, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -302,4 +302,4 @@ extern struct mfs_rpchist	mfs_viewophist;
 #define U2D(value) ((double)(value))
 
 #endif	/* MFS_STATS_H_ */
-/* $Id: 6b691625.b44911de.8ddb.00:01:83:29:c0:fc $ */
+/* $Id: 079b4f1b.a4e111e1.89d5.00:01:84:c3:8a:52 $ */

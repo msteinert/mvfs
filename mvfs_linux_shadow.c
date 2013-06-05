@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2009 IBM Corporation.
+ * Copyright (C) 1999, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -36,7 +36,12 @@
 #include "vnode_linux.h"
 #include "mvfs_linux_shadow.h"
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,33)
 spinlock_t vnlayer_cvn_spinlock = SPIN_LOCK_UNLOCKED;
+#else
+DEFINE_SPINLOCK(vnlayer_cvn_spinlock);
+#endif
+
 #if defined(CONFIG_SMP) && defined(MVFS_DEBUG)
 struct vnlayer_cvn_debug_info vnlayer_cvn_debug = {0};
 struct vnlayer_cvn_debug_info vnlayer_cvn_old_debug[HISTCOUNT] = {{0}};
@@ -116,9 +121,13 @@ vnode_shadow_dop_release(DENT_T *dentry)
 }
 
 struct dentry_operations vnode_shadow_dentry_ops = {
-    .d_revalidate =     &vnode_shadow_dop_revalidate,
-    .d_delete =         &vnode_dop_delete,
-    .d_release =        &vnode_shadow_dop_release,
+    .d_revalidate =     vnode_shadow_dop_revalidate,
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+    .d_delete =         (int (*)(const struct dentry *)) vnode_dop_delete,
+#else
+    .d_delete =         vnode_dop_delete,
+#endif
+    .d_release =        vnode_shadow_dop_release,
 };
 
 #ifdef HAVE_SHADOW_FILES
@@ -425,7 +434,6 @@ out_nolock:
 extern void
 vnode_shadow_iop_truncate(INODE_T *inode)
 {
-
     DENT_T *dentry;
     DENT_T *real_dentry;
     VNODE_T *cvp;
@@ -467,6 +475,9 @@ vnode_shadow_iop_permission(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     , struct nameidata *nd
 #endif
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+    , unsigned int flags
+#endif
 )
 {
     INODE_T *real_inode;
@@ -488,14 +499,16 @@ vnode_shadow_iop_permission(
     err = inode_permission(real_inode, mask);
 #endif
 
-    if (err == 0)
+    if (err == 0) {
         /* don't call permission() on inode, it will call back to us! */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)
         err = vfs_permission(inode, mask);
-#else 
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
         err = generic_permission(inode, mask, NULL);
+#else
+        err = generic_permission(inode, mask, flags, NULL);
 #endif
-
+    }
     VNODE_DPUT(dp);
     return(err);
 }
@@ -641,4 +654,4 @@ IN_OPS_T vnode_shadow_slink_inode_ops = {
     .removexattr =      &vnode_shadow_iop_removexattr,
 };
 
-static const char vnode_verid_mvfs_linux_shadow_c[] = "$Id:  8f2be93d.b45711de.8ddb.00:01:83:29:c0:fc $";
+static const char vnode_verid_mvfs_linux_shadow_c[] = "$Id:  0fdb51bb.a4e111e1.89d5.00:01:84:c3:8a:52 $";

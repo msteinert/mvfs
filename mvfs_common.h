@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 2006, 2007. */
+/* * (C) Copyright IBM Corporation 2006, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -35,6 +35,7 @@ typedef struct mvfs_common_data
     int mvfs_acenabled;
     int mvfs_ctoenabled;
     int mvfs_rlenabled;
+    int mvfs_rdcenabled;
     int mvfs_rebind_dir_enable;
     int mvfs_vlinkcnt2;
 
@@ -56,6 +57,11 @@ typedef struct mvfs_common_data
     mvfs_cache_sizes_t mvfs_init_sizes; /* Initial sizes before mount */
 
 /* Consolidated data for various MVFS subsystems */
+    MVFS_XID_T mvfs_xid;                /* Transaction ID for RPCs between MVFS
+                                           and CC servers*/
+    ks_uint32_t mvfs_boottime;          /* Time value used to detect socket
+                                           reuse since the last MVFS restart as 
+                                           well as XID wrap around */
     mvfs_rpc_data_t mvfs_rpc;           /* RPC client handle cache */
     mvfs_proc_thread_data_t proc_thr;   /* MVFS proc/thread state structs */
     mvfs_credlist_data_t cred;          /* System-wide credlist */
@@ -64,4 +70,4 @@ typedef struct mvfs_common_data
 EXTERN int mvfs_copy_tunable(mvfs_common_data_t *mcdp);
 EXTERN void mfs_periodic_maintenance(P_NONE);
 #endif /* MVFS_COMMON_H_ */
-/* $Id: f50778a9.e3fd11db.822d.00:01:83:a6:4c:63 $ */
+/* $Id: 27a0d2fd.ec6311e1.905b.00:01:84:c3:8a:52 $ */

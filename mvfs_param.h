@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2010. */
+/* * (C) Copyright IBM Corporation 1991, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -62,6 +62,7 @@ EXTERN char *mvfs_rcsID;		/* RCS ident string */
  *			every open to fetch the current attributes over
  *			the wire (i.e. overrides the attribute cache).
  * mvfs_rlenabled:	enables the "readlink text" cache.
+ * mvfs_rdcenabled:     enables the rddir cache.
  * mvfs_rebind_dir_enable:
  *                      enables "rebinding" (i.e. automatic "cd" command)
  *			of a user's current working dir to a new one which
@@ -82,6 +83,7 @@ EXTERN PARAM_TYPE mvfs_rvcenabled;
 EXTERN PARAM_TYPE mvfs_acenabled;
 EXTERN PARAM_TYPE mvfs_ctoenabled;
 EXTERN PARAM_TYPE mvfs_rlenabled;
+EXTERN PARAM_TYPE mvfs_rdcenabled;
 EXTERN PARAM_TYPE mvfs_rebind_dir_enable;
 EXTERN PARAM_TYPE mvfs_vlinkcnt2;
 
@@ -212,4 +214,4 @@ EXTERN PARAM_TYPE mvfs_ctxt_atime_refresh;
 /* leave MVFS_PARAM_TYPE visible for other users */
 
 #endif	/* MVFS_PARAM_H_ */
-/* $Id: 1ab3a2cf.a23a11df.8bc7.00:01:84:7a:f2:e4 $ */
+/* $Id: 6312ed46.d67011e1.9c09.00:01:84:c3:8a:52 $ */

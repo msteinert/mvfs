@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2010. */
+/* * (C) Copyright IBM Corporation 1990, 2011. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -1045,21 +1045,41 @@ mvfs_logfile_set(
 void
 mvfs_logfile_close()
 {
+    CLR_VNODE_T *tmp_printf_logvp;
+    CRED_T * tmp_printf_log_cred;
+    void *tmp_printf_filp;
+    char *tmp_printf_logfilename;
+
     MVFS_LOCK(&mvfs_printf_lock);
+    
     if (mvfs_printf_logvp) {
-	MVOP_FSYNC_KERNEL(MVFS_CVP_TO_VP(mvfs_printf_logvp),
-                          FLAG_DATASYNC, printf_log_cred, printf_filp);
-	(void) MVOP_CLOSE_KERNEL(mvfs_printf_logvp, FWRITE, MVFS_LASTCLOSE_COUNT,
-                                 (MOFFSET_T)0, printf_log_cred, printf_filp);
-	REAL_CVN_RELE(mvfs_printf_logvp); /* don't do logging VN_RELE()! */
+        /* Save the parameters we are closing down */
+        tmp_printf_logvp = mvfs_printf_logvp;
+        tmp_printf_log_cred = printf_log_cred;
+        tmp_printf_filp = printf_filp;
+        tmp_printf_logfilename = printf_logfilename;
+        /** Null out the parameters.  This will prevent further logging */
 	mvfs_printf_logvp = NULL;
         printf_filp = NULL;
-	if (printf_logfilename != NULL)
-	  PN_STRFREE(printf_logfilename);
 	printf_logfilename = NULL;
 	printf_loglen = 0;
-	MDKI_CRFREE(printf_log_cred);
 	printf_log_cred = NULL;
+        /* Release the lock */
+        MVFS_UNLOCK(&mvfs_printf_lock);
+
+        /* Now clean up outside the lock.  This will prevent recursive
+         * lock panics if anyone adds logging code to any of the following
+         * calls.
+         */
+	MVOP_FSYNC_KERNEL(MVFS_CVP_TO_VP(tmp_printf_logvp),
+                          FLAG_DATASYNC, tmp_printf_log_cred, tmp_printf_filp);
+	(void) MVOP_CLOSE_KERNEL(tmp_printf_logvp, FWRITE, MVFS_LASTCLOSE_COUNT,
+                          (MOFFSET_T)0, tmp_printf_log_cred, tmp_printf_filp);
+	REAL_CVN_RELE(tmp_printf_logvp); /* don't do logging VN_RELE()! */
+	if (tmp_printf_logfilename != NULL)
+	  PN_STRFREE(tmp_printf_logfilename);
+	MDKI_CRFREE(tmp_printf_log_cred);
+        return;
     }
     MVFS_UNLOCK(&mvfs_printf_lock);
     return;
@@ -1512,4 +1532,4 @@ mvfs_bumptime(
 
     return;
 }
-static const char vnode_verid_mvfs_utils_c[] = "$Id:  63dbe5cb.dc5411df.9210.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_utils_c[] = "$Id:  bfa0e814.737211e1.90e6.00:01:83:0a:3b:75 $";

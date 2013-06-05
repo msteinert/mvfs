@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2007. */
+/* * (C) Copyright IBM Corporation 1991, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -199,8 +199,9 @@ typedef enum albd_server_proc {
     /* 73 */ ALBD_LIST_SERVERS,
     /* 74 */ ALBD_CLNT_LIST_LOOKUP,
     /* 75 */ ALBD_CLNT_LIST_GET,
+    /* 76 */ ALBD_REGISTRY_GET_PATTERN,
     ALBD_NUM_PROCS
 } albd_server_proc_t;
 
 #endif /* _ALBD_RPC_KERNEL_H_ */
-/* $Id: 8aa14066.9c1f11dd.9a62.00:01:83:29:c0:fc $ */
+/* $Id: 7232f08e.d67011e1.9c09.00:01:84:c3:8a:52 $ */

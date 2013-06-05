@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2010 IBM Corporation.
+ * Copyright (C) 1999, 2011 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -86,6 +86,10 @@ mdki_linux_clntkudp_create(
         return ENOMEM;
     }
     memset(rpc_ca, 0, sizeof(*rpc_ca));
+# if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37)) || \
+    (defined(RATL_REDHAT) && (RATL_VENDOR_VER >= 601))
+    rpc_ca->net            = &init_net;
+# endif
     rpc_ca->protocol       = IPPROTO_UDP;
     rpc_ca->address        = (struct sockaddr *)addr;
     rpc_ca->addrsize       = sizeof(*addr);
@@ -96,7 +100,7 @@ mdki_linux_clntkudp_create(
     rpc_ca->flags          = RPC_CLNT_CREATE_NOPING;
     rpc_cl = rpc_create(rpc_ca);
     mdki_linux_kfree(rpc_ca, sizeof(*rpc_ca));
-#endif
+#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24) */
 
     if (IS_ERR(rpc_cl)) {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13)
@@ -282,16 +286,17 @@ mdki_linux_clnt_call(
              * incorrectly, as does the code below for SLES11 for CR
              * RATLC01288935.
              */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
-            if (fatal_signal_pending(current)) {
+            if (MDKI_FATAL_SIGNAL_PENDING() == TRUE) {
                 /*
                  * When RPC is in connect stage, it returns -EIO instead of
                  * -ERESTARTSYS.  See xprt_connect_status.
+                 * Note that the above check is only approximate since
+                 * the RPC code uses it's own signal mask and resets
+                 * it when returning.
                  */
                 *status = RPC_INTR;
                 break;
             }
-#endif
           case ETIMEDOUT:
           case ECONNREFUSED:
             *status = RPC_TIMEDOUT;
@@ -335,4 +340,4 @@ mdki_linux_destroy_client(CLIENT *cl)
 #endif
 }
 
-static const char vnode_verid_mvfs_linux_rpcglue_c[] = "$Id:  f83723de.d6d511df.8121.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_linux_rpcglue_c[] = "$Id:  52c2735b.0a6b11e1.8d67.00:01:83:0a:3b:75 $";

@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2011. */
+/* * (C) Copyright IBM Corporation 1990, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -768,89 +768,6 @@ mvfs_new_cltxt(
 
     /* drop cache of creds used for lookups */
     MVFS_RELEASE_CREDLIST(mnp);
-}
-
-/*
- * Some NFS clients cache ENOENT pretty aggressively, without
- * reasonable revalidation behavior.  We attempt to force a
- * revalidation by opening directories (from the bottom up) until we
- * get one that works or we get to the top.  If we get one opened,
- * that should flush its cache and the descendents should be made
- * reachable.  (e.g. if /foo/bar/baz is in the ENOENT cache, all we
- * have to do is flush /foo/bar, and then we can see
- * /foo/bar/baz/quux/blah.)
- */
-STATIC int
-mvfs_prod_parent_dir_cache(
-    struct mfs_mnode *mnp,
-    CRED_T *cred
-)
-{
-    mfs_pn_char_t *dirname;
-    int error = ENOENT;
-    mfs_pn_char_t *tmpslash, *lastslash;
-    void *rdfp;
-    CLR_VNODE_T *cvp;
-
-    dirname = PN_STRDUP(mnp->mn_vob.cleartext.nm);
-    lastslash = tmpslash = STRRCHR(dirname, MVFS_PN_SEP_CHAR);
-
-    mvfs_log(MFS_LOG_DEBUG, " Walking over %s to force NFS cache renewing\n",
-             dirname);
-
-    while (lastslash != NULL && lastslash != dirname) {
-        *lastslash = '\0';
-
-        error = LOOKUP_STORAGE_FILE(MFS_CLRTEXT_RO(mnp),
-                                    dirname,
-                                    NULL, &cvp, cred);
-        if (error == 0) {
-            /* open & close, then dump */
-            error = MVOP_OPEN_KERNEL(&cvp, FREAD, cred, &rdfp);
-            if (error == 0) {
-                mvfs_log(MFS_LOG_DEBUG,
-                         "directory open succeeded,"
-                         " NFS cache should be flushed: %s\n",
-                         dirname);
-                (void) MVOP_CLOSE_KERNEL(cvp, FREAD,
-                                         MVFS_LASTCLOSE_COUNT,
-                                         (MOFFSET_T)0, cred, rdfp);
-                CVN_RELE(cvp);
-                break;
-            } else {
-                mvfs_log(MFS_LOG_DEBUG,
-                         "directory open failed,"
-                         " NFS cache not flushed: %s%s\n", dirname,
-                         mfs_strerr(error));
-            }
-            CVN_RELE(cvp);
-        } else {
-            mvfs_log(MFS_LOG_DEBUG,
-                     "directory lookup failed,"
-                     " NFS cache not flushed: %s%s\n", dirname,
-                     mfs_strerr(error));
-            if (error != ENOENT)
-                break;
-        }
-        /*
-         * If we had an error opening the directory, it might
-         * have been scrubbed too, and entered in the NFS
-         * ENOENT cache, so we move up the tree until we find
-         * a directory that does exist, or we get to /.
-         */
-        lastslash = STRRCHR(dirname, MVFS_PN_SEP_CHAR);
-        /*
-         * restore original last slash (prepare string for STRFREE();
-         * some platforms care about length)
-         */
-        *tmpslash = MVFS_PN_SEP_CHAR;
-        tmpslash = lastslash;
-    }
-    if (tmpslash != NULL)
-        *tmpslash = MVFS_PN_SEP_CHAR;
-
-    PN_STRFREE(dirname);
-    return error;
 }
 
 /*
@@ -1760,8 +1677,9 @@ mvfs_clear_init(mvfs_cache_sizes_t *mma_sizes)
     mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
 
     INITSPLOCK(mcdp->cred.mvfs_sys_credlist_lock, "mvfs_sys_credlist_spl");
+    if (mcdp->mvfs_ctxt_atime_refresh == 0)
+        mcdp->mvfs_ctxt_atime_refresh = MVFS_CTXT_ATIME_REFRESH_DEF;
     mcdp->mvfs_init_sizes.size[MVFS_SETCACHE_CTXT_ATIME_REFRESH] = mcdp->mvfs_ctxt_atime_refresh;
-    MVFS_SIZE_DEFLOAD_NONZERO(mcdp->mvfs_ctxt_atime_refresh, mma_sizes, CTXT_ATIME_REFRESH, MVFS_CTXT_ATIME_REFRESH_DEF);
     return 0;
 }
 
@@ -1810,4 +1728,4 @@ mvfs_flush_credlists(
         mvfs_clear_release_credlist(clist);
     }
 }
-static const char vnode_verid_mvfs_clearops_c[] = "$Id:  a1384c37.393411e0.8be9.00:1e:37:56:f9:bc $";
+static const char vnode_verid_mvfs_clearops_c[] = "$Id:  ede371a4.1def11e2.8579.00:01:84:c3:8a:52 $";

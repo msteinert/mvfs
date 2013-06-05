@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 2006, 2010. */
+/* * (C) Copyright IBM Corporation 2006, 2013. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -577,6 +577,14 @@ mvfs_rddir_cache_enter(
     struct mvfs_rce *entryp
 );
 
+/* Expects, and asserts, that the given mnode is locked.
+ */
+EXTERN void
+mvfs_rddir_cache_enter_mnlocked(
+    struct mfs_mnode *mnp,
+    struct mvfs_rce *entryp
+);
+
 EXTERN int
 mvfs_rddir_cache_setcaches(mvfs_cache_sizes_t *szp);
 
@@ -949,11 +957,12 @@ typedef struct mvfs_mndestroylist {
 /*
  * Audit file structure.
  * There is one of these for each active auditfile.
- * All processes in the same audit will reference the same
- * auditfile structure, sharing one buffer, so that the
- * auditfile entries are ordered, and properly appended
- * in a sequential manner to the file.
+ * All processes in the same audit will reference the same auditfile structure,
+ * sharing one buffer, so that the auditfile entries are ordered, and properly
+ * appended in a sequential manner to the file.
  *
+ * Lock Ordering: The global mfs_aflock is taken before the individual 
+ * auditfile's lock.
  */
 
 struct mfs_auditfile {
@@ -962,24 +971,30 @@ struct mfs_auditfile {
 	 */
 	struct mfs_auditfile *next;	/* List of auditfile structs */
 	struct mfs_auditfile *prev;
-	u_int		 refcnt;	/* Refcnt of procs using file */
+
+        /*
+         * The following 3 flags are locked by the auditfile's own lock
+         *
+         * The 'obsolete' field is a little funky.  It is used
+         * to tell other processes (long running daemons spawned
+         * under an audit) that they should close out their reference
+         * to this audit file, and stop auditing.  Even though it
+         * is modified and readers hold no lock, this is OK since
+         * a process will pick up the flag on the next attempted
+         * audit write.
+         */
+        u_int        obsolete;		/* Audit stopped, cleanup reference */
+        u_int        destroy;		/* destroy flag, 1 marked for destroy */
+        u_int        refcnt;		/* Refcnt of procs using file */
+        LOCK_T       lock;		/* Lock for the structure */
+
 	/*
 	 * The following are protected by the global mfs_aflock,
  	 * and in addition can be read without any locks held
  	 * as long as there is a reference count on the auditfile
 	 * struct.
- 	 *
-	 * The 'obsolete' field is a little funky.  It is used 
-	 * to tell other processes (long running daemons spawned
-	 * under an audit) that they should close out their reference
-	 * to this audit file, and stop auditing.  Even though it
-	 * is modified and readers hold no lock, this is OK since
-	 * a process will pick up the flag on the next attempted
-	 * audit write.
-	 */
-	LOCK_T		 lock;		/* Lock for the structure */
+ 	 */
 	CLR_VNODE_T     *cvp;           /* Vnode of audit file */
-	u_int		 obsolete;	/* Audit stopped, cleanup reference */
 	mfs_pn_char_t  	*path;		/* Audit output file pathname */
 	mfs_pn_char_t  	*upath;		/* Audit output file pathname in uspace */
 	CRED_T	        *cred;		/* Credentials from setaudit */
@@ -1550,6 +1565,7 @@ extern view_bhandle_t mfs_null_bh;
  */
 extern int mvfs_acenabled;	/* In mfs_vnodeops.c */
 extern int mvfs_rlenabled;
+extern int mvfs_rdcenabled;
 extern int mvfs_ctoenabled;
 extern int mvfs_dncenabled;	/* In mfs_dncops.c */
 extern int mvfs_dncnoentenabled;
@@ -2260,7 +2276,8 @@ mfs_viewdirmkdir(P1(VNODE_T *dvp)
 		 PN(VATTR_T *vap)
 		 PN(VNODE_T **vpp)
 		 PN(CRED_T *cred)
-		 PN(mfs_pn_char_t *hostnm));
+		 PN(mfs_pn_char_t *hostnm)
+		 PN(tbs_boolean_t is_windows_view));
 
 EXTERN int 
 mfs_viewdirrmdir(P1(VNODE_T *dvp) 
@@ -2623,8 +2640,7 @@ mvfs_clnt_get(
     struct mfs_retryinfo *rinfo,
     CRED_T *cred,
     VNODE_T *view,
-    CLIENT **client_p,
-    ks_uint32_t *boottime_p
+    CLIENT **client_p
 );
 
 EXTERN void
@@ -4022,4 +4038,4 @@ EXTERN tbs_boolean_t mvfs_unload_in_progress;
 #endif
 
 #endif /* MVFS_BASE_H_ */
-/* $Id: 6a6be74b.dc5411df.9210.00:01:83:0a:3b:75 $ */
+/* $Id: fc099f79.64cc11e2.880d.00:01:83:0d:bf:e7 $ */

@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2010. */
+/* * (C) Copyright IBM Corporation 1991, 2013. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -150,7 +150,13 @@ mfs_afpnew(
 	CVN_HOLD(cvp);	/* Hold for this reference */
 	INITLOCK(&afp->lock, "afplock ");
 	afp->curpos = afp->buf;
-   	afp->refcnt = 1;
+        /*
+         * It is OK to set these values without the afp->lock held
+         * since the afp is not yet on the mfs_aflist.
+         */
+        afp->refcnt = 1;        /* init */
+        afp->destroy = 0;       /* init destroy flag */
+        afp->obsolete = 0;      /* init obsolete flag */
 	ADD_TO_EOL(&(madp->mfs_aflist), afp);
     }
 
@@ -192,8 +198,9 @@ mfs_afpget(
          afp = afp->next)
     {
 	/*
-	 * Only reuse audit entry if both the same pathname
-	 * and the same vnode (from the lookup of that pathname).
+         * Only reuse audit entry if (1) it is not marked to be destroyed,
+         * and (2) there is a match on both the pathnames and the vnode
+         * (from the lookup of that pathname).
 	 * It is possible to have entries that have not been
 	 * freed yet because some daemon was started under the build.
 	 * e.g. clearmake creates /tmp/auditfile
@@ -205,12 +212,15 @@ mfs_afpget(
 	 *    but this is a different object (and vnode), even
 	 *    though the name is the same.
  	 */
-	if ((STRCMP(pname, afp->path) == 0) &&
+        if (afp->destroy != 1 &&
+            (STRCMP(pname, afp->path) == 0) &&
             CVN_CMP(cvp, afp->cvp) &&
             (STRCMP(upname, afp->upath) == 0))
         {
+            MVFS_LOCK(&afp->lock);
 	    afp->refcnt++;
 	    afp->obsolete = 0;		/* Can't be obsolete. */
+            MVFS_UNLOCK(&afp->lock);
 	    MVFS_UNLOCK(&(madp->mfs_aflock));
 	    MDB_XLOG((MDB_AUDITF,
                       "afpget: afp=%"KS_FMT_PTR_T" refcnt=%d pid=%d\n",
@@ -235,13 +245,14 @@ mfs_afpdestroy(
 {
     mvfs_audit_data_t *madp = MDKI_AUDIT_GET_DATAP();
 
-    ASSERT(ISLOCKED(&(madp->mfs_aflock)));
-    ASSERT(afp->refcnt <= 1);	    /* No destroy if more refs */
+    ASSERT(afp->refcnt = 1);        /* No destroy if more refs */
 
     MDB_XLOG((MDB_AUDITF, "afpdestroy: afp=%"KS_FMT_PTR_T" refcnt=%d pid=%d\n",
               afp, afp->refcnt, MDKI_CURPID()));
 
+    MVFS_LOCK(&(madp->mfs_aflock));
     RM_LIST(afp);
+    MVFS_UNLOCK(&(madp->mfs_aflock));
     FREELOCK(&afp->lock);
     if (afp->cvp) CVN_RELE(afp->cvp);
     if (afp->path) STRFREE(afp->path);
@@ -261,9 +272,9 @@ mfs_auditfile_t *afp;
 {
     mvfs_audit_data_t *madp = MDKI_AUDIT_GET_DATAP();
 
-    MVFS_LOCK(&(madp->mfs_aflock));
+    MVFS_LOCK(&afp->lock);
     afp->refcnt++;
-    MVFS_UNLOCK(&(madp->mfs_aflock));
+    MVFS_UNLOCK(&afp->lock);
     /* we can't debug print inside afphold() because of spin locks
      * held. by callers.  This debug code is now in the callers.
      */
@@ -295,29 +306,22 @@ mvfs_thread_t *thr;
     MDB_XLOG((MDB_AUDITF, "afprele: afp=%"KS_FMT_PTR_T" refcnt=%d pid=%d\n",
               afp, afp->refcnt, MDKI_CURPID()));
 
-afp_race:
+    MVFS_LOCK(&afp->lock);
     if (afp->refcnt == 1) {   /* Sync contents */
 	mvfs_auditwrite_int(afp, thr);
-    }
 
-    MVFS_LOCK(&(madp->mfs_aflock));
-
-    if (afp->refcnt == 1) {
-        if (afp->curpos != afp->buf) {
-           /* The racer must have found this afp in the mfs_aflist in
-           ** mfs_afpget() while we were unlocked above, which would increment
-           ** the refcnt.  Then it did its writing, and called this routine to
-           ** decrement the refcnt, before we got the lock above to check the
-           ** refcnt.  So, now we have to go back and write out this new info.
-           */
-           MVFS_UNLOCK(&(madp->mfs_aflock));
-           goto afp_race;
-        }
+        /*
+         * Need to unlock apf->lock to prevent a deadlock, mfs_afpdestroy
+         * needs to take the global mfs_aflock.  So we mark this afp for
+         * destroy so it will be skipped when searching the auditfile list.
+         */
+        afp->destroy = 1;
+        MVFS_UNLOCK(&afp->lock);
         mfs_afpdestroy(afp);
     } else {
         afp->refcnt--;
+        MVFS_UNLOCK(&afp->lock);
     }
-    MVFS_UNLOCK(&(madp->mfs_aflock));
 }
 
 /* There are two versions because we need to release from both threads
@@ -368,12 +372,12 @@ STATIC void
 mfs_afp_obsolete(mth)
 mvfs_thread_t *mth;
 {
-    mvfs_audit_data_t *madp = MDKI_AUDIT_GET_DATAP();
+    register mfs_auditfile_t *afp;
 
-    if (mth->thr_afp == NULL) return;
-    MVFS_LOCK(&(madp->mfs_aflock));
-    mth->thr_afp->obsolete = 1;	/* Set obsolete flag */
-    MVFS_UNLOCK(&(madp->mfs_aflock));
+    afp = mth->thr_afp;
+    MVFS_LOCK(&afp->lock);
+    afp->obsolete = 1;  /* Set obsolete flag */
+    MVFS_UNLOCK(&afp->lock);
     return;
 }
 
@@ -1105,7 +1109,9 @@ mfs_audit(
          *         did this for every write call, we might be sync'ing
          *         every 20 bytes or so ... yeeech!  So, we do not
          *         do the VOP_GETATTR() for writes to allow sequential
-         *         writes without syncing every one.
+         *         writes without syncing every one.  Similarly we skip this
+         *         for Reads which saves on getattr calls to lessen lock
+         *         contention on the View vnode.
          */
 
         if (MDKI_AOP_KIND_NEEDS_REAL_MTIME(kind)) {
@@ -1113,7 +1119,7 @@ mfs_audit(
 	    MFS_INHREBIND(mth);
 	    if (MFS_VPISMFS(vp)) {
 	        BUMPSTAT(mfs_austat.au_vgetattr);
-		MFS_CHKSP(STK_MFSGETATTR);
+                MFS_CHKSP(STK_MFSGETATTR);
 		if (mfs_getattr(vp, &afp->va, 0, cd) == 0) {
 		    VATTR_GET_MTIME_TV(&afp->va, &mtime);
 	        } else {
@@ -1500,7 +1506,12 @@ void
 mvfs_auditwrite(thr)
 mvfs_thread_t *thr;
 {
-    mvfs_auditwrite_int(thr->thr_afp, thr);
+    register mfs_auditfile_t *afp;
+
+    afp = thr->thr_afp;
+    MVFS_LOCK(&afp->lock);
+    mvfs_auditwrite_int(afp, thr);
+    MVFS_UNLOCK(&afp->lock);
 }
 
 STATIC void
@@ -1524,18 +1535,10 @@ register mvfs_thread_t *mth;
     void *afp_file;
     u_long bytes_to_write;
 
-    /* If no buffer, nothing to do */
-
-    if (afp == NULL) {
-	return;
-    }
-
     MDKI_HRTIME(&stime);
 
     ASSERT(mth == mvfs_mythread());	/* we must inhibit ourselves */
-    /* Lock the auditfile buffer */
-
-    MVFS_LOCK(&afp->lock);
+    ASSERT(&afp->lock);
 
     /* If a delayed write error, just clear the bufptrs and return */
 
@@ -1671,8 +1674,7 @@ errout:
     afp->lastpos = NULL;		/* Reset ptrs */
     afp->curpos  = afp->buf;
 out:
-    MVFS_UNLOCK(&afp->lock);
     MVFS_BUMPTIME(stime, dtime, mfs_austat.au_time);
     return;
 }
-static const char vnode_verid_mvfs_auditops_c[] = "$Id:  99dcafdf.e5fa11df.986f.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_auditops_c[] = "$Id:  4cfe757e.6a6611e2.936a.00:01:83:0d:bf:e7 $";

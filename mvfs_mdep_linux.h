@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1999, 2010. */
+/* * (C) Copyright IBM Corporation 1999, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -191,17 +191,6 @@ struct mvfs_statistics_data;
 EXTERN void
 mvfs_linux_stat_zero(struct mvfs_statistics_data *sdp);
 #define MVFS_STAT_ZERO(sdp) mvfs_linux_stat_zero(sdp);
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18)
-/*
- * Skips getattr for both read/write audit operations, because getattr forces
- * a write flush to update mtime, which severely affects audited builds.
- * The mtime for auditing is informational only and can safely use the value
- * obtained by the last getattr call.
- */
-# define MDKI_AOP_KIND_NEEDS_REAL_MTIME(OP_KIND)  \
-                ((OP_KIND) != MFS_AR_WRITE && (OP_KIND) != MFS_AR_READ)
-#endif
 
 #define UIOMOVE(kbuf,klen,direction,uiop) \
     mdki_linux_readlink_uiomove(kbuf, klen, direction, uiop)
@@ -496,10 +485,8 @@ typedef struct timespec timestruc_t;
  * Time functions.
  *    ctime:  return current time in seconds
  *    hrtime: return timestruc time (time in secs and nsecs)
- *    boottime: seconds since epoch of system boot
  */
 
-#define BOOTTIME()      	(mdki_linux_boottime)
 #define MVFS_FMT_CTIME_X KS_FMT_TIME_T_X
 
 /* Process definitions */
@@ -519,6 +506,19 @@ mvfs_linux_procvalid(struct mvfs_proc *mprocp);
 #define MDKI_MYPROCTAG(tagp, procid) *(tagp) = mdki_get_proctag(MDKI_CURPROC())
 #define MDKI_PROCTAG(tagp, procp) *(tagp) = mdki_get_proctag(procp)
 #define MDKI_PROCTAG_EQ(a,b)    (*(a) == *(b))
+
+/* Macros for atomic operations */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,9)
+#define MDKI_ATOMIC_READ_UINT32(addr) atomic_read(addr)
+/* Atomically increment unsigned integer and return new value */
+#define MDKI_ATOMIC_INCR_UINT32_NV(addr) atomic_inc_return(addr)
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,16)
+/* Atomic compare and swap of unsigned intger */
+#define MDKI_ATOMIC_CAS_UINT32(addr, cmpval, newval) \
+    ((atomic_cmpxchg((addr), (cmpval), (newval)) == (cmpval)) ? 1 : 0)
+#endif
 
 /*
  * Match and hash process objects based on PID.  This used to be based
@@ -857,9 +857,18 @@ struct rpc_clnt;
  * the client handle itself to satisfy the checks.
  */
 #define MDKI_CLNT_AUTH_VALID(cl) ((cl) != NULL)
-#define MDKI_ALLOC_XID()			mvfs_linux_alloc_xid()
 #define MDKI_SET_XID(cl,xid)
-u_long mvfs_linux_alloc_xid(void);
+ks_uint32_t mvfs_linux_alloc_xid(void);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
+#define MVFS_XID_T uint32_t
+#define MDKI_ALLOC_XID() mvfs_linux_alloc_xid()
+#else
+#define MVFS_XID_T atomic_t
+#define MVFS_XID_ULIMIT (0x7fffffff)
+#define MDKI_ALLOC_XID() mvfs_alloc_xid()
+#define MVFS_COMMON_ALLOC_XID
+#endif
 
 void
 mvfs_linux_clnt_geterr(
@@ -878,7 +887,13 @@ mvfs_linux_clnt_get_servaddr(
 #define MDKI_CLNTKUDP_ADDR_T			int /* not really used */
 #define MDKI_SIGMASK_T                          int /* not really used */
 
-#define MVFS_GENERIC_PROD_PARENT_DIR_CACHE
+extern int
+mvfs_linux_prod_parent_dir_cache(
+    struct mfs_mnode *mnp,
+    CRED_T *cred
+);
+
+#define MVFS_PROD_PARENT_DIR_CACHE  mvfs_linux_prod_parent_dir_cache
 
 struct mfs_callinfo;                    /* forward decl */
 
@@ -991,7 +1006,7 @@ mvfs_linux_misc_free(void);
 #define MVFS_LINK_CTX_T    link_ctx
 #define MVFS_REMOVE_CTX_T  unlink_ctx
 #define MVFS_SYMLINK_CTX_T symlink_ctx
-#define MVFS_FSYNC_CTX_T   file_ctx
+#define MVFS_FSYNC_CTX_T   fsync_ctx
 #define MVFS_LOCKCTL_CTX_T file_ctx
 #define MVFS_MKDIR_CTX_T   mkdir_ctx
 #define MVFS_RENAME_CTX_T  rename_ctx
@@ -1072,5 +1087,7 @@ mvfs_linux_ioctl_chk_cmd(
 #endif
 #endif
 
+/* Allow mnode allocation to sleep */
+#define MNODE_ALLOC_FLAG KM_SLEEP
 #endif
-/* $Id: 693be71b.dc5411df.9210.00:01:83:0a:3b:75 $ */
+/* $Id: ffcbc087.236411e2.8951.00:01:84:c3:8a:52 $ */

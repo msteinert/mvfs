@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2010 IBM Corporation.
+ * Copyright (C) 1999, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -64,6 +64,14 @@ vnode_fop_poll(
     FILE_T *file_p,
     struct poll_table_struct *pt_p
 );
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+extern long
+vnode_fop_ioctl(
+    FILE_T *file_p,
+    uint cmd,
+    ulong arg
+);
+#else /* LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36) */
 extern int
 vnode_fop_ioctl(
     INODE_T *ino_p,
@@ -71,6 +79,7 @@ vnode_fop_ioctl(
     uint cmd,
     ulong arg
 );
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36) */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,16) && defined(RATL_COMPAT32)
 extern long
 vnode_fop_compat_ioctl(
@@ -101,12 +110,28 @@ vnode_fop_release(
     INODE_T *ino_p,
     FILE_T *file_p
 );
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
 extern int
 vnode_fop_fsync(
     FILE_T *file_p,
     DENT_T *dentry_p,
     int datasync
 );
+#elif defined(MRG)
+extern int
+vnode_fop_fsync(
+    FILE_T *file_p,
+    int datasync
+);
+#else
+extern int
+vnode_fop_fsync(
+    FILE_T *file_p,
+    loff_t start,
+    loff_t end,
+    int datasync
+);
+#endif
 #if defined(RATL_SUSE) && RATL_VENDOR_VER == 900
 
 /* The this covers the SLES9 kernel which doesn't have the hooks needed
@@ -119,7 +144,11 @@ F_OPS_T vnode_file_file_ops = {
         .read =               &vnode_fop_read,
         .write =              &vnode_fop_write,
         .poll =               &vnode_fop_poll,
+# if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+        .unlocked_ioctl =     &vnode_fop_ioctl,
+# else
         .ioctl =              &vnode_fop_ioctl,
+# endif
         .open =               &vnode_fop_open,
         .flush =              &vnode_fop_flush,
         .release =            &vnode_fop_release,
@@ -132,7 +161,11 @@ F_OPS_T vnode_file_mmap_file_ops = {
         .read =               &vnode_fop_read,
         .write =              &vnode_fop_write,
         .poll =               &vnode_fop_poll,
+# if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+        .unlocked_ioctl =     &vnode_fop_ioctl,
+# else
         .ioctl =              &vnode_fop_ioctl,
+# endif
         .mmap =               &vnode_fop_mmap,
         .open =               &vnode_fop_open,
         .flush =              &vnode_fop_flush,
@@ -166,7 +199,11 @@ F_OPS_T vnode_file_file_ops = {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,16) && defined(RATL_COMPAT32)
         .compat_ioctl =       &vnode_fop_compat_ioctl,
 #else
+# if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+        .unlocked_ioctl =     &vnode_fop_ioctl,
+# else
         .ioctl =              &vnode_fop_ioctl,
+# endif
 #endif
         .open =               &vnode_fop_open,
         .flush =              &vnode_fop_flush,
@@ -183,6 +220,8 @@ F_OPS_T vnode_file_mmap_file_ops = {
         .poll =               &vnode_fop_poll,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,16) && defined(RATL_COMPAT32)
         .compat_ioctl =       &vnode_fop_compat_ioctl,
+#elif LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+        .unlocked_ioctl =     &vnode_fop_ioctl,
 #else
         .ioctl =              &vnode_fop_ioctl,
 #endif
@@ -384,6 +423,14 @@ vnode_fop_poll(
     return mask;
 }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+long
+vnode_fop_ioctl(
+    FILE_T *file_p,
+    uint cmd,
+    ulong arg
+)
+#else /* LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36) */
 int
 vnode_fop_ioctl(
     INODE_T *ino_p,
@@ -391,6 +438,7 @@ vnode_fop_ioctl(
     uint cmd,
     ulong arg
 )
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36) */
 {
     int err;
     int rval;                           /* unused */
@@ -401,7 +449,11 @@ vnode_fop_ioctl(
     mdki_linux_init_call_data(&cd);
     ctx.filp = file_p;
     ctx.caller_is_32bit = 0;            /* unknown as of yet */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+    err = VOP_IOCTL(ITOV(file_p->f_path.dentry->d_inode), cmd, (void *)arg, 0, &cd, &rval, NULL, &ctx);
+#else
     err = VOP_IOCTL(ITOV(ino_p), cmd, (void *)arg, 0, &cd, &rval, NULL, &ctx);
+#endif
     err = mdki_errno_unix_to_linux(err);
     mdki_linux_destroy_call_data(&cd);
     return err;
@@ -415,7 +467,11 @@ vnode_fop_compat_ioctl(
     ulong arg
 )
 {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,36)
+    return vnode_fop_ioctl(file_p, cmd, arg);
+#else
     return vnode_fop_ioctl(file_p->f_dentry->d_inode, file_p, cmd, arg);
+#endif
 }
 #endif
 int
@@ -563,34 +619,71 @@ vnode_fop_flush(
  * an issue.
  */
 
-int
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+extern int
 vnode_fop_fsync(
-    FILE_T *fp,
+    FILE_T *file_p,
     DENT_T *dentry_p,
     int datasync
 )
+#elif defined(MRG)
+extern int
+vnode_fop_fsync(
+    FILE_T *file_p,
+    int datasync
+)
+#else
+extern int
+vnode_fop_fsync(
+FILE_T *file_p,
+loff_t start,
+loff_t end,
+int datasync
+)
+#endif
 {
     INODE_T *ip;
     int err;
     CALL_DATA_T cd;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
+    fsync_ctx ctx;
+#endif
 
-    if (fp == NULL) {
-        /* NFSD sometimes calls with null fp and dentry_p filled in. */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+    if (file_p == NULL) {
+        /* NFSD sometimes calls with null file_p and dentry_p filled in. */
         ASSERT(dentry_p != NULL);
         ip = dentry_p->d_inode;
     } else
-        ip = fp->f_dentry->d_inode;
+#endif
+        ip = file_p->f_dentry->d_inode;
 
     ASSERT_I_SEM_MINE(ip);
     ASSERT(MDKI_INOISOURS(ip));
     if (!MDKI_INOISMVFS(ip)) {
-        MDKI_VFS_LOG(VFS_LOG_ERR, "%s shouldn't be called? (files swapped at open): fp=%p dp=%p\n", __func__, fp, dentry_p);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+        MDKI_VFS_LOG(VFS_LOG_ERR, "%s shouldn't be called? (files swapped "
+                "at open): file_p=%p dp=%p\n", __func__, file_p, dentry_p);
+#else
+        MDKI_VFS_LOG(VFS_LOG_ERR, "%s shouldn't be called? (files swapped "
+                "at open): file_p=%p dp=%p\n", __func__, file_p, file_p->f_dentry);
+#endif
         return 0;                       /* don't fail the operation, though */
     }
 
     mdki_linux_init_call_data(&cd);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
     err = VOP_FSYNC(ITOV(ip), datasync == 0 ? FLAG_NODATASYNC : FLAG_DATASYNC,
-                    &cd, (file_ctx *)fp);
+                    &cd, (file_ctx *)file_p);
+#else
+    ctx.file_p = file_p;
+#if !defined (MRG)
+    ctx.start = start;
+    ctx.end = end;
+#endif /* !defined (MRG) */
+    err = VOP_FSYNC(ITOV(ip), datasync == 0 ? FLAG_NODATASYNC : FLAG_DATASYNC,
+                    &cd, &ctx);
+#endif /* else LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35) */
     err = mdki_errno_unix_to_linux(err);
     mdki_linux_destroy_call_data(&cd);
     return err;
@@ -747,4 +840,4 @@ vnode_fop_readdir(
     return err;
 }
 
-static const char vnode_verid_mvfs_linux_fops_c[] = "$Id:  a73bf76b.dc5411df.9210.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_linux_fops_c[] = "$Id:  0e15822f.e6e311e1.8799.00:01:84:c3:8a:52 $";

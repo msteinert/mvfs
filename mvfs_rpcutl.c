@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2009. */
+/* * (C) Copyright IBM Corporation 1991, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -35,7 +35,6 @@ mfscall_int(
     struct mfs_callinfo *trait,
     int op,
     XID_T *xidp,
-    ks_uint32_t lboottime,
     struct mfs_svr *svr,
     struct mfs_retryinfo *rinfo,
     xdrproc_t xdrargs,
@@ -59,6 +58,11 @@ EXTERN void mfs_view_setxid(P1(void *req) PN(time_t bt) PN(XID_T xid));
 EXTERN int mfs_albd_getstatus(P1(void *resp));
 EXTERN XID_T mfs_albd_getxid(P1(void *resp));
 EXTERN void mfs_albd_setxid(P1(void *req) PN(time_t bt) PN(XID_T xid));
+STATIC ks_uint32_t mvfs_get_boottime(void);
+
+#if defined(MVFS_COMMON_ALLOC_XID)
+EXTERN ks_uint32_t mvfs_alloc_xid(void);
+#endif
 
 /* MVFS_CLNT_INIT - init client cache */
 /* Note that while this function has code that will try to reduce the cache
@@ -254,8 +258,7 @@ mvfs_clnt_get(
     struct mfs_retryinfo *rinfo,
     CRED_T *cred,
     VNODE_T *view,
-    CLIENT **client_p,
-    ks_uint32_t *boottime_p
+    CLIENT **client_p
 )
 {
     CLIENT *client = NULL;
@@ -291,7 +294,9 @@ mvfs_clnt_get(
 	         clientp->inuse = 1;
 	         clientp->used++;
 	         client = clientp->client;
-                 lboottime = clientp->boottime;
+
+                 clientp->boottime = mvfs_get_boottime();
+
                  /* We should find a way to ASSERT the client handle's proto/version
                     match the cached records and the requested traits */
 	         error = MDKI_CLNTKUDP_INIT(client, &svr->addr.ks_ss_s, retrans, cred,
@@ -315,7 +320,7 @@ getclient:
         /*
          * Compute the boottime to go with this CLIENT handle.
          */
-        lboottime = (ks_uint32_t)BOOTTIME();
+        lboottime = mvfs_get_boottime();
 	switch (error) {
           case 0:
             break;
@@ -334,6 +339,22 @@ getclient:
 		waited++;
 		goto getclient;
 	    }
+            /* Fall through */
+            /* If normal errors have retried and failed again, they will 
+             * fall through to this case.  If the error is ERESTART 
+             * (or ERESTARTSYS on Linux) then it means that we have 
+             * received a signal.  We will not retry, just log the event
+             * and get out.
+             * It turns out that HP-UX does not have ERESTART, so be
+             * careful with this code, the cases below may not exist
+             * so this would be a bad place for a break statement.
+             */
+#ifdef ERESTART
+          case ERESTART:
+#endif
+#ifdef ERESTARTSYS
+          case ERESTARTSYS:
+#endif
 	    mvfs_log(MFS_LOG_ERR,
 		     "cannot allocate RPC client handle, giving up (err %d)\n", error);
             *client_p = NULL;		/* This is bad! */
@@ -389,7 +410,6 @@ getclient:
 	MDKI_PANIC("mfs_clnt_alloc: null auth");
 
     *client_p = client;
-    *boottime_p = lboottime;
     return 0;
 }
 
@@ -529,6 +549,44 @@ XID_T xid;
     ((albd_hdr_req_t *)req)->boot_time = bt;
     ((albd_hdr_req_t *)req)->xid = xid;
 }
+
+/* Routine to initialize or get current boottime */
+STATIC ks_uint32_t
+mvfs_get_boottime(void)
+{
+    mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
+
+    if (mcdp->mvfs_boottime == 0) {
+        mcdp->mvfs_boottime = MDKI_CTIME();
+    }
+
+    return(mcdp->mvfs_boottime);
+}
+
+#if defined(MVFS_COMMON_ALLOC_XID)
+/* Routine to allocate unique XID for RPCs between MVFS and CC servers */
+
+ks_uint32_t 
+mvfs_alloc_xid(void)
+{
+    ks_uint32_t xid = 0;
+    mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
+
+retry:
+    if (MDKI_ATOMIC_CAS_UINT32(&(mcdp->mvfs_xid), MVFS_XID_ULIMIT, 0)) {
+        mcdp->mvfs_boottime = MDKI_CTIME();
+        return((ks_uint32_t)MDKI_ATOMIC_INCR_UINT32_NV(&(mcdp->mvfs_xid)));
+    } else {
+        xid = MDKI_ATOMIC_READ_UINT32(&(mcdp->mvfs_xid));
+        if ((xid != MVFS_XID_ULIMIT) &&
+            MDKI_ATOMIC_CAS_UINT32(&(mcdp->mvfs_xid), xid, xid + 1)) {
+            return(xid + 1);
+        } else {
+            goto retry;
+        }
+    }
+}
+#endif
 
 /*
  * Maximum timeout in 10'ths of seconds.
@@ -875,7 +933,7 @@ mvfs_bindsvr_port(
     albd_retryp->rebind = 0;			/* But no rebind */
 
     /* Call the albd to ask for the server's port */
-    rap->hdr.xid = MDKI_ALLOC_XID();
+    rap->hdr.xid = (u_long)MDKI_ALLOC_XID();
     rap->rpc_trait.rpc_prog = VIEW_SERVER;
     rap->rpc_trait.rpc_ver = VIEW_SERVER_VERS;
     rap->rpc_trait.protocol = ALBD_PROTOCOL_UDP;
@@ -1007,9 +1065,11 @@ mfs_vwcall(
     struct mfs_retryinfo *rinfop;
     int pri;
     int status;
+    int retrans;
     int suppress_console_msg;
+    MDKI_CLNTKUDP_ADDR_T addr;
     static MVFS_PROCID_T suppress_last_pid = 0;
-    ks_uint32_t lboottime;
+
     /* Declare a type so we can do one allocation to save stack space. */
     struct {
         mfs_mnode_t *mnp;
@@ -1042,14 +1102,14 @@ mfs_vwcall(
     }
 
     error = mvfs_clnt_get(mfs_viewcall, &alloc_unitp->mnp->mn_view.svr,
-                          rinfop, cred, vw, &alloc_unitp->client, &lboottime);
+                          rinfop, cred, vw, &alloc_unitp->client);
     if (error != 0) {
 	/* oh boy, this really bites... */
         goto cleanup;
     }
-    xid = MDKI_ALLOC_XID();  /* Allocate an XID we can keep */
+    xid = (XID_T)MDKI_ALLOC_XID();  /* Allocate an XID we can keep */
 
-    while ((callerr = error = mfscall_int(mfs_viewcall, op, &xid, lboottime,
+    while ((callerr = error = mfscall_int(mfs_viewcall, op, &xid,
 			&alloc_unitp->mnp->mn_view.svr, rinfop,  xdrargs, argsp,
 			xdrres, resp, cred, alloc_unitp->client, vw)) == EAGAIN) {
 
@@ -1076,10 +1136,26 @@ mfs_vwcall(
 	    rinfop->rebind = 0;
 	    rinfop->timeo = VFS_TO_MMI(vfsp)->mmi_retry.timeo;
 	}
-	/* Rebind client handle too */
-	mvfs_clnt_free(alloc_unitp->client, error, vw);
-	error = mvfs_clnt_get(mfs_viewcall, &alloc_unitp->mnp->mn_view.svr,
-                              rinfop, cred, vw, &alloc_unitp->client, &lboottime);
+
+        retrans = (alloc_unitp->mnp->mn_view.svr.down) ? 1 : rinfop->retries;
+
+        /* Free client creds */
+        MDKI_CLNTKUDP_FREE(alloc_unitp->client);
+        /* Re-initialize the client handle */
+        error = MDKI_CLNTKUDP_INIT(alloc_unitp->client, 
+                                   &alloc_unitp->mnp->mn_view.svr.addr.ks_ss_s,
+                                   retrans, cred, (!rinfop->nointr), &addr, 
+                                   mfs_viewcall->proto, mfs_viewcall->version,
+                                   &alloc_unitp->mnp->mn_view.svr.knc);
+
+        mvfs_log(MFS_LOG_DEBUG, 
+                 "mvfs vw call: retrying RPC after server rebind and client "
+                 "handle re-init: xid=%lu, view=%s, host=%s, status=%d, "
+                 "vob=%s, re-init error code=%u, boottime=%"KS_FMT_TIME_T_D"\n",
+                 xid, mfs_vw2nm(vw), alloc_unitp->mnp->mn_view.svr.host, 
+                 ((view_hdr_reply_t *)resp)->status,
+                 VFS_TO_MMI(vfsp)->mmi_mntpath, error, mvfs_get_boottime());
+
 	if (error != 0) {
             goto cleanup;
         }
@@ -1203,6 +1279,14 @@ print_error:
 			mfs_vw2nm(vw),
 			VFS_TO_MMI(vfsp)->mmi_svr.host));
 		break;
+
+              case TBS_ST_RPC_STALE:
+                mvfs_log(MFS_LOG_ERR, 
+                         "view %s on host %s found RPC(xid=%lu) to be stale. vob=%s\n",
+                         mfs_vw2nm(vw), alloc_unitp->mnp->mn_view.svr.host, 
+                         xid, VFS_TO_MMI(vfsp)->mmi_mntpath);
+                break;
+
 	      default:
 
 		/* If view gave EIO and no interpretation here, then tell user
@@ -1264,18 +1348,17 @@ mfscall(
 )
 {
     CLIENT *client;
-    ks_uint32_t lboottime;
     int error;
     XID_T xid;
 
     ASSERT(ixid == 0); /* must allow us to allocate the xid */
     
-    error = mvfs_clnt_get(trait, svr, rinfo, cred, view, &client, &lboottime);
+    error = mvfs_clnt_get(trait, svr, rinfo, cred, view, &client);
     if (error != 0)
 	return error;
-    xid = MDKI_ALLOC_XID();
+    xid = (XID_T)MDKI_ALLOC_XID();
 
-    error = mfscall_int(trait, op, &xid, lboottime, svr, rinfo, xdrargs, argsp,
+    error = mfscall_int(trait, op, &xid, svr, rinfo, xdrargs, argsp,
 			xdrres, resp, cred, client, view);
     mvfs_clnt_free(client, error, view);
     return(error);
@@ -1290,7 +1373,6 @@ mfscall_int(
     struct mfs_callinfo *trait,
     int op,
     XID_T *xidp,                        /* Transaction ID must be supplied */
-    ks_uint32_t lboottime,
     struct mfs_svr *svr,
     struct mfs_retryinfo *rinfo,
     xdrproc_t xdrargs,
@@ -1309,6 +1391,7 @@ mfscall_int(
     XID_T xid = 0;
     int retrans;
     MDKI_SIGMASK_T saved_holdmask;
+    ks_uint32_t lboottime;
 
     /* Declare a type so we can do one allocation to save stack space. */
     struct {
@@ -1379,6 +1462,8 @@ mfscall_int(
     alloc_unitp->ruid_cred = NULL;
     alloc_unitp->pvp = 0;
 retry_call:
+    lboottime = mvfs_get_boottime();
+
     /* Set return error struct to none */
 
     alloc_unitp->rpcerr.re_errno = 0;
@@ -1389,24 +1474,26 @@ retry_call:
      * ipaddr,port,boot_time,xid to detect duplicates.  xids lower
      * than the latest xid seen at the server are deemed to be
      * duplicates (until a timeout expires and state is forgotten).
-     * The boot_time is included so that the server can detect when a
+     * boottime is included so that the server can detect when a
      * node has been rebooted, and not discard new requests.
-     * boot_time is also useful for some mutant OSes that use one UDP
-     * port for all CLIENT handles since it can serve as a
-     * differentiator between the handles to avoid unnecessary
-     * view_server RPC rejections (as long as those OSes provide a
-     * BOOTTIME() macro that generates unique numbers rather than a
-     * fixed time.)  We want the view server to be able to detect real
-     * network errors (packet delay/duplication/reordering) within the
-     * stream generated by a single CLIENT handle, so we use the same
-     * boottime value for all uses of a particular CLIENT.  For most
-     * OSes, BOOTTIME() always returns the same value so all CLIENTs
-     * have the same boottime, but different UDP source ports.  Mutant
+     * boottime is also useful for some mutant OSes that use one UDP
+     * port for all CLIENT handles since it can serve as a differentiator 
+     * between the handles to avoid unnecessary view_server RPC rejections 
+     * (as long as those OSes provide a mechanism to generate unique numbers
+     * rather than a fixed time).  We want the view server to be able to 
+     * detect real network errors (packet delay/duplication/reordering) 
+     * within the stream generated by a single CLIENT handle, so we use the
+     * same boottime value for all uses of a particular CLIENT.  
+     *
+     * The boottime value returned by mvfs_get_boottime() is the same until 
+     * XID wraps around.  Hence, all CLIENTs have the same boottime, but 
+     * different UDP source ports.  Once XID wraps around, mvfs_boottime is 
+     * updated and mvfs_get_boottime() returns the updated value.  Mutant
      * OSes have a single UDP source port and distinct boottimes per
      * CLIENT.
      *
-     * Since this routine is using a single CLIENT, it uses the
-     * passed-in boottime for all its retries.
+     * Since this routine is using a single CLIENT, it uses the same boottime
+     * value for all its retries.
      */
     if (argsp)
         (*trait->set_xid)(argsp, lboottime, xid);
@@ -1578,7 +1665,7 @@ retry_call:
 	        if (error != 0) {
 	            goto errout;
 	        }
-		xid = MDKI_ALLOC_XID();
+		xid = (XID_T)MDKI_ALLOC_XID();
 		/* retry it */
 		goto retry_call;
 	    }
@@ -1658,7 +1745,7 @@ retry_call:
 	    if (error != 0) {
 	        goto errout;
 	    }
-	    xid = MDKI_ALLOC_XID();
+	    xid = (XID_T)MDKI_ALLOC_XID();
 	    goto retry_call;		/* Go retry from the start */
 	}
     }
@@ -1676,4 +1763,4 @@ errout:
     KMEM_FREE(alloc_unitp, sizeof(*alloc_unitp));
     return (error);
 }
-static const char vnode_verid_mvfs_rpcutl_c[] = "$Id:  6f8917a5.b44911de.8ddb.00:01:83:29:c0:fc $";
+static const char vnode_verid_mvfs_rpcutl_c[] = "$Id:  fefbc03f.236411e2.8951.00:01:84:c3:8a:52 $";

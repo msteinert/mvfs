@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1990, 2011. */
+/* * (C) Copyright IBM Corporation 1990, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -231,6 +231,11 @@ typedef int tbs_status_t;
                                                    */
 #define TBS_ST_NOT_LAST_VER     TBS_STBASE+48     /* not the last version on
                                                      the branch */
+#define TBS_ST_RPC_STALE        TBS_STBASE+49     /* RPC is stale as it's XID is
+                                                   * older than XID of the latest
+                                                   * RPC from the same transport
+                                                   * address.
+                                                   */
 /* WARNING: When adding an error status you must also update TWO other files:
  *	tbs_cmsg.m
  *	tbs_errno.c
@@ -640,4 +645,4 @@ typedef struct tbs_dirent_s {
 #endif
 
 #endif
-/* $Id: 59bf05d3.cb5d4b9a.9a5b.a5:a2:33:78:88:83 $ */
+/* $Id: fbcbbf4f.236411e2.8951.00:01:84:c3:8a:52 $ */

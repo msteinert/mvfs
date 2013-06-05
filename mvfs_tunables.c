@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 2001, 2007. */
+/* * (C) Copyright IBM Corporation 2001, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -42,6 +42,7 @@
  *			every open to fetch the current attributes over
  *			the wire (i.e. overrides the attribute cache).
  * mvfs_rlenabled:	enables the "readlink text" cache.
+ * mvfs_rdcenabled:     enables the rddir cache.
  * mvfs_rebind_dir_enable: enables "rebinding" (i.e. automatic "cd" command)
  *			of a user's current working dir to a new one which
  *			has become the appropriate one selected by his
@@ -61,6 +62,7 @@ int mvfs_rvcenabled = 1;
 int mvfs_acenabled = 1;
 int mvfs_ctoenabled = 1;
 int mvfs_rlenabled = 1;
+int mvfs_rdcenabled = 1;
 int mvfs_rebind_dir_enable = 1;
 int mvfs_vlinkcnt2 = 0;
 
@@ -246,9 +248,10 @@ int mvfs_copy_tunable(mvfs_common_data_t *mcdp)
     mcdp->mvfs_acenabled = mvfs_acenabled;
     mcdp->mvfs_ctoenabled = mvfs_ctoenabled;
     mcdp->mvfs_rlenabled = mvfs_rlenabled;
+    mcdp->mvfs_rdcenabled = mvfs_rdcenabled;
     mcdp->mvfs_rebind_dir_enable = mvfs_rebind_dir_enable;
     mcdp->mvfs_vlinkcnt2 = mvfs_vlinkcnt2;
 
     return 0;
 }
-static const char vnode_verid_mvfs_tunables_c[] = "$Id:  3b655ae4.c20911db.897a.00:01:83:a6:4c:63 $";
+static const char vnode_verid_mvfs_tunables_c[] = "$Id:  71d2f076.d67011e1.9c09.00:01:84:c3:8a:52 $";

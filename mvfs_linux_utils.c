@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2010 IBM Corporation.
+ * Copyright (C) 1999, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -421,6 +421,9 @@ typedef int (*ino_permission_fn_t)(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     , struct nameidata *
 #endif
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+    , unsigned int flags
+#endif
 );
 typedef int (*ino_setattr_fn_t)(
     struct dentry *,
@@ -471,12 +474,20 @@ typedef unsigned int (*file_poll_fn_t)(
     struct file *,
     struct poll_table_struct *
 );
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)
 typedef int (*file_ioctl_fn_t)(
     struct inode *,
     struct file *,
     unsigned int,
     unsigned long
 );
+#else
+typedef long (*file_ioctl_fn_t)(
+    struct file *,
+    unsigned int,
+    unsigned long
+);
+#endif
 typedef int (*file_mmap_fn_t)(
     struct file *,
     struct vm_area_struct *
@@ -495,11 +506,22 @@ typedef int (*file_release_fn_t)(
     struct inode *,
     struct file *
 );
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
 typedef int (*file_fsync_fn_t)(
     struct file *,
     struct dentry *,
     int
 );
+#else
+typedef int (*file_fsync_fn_t)(
+FILE_T *file_p,
+#if !defined(MRG)
+loff_t start,
+loff_t end,
+#endif
+int datasync
+);
+#endif
 typedef int (*file_fasync_fn_t)(
     int,
     struct file *,
@@ -544,7 +566,12 @@ F_OPS_T vnlayer_clrvnode_fops = {
     .read = (file_read_fn_t) &vnlayer_bogus_op,
     .write = (file_write_fn_t) &vnlayer_bogus_op,
     .poll = (file_poll_fn_t) &vnlayer_bogus_op,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)
     .ioctl = (file_ioctl_fn_t) &vnlayer_bogus_op,
+#else
+    .unlocked_ioctl = (file_ioctl_fn_t) vnlayer_bogus_op,
+    .compat_ioctl = (file_ioctl_fn_t) vnlayer_bogus_op,
+#endif
     .open = (file_open_fn_t) &vnlayer_bogus_op,
     .flush = (file_flush_fn_t) &vnlayer_bogus_op,
     .release = (file_release_fn_t) &vnlayer_bogus_op,
@@ -560,6 +587,7 @@ typedef int (*asop_readpage_fn_t)(
     struct file *,
     struct page *
 );
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
 typedef int (*asop_sync_page_fn_t)(
     struct page *
@@ -568,7 +596,8 @@ typedef int (*asop_sync_page_fn_t)(
 typedef void (*asop_sync_page_fn_t)(
     struct page *
 );
-#endif
+#endif /* else  < KERNEL_VERSION(2,6,18) */
+#endif /* < KERNEL_VERSION(2,6,39) */
 typedef int (*asop_writepages_fn_t)(
     struct address_space *,
     struct writeback_control *
@@ -649,7 +678,9 @@ typedef ssize_t (*asop_direct_IO_fn_t)(
 struct address_space_operations vnlayer_clrvnode_asops = {
     .writepage = (asop_writepage_fn_t) &vnlayer_bogus_op,
     .readpage = (asop_readpage_fn_t) &vnlayer_bogus_op,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39)
     .sync_page = (asop_sync_page_fn_t) &vnlayer_bogus_op,
+#endif
     .writepages = (asop_writepages_fn_t) &vnlayer_bogus_op,
     .set_page_dirty = (asop_set_page_dirty_fn_t) &vnlayer_bogus_op,
     .readpages = (asop_readpages_fn_t) &vnlayer_bogus_op,
@@ -912,6 +943,7 @@ extern struct fs_struct *
 vnlayer_make_temp_fs_struct(void)
 {
     struct fs_struct *new_fs;
+    MDKI_FS_LOCK_R_VAR(seq);
 
     new_fs = mdki_linux_kmalloc(sizeof(*new_fs), KM_SLEEP);
     if (new_fs == NULL)
@@ -922,13 +954,24 @@ vnlayer_make_temp_fs_struct(void)
     new_fs->in_exec = 0;
     new_fs->users = 0;
 #endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)
     rwlock_init(&new_fs->lock);
-    read_lock(&current->fs->lock);
+#else
+# if defined (MRG)
+    seqlock_init(&new_fs->lock);
+# else /* defined (MRG) */
+    spin_lock_init(&new_fs->lock);
+#  if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+    seqcount_init(&new_fs->seq);
+#  endif /* >= KERNEL_VERSION(2,6,38) */
+# endif /* else defined (MRG) */
+#endif /* else < KERNEL_VERSION(2,6,36) */
+    MDKI_FS_LOCK_R(current->fs, seq);    
     new_fs->umask = current->fs->umask;
     MDKI_FS_SET_ROOTDENTRY(new_fs, dget(vnlayer_sysroot_dentry));
     MDKI_FS_SET_PWDDENTRY(new_fs, dget(MDKI_FS_PWDDENTRY(current->fs)));
-    MDKI_FS_SET_ROOTMNT(new_fs, mntget(vnlayer_sysroot_mnt));
-    MDKI_FS_SET_PWDMNT(new_fs, mntget(MDKI_FS_PWDMNT(current->fs)));
+    MDKI_FS_SET_ROOTMNT(new_fs, MDKI_MNTGET(vnlayer_sysroot_mnt));
+    MDKI_FS_SET_PWDMNT(new_fs, MDKI_MNTGET(MDKI_FS_PWDMNT(current->fs)));
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     if (current->fs->altroot) {
         new_fs->altroot = dget(current->fs->altroot);
@@ -936,12 +979,12 @@ vnlayer_make_temp_fs_struct(void)
         new_fs->altroot = NULL;
     }
     if (current->fs->altrootmnt) {
-        new_fs->altrootmnt = mntget(current->fs->altrootmnt);
+        new_fs->altrootmnt = MDKI_MNTGET(current->fs->altrootmnt);
     } else {
         new_fs->altrootmnt = NULL;
     }
-#endif
-    read_unlock(&current->fs->lock);
+#endif /* < KERNEL_VERSION(2,6,27) */
+    MDKI_FS_UNLOCK_R(current->fs, seq);
     return(new_fs);
 }
 
@@ -989,7 +1032,8 @@ vnlayer_swap_task_fs(
  * This is not the case for file-system roots, so we will provide our own
  * function.
  * The dentry will be returned with its count incremented.
- * Must be called with dcache_lock acquired.
+ * For kernel versions prior to 2.6.38, it must be called with
+ * dcache_lock acquired. For later kernels, the inode->i_lock must be acquired.
  */
 
 extern struct dentry *
@@ -1056,9 +1100,12 @@ vnlayer_inode2dentry_internal_no_lock(
              * NFS server's job.  If there are no connected entries,
              * we try again and accept a disconnected entry.
              */
-            if (!want_connected || (found->d_flags & NFSD_DCACHE_DISCON) == 0)
-            {
+            if (!want_connected || (found->d_flags & NFSD_DCACHE_DISCON) == 0) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+                dget(found);
+#else
                 dget_locked(found);
+#endif
                 /*
                  * remove REFERENCED flag; we have our own cache and
                  * we don't really even want to be in the dcache.
@@ -1085,7 +1132,9 @@ vnlayer_inode2dentry_internal_no_lock(
 }
 
 /*
- * Just calls vnlayer_inode2dentry_internal_no_lock with dcache_lock acquired.
+ * Just calls vnlayer_inode2dentry_internal_no_lock with dcache_lock
+ * (if the kernel version is less than 2.6.38) or with the inode's spinlock
+ * acquired (for kernel versions after 2.6.37).
  */
 extern struct dentry *
 vnlayer_inode2dentry_internal(
@@ -1097,9 +1146,17 @@ vnlayer_inode2dentry_internal(
 {
     struct dentry *found;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+    spin_lock(&inode->i_lock);
+#else
     spin_lock(&dcache_lock);
+#endif
     found = vnlayer_inode2dentry_internal_no_lock(inode, parent, name, ops);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+    spin_unlock(&inode->i_lock);
+#else
     spin_unlock(&dcache_lock);
+#endif
     return(found);
 }
 
@@ -1128,7 +1185,7 @@ vnlayer_get_urdir_inode(void)
 struct vfsmount *
 vnlayer_get_root_mnt(void)
 {
-    return(mntget(MDKI_FS_ROOTMNT(current->fs)));
+    return(MDKI_MNTGET(MDKI_FS_ROOTMNT(current->fs)));
 }
 
 /*
@@ -1218,4 +1275,4 @@ mdki_vsnprintf(
 {
     return vsnprintf(str, limit, fmt, ap);
 }
-static const char vnode_verid_mvfs_linux_utils_c[] = "$Id:  f8c7240e.d6d511df.8121.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_linux_utils_c[] = "$Id:  0e95828f.e6e311e1.8799.00:01:84:c3:8a:52 $";

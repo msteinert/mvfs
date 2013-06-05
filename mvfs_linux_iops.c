@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2010 IBM Corporation.
+ * Copyright (C) 1999, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -89,6 +89,9 @@ vnode_iop_permission(
     int permtype
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     , struct nameidata *nd
+#endif
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+    , unsigned int flags
 #endif
 );
 
@@ -216,12 +219,26 @@ vnode_iop_permission(
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
     , struct nameidata *nd
 #endif
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+    , unsigned int flags
+#endif
 )
 {
     int err;
     CALL_DATA_T cd;
 
     ASSERT_I_SEM_NOT_MINE(ip);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+    /* We can't deal with RCU lookups, the lookup will happen after
+     * a rcu_read_lock call, which means we can't block. Additionally,
+     * vfsmount_lock is locked, which means we can't call mntput
+     * (and other functions). We use the permission callback to detect
+     * and refuse RCU operations, which are then retried without using RCU.
+     */
+    if (flags & IPERM_FLAG_RCU)
+        return -ECHILD;
+#endif
 
     mdki_linux_init_call_data(&cd);
 
@@ -235,9 +252,12 @@ vnode_iop_permission(
      * low bits.  Bits are in same order as standard UNIX rwx.
      */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
-    err = VOP_ACCESS(ITOV(ip), permtype << 6, 0, &cd, (nameidata_ctx *)nd);
-#else
+    err = VOP_ACCESS(ITOV(ip), permtype << 6, 0, &cd, (nameidata_ctx *) nd);
+#elif LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,32)
     err = VOP_ACCESS(ITOV(ip), permtype << 6, 0, &cd, NULL);
+#else
+    err = VOP_ACCESS(ITOV(ip), permtype << 6, 0, &cd, 
+                      (nameidata_ctx *) (unsigned long) flags);
 #endif
     err = mdki_errno_unix_to_linux(err);
 
@@ -405,10 +425,12 @@ vnode_iop_notify_change(
     VNODE_T *vp;
     VATTR_T *vap;
     VNODE_T *cvp;
-    int err;
+    int err = 0;
     DENT_T *rdent;
     CALL_DATA_T cd;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)
     mdki_boolean_t tooksem = FALSE;
+#endif
 
     if (iattr_p->ia_valid & ATTR_SIZE) {
         ASSERT_I_SEM_MINE(dent_p->d_inode);
@@ -439,6 +461,7 @@ vnode_iop_notify_change(
         rdent = REALDENTRY_LOCKED(dent_p, &cvp);
         VNODE_DGET(rdent);
         if (rdent && rdent->d_inode) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)
             err = inode_setattr(dent_p->d_inode, iattr_p);
             if (err == 0) {
                 if (iattr_p->ia_valid & ATTR_SIZE) {
@@ -455,13 +478,7 @@ vnode_iop_notify_change(
                      */
                     tooksem = TRUE;
                 }
-#if defined(SLES10SP2) || \
-    (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24) && \
-     LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32))
-                err = notify_change(rdent, CVN_TO_VFSMNT(cvp), iattr_p);
-#else
-                err = notify_change(rdent, iattr_p);
-#endif
+                err = MDKI_NOTIFY_CHANGE(rdent, CVN_TO_VFSMNT(cvp), iattr_p);
                 if (tooksem) {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13)
 #if !defined(RHEL_UPDATE) || RHEL_UPDATE < 5
@@ -471,6 +488,11 @@ vnode_iop_notify_change(
                     UNLOCK_INODE(rdent->d_inode);
                 }
             }
+#else /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36) */
+            err = simple_setattr(dent_p, iattr_p);
+            if (err == 0)
+                err = MDKI_NOTIFY_CHANGE(rdent, CVN_TO_VFSMNT(cvp), iattr_p);
+#endif /* else LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36) */
 	} else {
             /* It looks as though someone removed the realdentry on us.
 	     * I am not sure why this should happen.
@@ -638,6 +660,14 @@ vnode_iop_create(
     dentry->d_inode = NULL;
     ctx.dentry = dentry;
     ctx.parent = parent;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+    /* break any rcu-walk in progress */
+# if defined(MRG)
+    write_seqlock_barrier(&dentry->d_lock);
+# else /* defined (MRG) */
+    write_seqcount_barrier(&dentry->d_seq);
+# endif /* else defined (MRG) */
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38) */
     err = VOP_CREATE(ITOV(parent),
                      (/* drop const */ char *) dentry->d_name.name,
                      vap,
@@ -766,7 +796,7 @@ vnode_iop_lookup(
           case S_IFCHR:
           case S_IFBLK:
             ASSERT(dent->d_inode == NULL);
-            dent->d_op = &vnode_shadow_dentry_ops;
+            MDKI_SET_DOPS(dent, &vnode_shadow_dentry_ops);
             igrab(found_dentry->d_inode);
             VNODE_D_ADD(dent, found_dentry->d_inode);
             VNODE_DPUT(found_dentry);
@@ -784,9 +814,9 @@ vnode_iop_lookup(
      */
     if (dent->d_op != &vnode_shadow_dentry_ops) {
         if (dent->d_parent->d_op == &vnode_setview_dentry_ops)
-            dent->d_op = &vnode_setview_dentry_ops;
+            MDKI_SET_DOPS(dent, &vnode_setview_dentry_ops);
         else
-            dent->d_op = &vnode_dentry_ops;
+            MDKI_SET_DOPS(dent, &vnode_dentry_ops);
     }
     vap = VATTR_ALLOC();
     if (vap == NULL) {
@@ -1319,7 +1349,7 @@ vnlayer_rename_peer(DENT_T *dent)
          * rename.
          */
         peer = VNODE_D_ALLOC(parent, &dent->d_name);
-        peer->d_op = parent->d_op;
+        MDKI_SET_DOPS(peer, parent->d_op);
         VNODE_DPUT(parent);
     } else
         peer = NULL;
@@ -1571,4 +1601,4 @@ vnode_iop_removexattr(
     }
     return err;
 }
-static const char vnode_verid_mvfs_linux_iops_c[] = "$Id:  a7cbf783.dc5411df.9210.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_linux_iops_c[] = "$Id:  0e358247.e6e311e1.8799.00:01:84:c3:8a:52 $";

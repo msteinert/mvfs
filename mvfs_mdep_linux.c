@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1999, 2010. */
+/* * (C) Copyright IBM Corporation 1999, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -1447,38 +1447,112 @@ cleanup_mvfs_module(void)
 
 /* RPC glue functions */
 
-u_long
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
+/* This routine allocates a unique XID every time it is called. */
+
+ks_uint32_t
 mvfs_linux_alloc_xid(void)
 {
-/* This routine is supposed to return a different value every time it is
-** called, so without an atomic_inc_return() function we have to do it
-** ourselves with a lock.
-*/
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9)
-/* RedHat appears to have back-ported the atomic_inc_return() function to the
-** 2.6.9 RHEL4 kernel (maybe from 2.6.11), but that's OK for this test since it
-** is the only 2.6.9 kernel we support.
-*/
+    MVFS_XID_T xid;
     static spinlock_t mvfs_xid_lock = SPIN_LOCK_UNLOCKED;
-    static u_long mvfs_xid = 0;
-    u_long xid;
+    mvfs_common_data_t *mcdp = MDKI_COMMON_GET_DATAP();
 
     spin_lock(&mvfs_xid_lock);
-    xid = ++mvfs_xid;
+    xid = ++(mcdp->mvfs_xid);
+    if (xid == 0) {
+        mcdp->mvfs_boottime = MDKI_CTIME();
+        xid = ++(mcdp->mvfs_xid);
+    }
     spin_unlock(&mvfs_xid_lock);
-    return(xid);
-#else
-    static atomic_t mvfs_xid = ATOMIC_INIT(0);
-
-    return((u_long)atomic_inc_return(&mvfs_xid));
-#endif
+    return((ks_uint32_t)xid);
 }
+#endif
 
 /*
  * The Linux kernel RPC structure is different from standard ONC RPC
  * kernel structure in many ways.  This is the conversion between the
  * two.
  */
+
+static struct rpc_stat view_rpc_stats;
+static struct rpc_stat albd_rpc_stats;
+
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,32)
+#define kxdreproc_t kxdrproc_t
+#define kxdrdproc_t kxdrproc_t
+#endif
+
+/*
+ * The sizes listed in the RPC description should be the on-the-wire
+ * encoding sizes.  That's not easy to compute, so we just make sure
+ * we've got plenty of space using a similar scaling to what Linux
+ * routines use.
+ */
+#define RPC_REQ_BUFSZ(type) (sizeof(type##_req_t)<<2)
+#define RPC_REP_BUFSZ(type) (sizeof(type##_reply_t)<<2) 
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+#define XDR_RPC_FUNCS(type)                                             \
+/* return Linux error codes to RPC runtime */                           \
+STATIC void                                                             \
+mvfs_linux_xdr_encode_##type(                                           \
+void *rqstp,                                                            \
+struct xdr_stream *xdr,                                                 \
+void *obj                                                               \
+)                                                                       \
+{                                                                       \
+    XDR x;                                                              \
+    bool_t stat;                                                        \
+    x.x_op = XDR_ENCODE;                                                \
+    x.x_origdata = x.x_data = (u8 *) xdr->p;                            \
+    x.x_rq = rqstp;                                                     \
+    x.x_limit = (u8 *) xdr->end;                                        \
+    stat = xdr_##type##_req_t(&x, (type##_req_t *)obj);                 \
+    MDKI_TRACE(TRACE_XDR,                                               \
+               "xdr_" #type "_req: rval %d, x_data %p,"                 \
+               " x_origdata %p, obj %p, iov_base %p, limit %p\n",       \
+               stat, x.x_data, x.x_origdata, obj,                       \
+               xdr->iov[0].iov_base, x.x_limit);                        \
+    if (!stat) {                                                        \
+        mvfs_log(MFS_LOG_ERR, "Failed to encode " #type "\n");          \
+    }                                                                   \
+    ASSERT(x.x_data <= x.x_limit);                                      \
+    xdr_adjust_iovec(xdr->iov, (u32 *)x.x_data);                        \
+    xdr->buf->len += (x.x_data - x.x_origdata);                         \
+}                                                                       \
+                                                                        \
+/* return Linux error codes to RPC runtime */                           \
+STATIC int                                                              \
+mvfs_linux_xdr_decode_##type(                                           \
+void *rqstp,                                                            \
+struct xdr_stream *xdr,                                                 \
+void *obj                                                               \
+)                                                                       \
+{                                                                       \
+    XDR x;                                                              \
+    bool_t stat;                                                        \
+    x.x_op = XDR_DECODE;                                                \
+    x.x_data = x.x_origdata = (u8 *) xdr->p;                            \
+    x.x_rq = rqstp;                                                     \
+    x.x_limit = (u8 *) xdr->end;                                        \
+    stat = xdr_##type##_reply_t(&x, (type##_reply_t *)obj);             \
+    MDKI_TRACE(TRACE_XDR,                                               \
+               "xdr_" #type "_reply rval %d, x_data %p, x_origdata %p," \
+               " x_limit %p, obj %p, iov_base %p, rlen %x\n",           \
+               stat, x.x_data, x.x_origdata, x.x_limit, obj,            \
+               xdr->iov->iov_base, rq->rq_rlen);                        \
+    ASSERT(x.x_data <= x.x_limit);                                      \
+    if (!stat) /* failure */                                            \
+        return -ERANGE /* MVFS_RPC_CANTDECODERES */;                    \
+   return 0 /* MVFS_RPC_SUCCESS */;                                     \
+}
+
+STATIC int
+mvfs_linux_xdr_void(void)
+{
+    return 0;
+}
+#else /* LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32) */
 
 #ifndef rq_rlen
 #define rq_rlen rq_rcv_buf.len
@@ -1487,8 +1561,6 @@ mvfs_linux_alloc_xid(void)
 #define rq_rvec rq_rcv_buf.head
 #endif
 
-static struct rpc_stat view_rpc_stats;
-static struct rpc_stat albd_rpc_stats;
 /* don't need DECL variants, we just emit the functions and let them be their
    own prototypes. */
 #define DECL_MVFS_VIEW_XDRFUNCS(type) DECL_MVFS_TYPE_XDRFUNCS(view_##type)
@@ -1516,8 +1588,6 @@ static struct rpc_stat albd_rpc_stats;
  * routines use.
  */
 #define RPC_BUFSZ(type) (MAX(sizeof(type##_req_t),sizeof(type##_reply_t))<<2)
-#define RPC_REQ_BUFSZ(type) (sizeof(type##_req_t)<<2)
-#define RPC_REP_BUFSZ(type) (sizeof(type##_reply_t)<<2) 
 
 /* The struct rpc_rqst changes based on kernel version, and we can't
 ** test for that in the macro below, so set it up here.
@@ -1591,6 +1661,7 @@ mvfs_linux_xdr_void(
 {
     return 0 /* MVFS_RPC_SUCCESS */;
 }
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32) */
 
 #define VIEW_XDR_FUNCS(type) XDR_RPC_FUNCS(view_##type)
 #define ALBD_XDR_FUNCS(type) XDR_RPC_FUNCS(albd_##type)
@@ -1608,27 +1679,27 @@ mvfs_linux_xdr_void(
  */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
 # define MVFS_RPC_PROCINFO(proc, type) proc,    \
-    (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
-    (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
+    (kxdreproc_t) mvfs_linux_xdr_encode_##type,  \
+    (kxdrdproc_t) mvfs_linux_xdr_decode_##type,  \
     RPC_BUFSZ(type),                            \
     0
 # define MVFS_RPC_PROCINFO_SZ(proc, type, size) \
     proc,                                       \
-    (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
-    (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
+    (kxdreproc_t) mvfs_linux_xdr_encode_##type,  \
+    (kxdrdproc_t) mvfs_linux_xdr_decode_##type,  \
     (size),                                     \
     0
 #else
 # define MVFS_RPC_PROCINFO(proc, type) proc,    \
-    (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
-    (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
+    (kxdreproc_t) mvfs_linux_xdr_encode_##type,  \
+    (kxdrdproc_t) mvfs_linux_xdr_decode_##type,  \
     RPC_REQ_BUFSZ(type),                        \
     RPC_REP_BUFSZ(type),                        \
     0
 # define MVFS_RPC_PROCINFO_SZ(proc, type, size) \
     proc,                                       \
-    (kxdrproc_t) mvfs_linux_xdr_encode_##type,  \
-    (kxdrproc_t) mvfs_linux_xdr_decode_##type,  \
+    (kxdreproc_t) mvfs_linux_xdr_encode_##type,  \
+    (kxdrdproc_t) mvfs_linux_xdr_decode_##type,  \
     (size),                                     \
     (size),                                     \
     0
@@ -1676,8 +1747,8 @@ static struct rpc_procinfo view_v4_procinfo[VIEW_NUM_PROCS] = {
      * albd XDR routines for it
      */
     {NULLPROC,
-     (kxdrproc_t) mvfs_linux_xdr_void,
-     (kxdrproc_t) mvfs_linux_xdr_void,
+     (kxdreproc_t) mvfs_linux_xdr_void,
+     (kxdrdproc_t) mvfs_linux_xdr_void,
      8, /* just in case we need spare space */
      0},
     {/*MVFS_VIEW_PROCINFO(CONTACT, contact)*/},
@@ -2304,4 +2375,63 @@ mvfs_linux_stat_zero(struct mvfs_statistics_data *sdp)
     sdp->mfs_austat.version = MFS_AUSTAT_VERS;
     sdp->mfs_viewophist.version = MFS_RPCHIST_VERS;
 }
-static const char vnode_verid_mvfs_mdep_linux_c[] = "$Id:  69cbe733.dc5411df.9210.00:01:83:0a:3b:75 $";
+
+/*
+ * Linux NFS caches ENOENT pretty aggressively, without
+ * reasonable revalidation behavior. 
+ * What we will do is to walk up the stream to find a directory that
+ * exists and call shrink_dcache_parent() to flush out the negative 
+ * dentries.
+ */
+int
+mvfs_linux_prod_parent_dir_cache(
+    struct mfs_mnode *mnp,
+    CRED_T *cred
+)
+{
+    mfs_pn_char_t *dirname;
+    int error = ENOENT;
+    mfs_pn_char_t *tmpslash, *lastslash;
+    void *rdfp;
+    CLR_VNODE_T *cvp;
+
+    dirname = PN_STRDUP(mnp->mn_vob.cleartext.nm);
+    lastslash = tmpslash = STRRCHR(dirname, MVFS_PN_SEP_CHAR);
+    mvfs_log(MFS_LOG_DEBUG, " Walking over %s to force NFS cache renewing\n",
+             dirname);
+
+    while (lastslash != NULL && lastslash != dirname) {
+        *lastslash = '\0';
+
+        error = LOOKUP_STORAGE_FILE(MFS_CLRTEXT_RO(mnp),
+                                    dirname,
+                                    NULL, &cvp, cred);
+        if (error == 0) {
+            /* shrink the dcache. */
+            if (cvp->v_dent != NULL) {
+                shrink_dcache_parent((DENT_T *)cvp->v_dent);
+                CVN_RELE(cvp);
+                break;
+            }
+            CVN_RELE(cvp);
+        }
+        /*
+         * If we did not find a v_dent walk up the tree until we
+         * get one.
+         */
+        lastslash = STRRCHR(dirname, MVFS_PN_SEP_CHAR);
+        /*
+         * restore original last slash (prepare string for STRFREE();
+         * some platforms care about length)
+         */
+        *tmpslash = MVFS_PN_SEP_CHAR;
+        tmpslash = lastslash;
+    }
+    if (tmpslash != NULL)
+        *tmpslash = MVFS_PN_SEP_CHAR;
+
+    PN_STRFREE(dirname);
+    return error;
+}
+
+static const char vnode_verid_mvfs_mdep_linux_c[] = "$Id:  0da3739c.1df011e2.8579.00:01:84:c3:8a:52 $";

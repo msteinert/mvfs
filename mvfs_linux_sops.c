@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1999, 2010 IBM Corporation.
+ * Copyright (C) 1999, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +26,11 @@
  */
 #include "vnode_linux.h"
 #include "mvfs_linux_shadow.h"
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+/* for noop_backing_dev_info */
+#include <linux/backing-dev.h>
+#endif
 
 void
 vnlayer_put_super(SUPER_T *super_p);
@@ -54,6 +59,10 @@ void
 mvfs_clear_inode(
     INODE_T *inode_p
 );
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)
+void
+mvfs_evict_inode(struct inode *inode_p);
+#endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) || \
     LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
 void
@@ -126,7 +135,7 @@ static struct export_operations vnlayer_export_ops = {
 #endif
 };
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
 SUPER_T *
 vnlayer_get_sb(
     struct file_system_type *fs_type,
@@ -134,7 +143,7 @@ vnlayer_get_sb(
     const char *dev_name,
     void *raw_data
 );
-#else
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39)
 int
 vnlayer_get_sb(
     struct file_system_type *fs_type,
@@ -143,7 +152,15 @@ vnlayer_get_sb(
     void *raw_data,
     struct vfsmount *mnt
 );
-#endif /* else LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) */
+#else
+struct dentry *
+vnlayer_mount(
+    struct file_system_type *fs_type,
+    int flags,
+    const char *dev_name,
+    void *data
+);
+#endif
 void
 vnlayer_kill_sb(SUPER_T *sbp);
 
@@ -158,12 +175,16 @@ SB_OPS_T mvfs_super_ops = {
         /* no read_inode */
         /* no write_inode */
         /* No put_inode.  The work is done now in clear_inode */
-        /* no delete_inode */
+        /* no delete_inode (even before 2.6.36) */
         .put_super =     &vnlayer_put_super,
         .write_super =   &vnlayer_write_super,
         .statfs =        &vnlayer_linux_statfs,
         .remount_fs =    &vnlayer_remount_fs,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)
         .clear_inode =   &mvfs_clear_inode,
+#else
+        .evict_inode =   mvfs_evict_inode,
+#endif
         /* inodes no longer have space for fs data (e.g. our vnode). */
         .alloc_inode =   &vnlayer_alloc_inode,
         .destroy_inode = &vnlayer_destroy_inode,
@@ -180,7 +201,11 @@ struct file_system_type mvfs_file_system =
    {
      .name =       "mvfs",
      .fs_flags =   FS_REQUIRES_DEV | FS_BINARY_MOUNTDATA | FS_REVAL_DOT,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39)
      .get_sb   =   &vnlayer_get_sb,
+#else
+     .mount     =   vnlayer_mount,
+#endif
      .kill_sb  =   &vnlayer_kill_sb,
      .owner =      THIS_MODULE,
     };
@@ -302,6 +327,21 @@ mvfs_clear_inode(struct inode *inode_p)
                ITOV(inode_p), I_COUNT(inode_p));
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)
+void
+mvfs_evict_inode(struct inode *inode_p)
+{
+    mvfs_clear_inode(inode_p);
+    truncate_inode_pages(&inode_p->i_data, 0);
+    end_writeback(inode_p);
+}
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+#include <linux/lglock.h>
+DECLARE_LGLOCK(vfsmount_lock);
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18) || \
     LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27)
 extern void
@@ -324,6 +364,10 @@ mvfs_linux_umount_begin(
      * But we still need super_p.
      */
     SUPER_T *super_p = mnt->mnt_sb;
+#endif
+    int mount_count = 0;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)) && defined(CONFIG_SMP)
+    int cpu;
 #endif
 
     ASSERT(super_p != NULL);
@@ -351,7 +395,24 @@ mvfs_linux_umount_begin(
      * vfsmnt structure, the path_lookup call in this umount call and 
      * from when we placed the pointer in the vp.  
      */
-    if (mnt && atomic_read(&mnt->mnt_count) == 3) {
+    if (mnt == NULL) {
+        MDKI_VFS_LOG(VFS_LOG_ERR, "%s: mnt is NULL\n", __FUNCTION__);
+        return;
+    }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
+    mount_count = atomic_read(&mnt->mnt_count);
+#else
+# ifdef CONFIG_SMP
+    br_read_lock(vfsmount_lock);
+    for_each_possible_cpu(cpu) {
+        mount_count += per_cpu_ptr(mnt->mnt_pcp, cpu)->mnt_count;
+    }
+    br_read_unlock(vfsmount_lock);
+# else /* CONFIG_SMP */
+    mount_count = mnt->mnt_count;
+# endif /* else CONFIG_SMP */
+#endif /* else < KERNEL_VERSION(2,6,38) */
+    if (mount_count == 3) {
         MDKI_MNTPUT(mnt);
         SET_VTOVFSMNT(vp, NULL);
     }
@@ -503,17 +564,20 @@ vnlayer_fill_super(
      */
     super_p->s_root = VNODE_D_ALLOC_ROOT(ino_p);
     if (super_p->s_root) {
-        if (VFSTOSB(vnlayer_looproot_vp->v_vfsp) == super_p)
+        if (VFSTOSB(vnlayer_looproot_vp->v_vfsp) == super_p) {
             /* loopback names are done with regular dentry ops */
-            super_p->s_root->d_op = &vnode_dentry_ops;
-        else
+            MDKI_SET_DOPS(super_p->s_root, &vnode_dentry_ops);
+        } else {
             /*
              * setview names come in via VOB mounts, they're marked
              * with setview dentry ops
              */
-            super_p->s_root->d_op = &vnode_setview_dentry_ops;
+            MDKI_SET_DOPS(super_p->s_root, &vnode_setview_dentry_ops);
+        }
         super_p->s_root->d_fsdata = NULL;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
         atomic_set(&super_p->s_root->d_count, 1);
+#endif
         /* d_alloc_root assumes that the caller will take care of
          * bumping the inode count for the dentry.  So we will oblige
          */
@@ -528,6 +592,10 @@ vnlayer_fill_super(
     mdki_linux_destroy_call_data(&cd);
     super_p->s_dirt = 1;            /* we want to be called on
                                        write_super/sync() */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,38)
+    /* write back is delegated to the undelying fs */
+    super_p->s_bdi = &noop_backing_dev_info;
+#endif
     /*
      * release reference on rootvp--super block holds appropriate
      * references now
@@ -562,25 +630,22 @@ int vnlayer_set_sb(
     return 0;
 }
 
-/* We used to call get_sb_bdev but in 2.6 the block device interface was
- * changes such that get_sb_bdev would try to obtain partition information
+/* The regular block device interface would try to obtain partition information
  * for the block device in question.  The mvfs registers a block device
  * merely to establish a set of major device numbers.  We have no physical
- * device and no partitions so the get_sb_bdev() interface no longer works
+ * device and no partitions so the get_sb_bdev() interface does not work
  * for us.  Get_sb_nodev() explicitly uses major device 0 so that is not
- * an option for us.  Instead we now use the sget() interface which is new 
- * in the 2.6 kernel.  This gives us the ability to get a superblock and 
- * handle the device issues ourselves while the kernel handles getting it
- * placed on the appropriate lists.
+ * an option for us.  Instead we use the sget() interface which gives us the
+ * ability to get a superblock and handle the device issues ourselves while the
+ * kernel handles getting it placed on the appropriate lists.
  *
  * Since 2.6.18 they added vfsmount to the parameters and changed the
- * return type to int. Now it's clear when returning an error code
- * instead of "pointer meaning error" that was used before. But sget stills
- * using that technique, so we cast it if an error occurs.
- * We have to setup mnt param if everything is OK and we've chosen 
- * simple_set_mnt to do it.
+ * return type to int, but then since 2.6.39 the .get_sb callback was replaced
+ * by .mount and the interface changed substantially.  So, for the sake of
+ * clarity, the function has been rewritten.
  */
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
 SUPER_T *
 vnlayer_get_sb(
@@ -629,7 +694,35 @@ vnlayer_get_sb(
     return err;
 #endif
 }
+#else
+struct dentry *
+vnlayer_mount(
+    struct file_system_type *fs_type,
+    int flags,
+    const char *dev_name,
+    void *data
+)
+{
+    SUPER_T *sb;
+    int err;
 
+    sb = sget(fs_type, NULL, vnlayer_set_sb, data);
+    if (IS_ERR(sb)) {
+        return (struct dentry *)(sb);
+    }
+    sb->s_flags = flags;
+    if (sb->s_root == NULL) {
+        err = vnlayer_fill_super(sb, data, 0);
+        if (err != 0) {
+            deactivate_locked_super(sb);
+            return ERR_PTR(err);
+        }
+        sb->s_flags |= MS_ACTIVE;
+    }
+    /* return a dget dentry */
+    return dget(sb->s_root);
+}
+#endif
 /* generic_shutdown_super() will call our put_super function which
  * will handle all of our specific cleanup.
  */
@@ -660,11 +753,28 @@ vnlayer_alloc_inode(SUPER_T *sbp)
     }
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+static void
+vnlayer_destroy_inode_callback(struct rcu_head *head)
+{
+    struct inode *inode_p = container_of(head, struct inode, i_rcu);
+
+    INIT_LIST_HEAD(&inode_p->i_dentry);
+    ASSERT(I_COUNT(inode_p) == 0);
+    ASSERT(inode_p->i_state & I_FREEING);
+    kmem_cache_free(vnlayer_vnode_cache, (vnlayer_vnode_t *) ITOV(inode_p));
+}
+#endif
+
 void
 vnlayer_destroy_inode(INODE_T *inode)
 {
     ASSERT(I_COUNT(inode) == 0);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
     kmem_cache_free(vnlayer_vnode_cache, (vnlayer_vnode_t *)ITOV(inode));
+#else
+    call_rcu(&inode->i_rcu, vnlayer_destroy_inode_callback);
+#endif
 }
 
 #ifndef roundup
@@ -1151,14 +1261,18 @@ vnlayer_find_dentry(VNODE_T *vp)
     /*
      * We create an anonymous dentry for NFS, but it will be used
      * only if we don't find a suitable one for this inode.
-     * We have to do it here because d_alloc acquires dcache_lock.
+     * d_alloc is here because before 2.6.38 it acquires dcache_lock.
      */
     dnew = d_alloc(NULL, &this_is_anon);
     if (dnew == NULL) {
         dp = ERR_PTR(-ENOMEM);
     } else {
         dnew->d_parent = dnew;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
         spin_lock(&dcache_lock);
+#else
+        spin_lock(&ip->i_lock);
+#endif
         /*
          * equivalent of d_splice_alias,
          * we only want view-extended dentries
@@ -1169,24 +1283,44 @@ vnlayer_find_dentry(VNODE_T *vp)
                                                    &vnode_dentry_ops);
         if (dp == NULL) {
             /* new dentry, increase the refcount for this v/inode */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
             VN_HOLD(vp);
+#else
+            /* can't igrab because the spinlock is acquired */
+            ihold(ip);
+#endif
             /* found no suitable dentry, add a new one */
-            dnew->d_op = &vnode_dentry_ops;
+            MDKI_SET_DOPS(dnew, &vnode_dentry_ops);
             dnew->d_sb = ip->i_sb;
             dnew->d_inode = ip;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0)
             dnew->d_flags |= NFSD_DCACHE_DISCON;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
             dnew->d_flags &= ~DCACHE_UNHASHED;
-#endif
+# endif
+#else /* LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0) */
+            /* it is not clear if it needs DCACHE_RCUACCESS */
+            dnew->d_flags |= NFSD_DCACHE_DISCON;
+#endif /* else LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0) */
             list_add(&dnew->d_alias, &ip->i_dentry);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0)
+# if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
             hlist_add_head(&dnew->d_hash, &ip->i_sb->s_anon);
-#endif
+# endif
+#else /* LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0) */
+            hlist_bl_lock(&ip->i_sb->s_anon);
+            hlist_bl_add_head_rcu(&dnew->d_hash, &ip->i_sb->s_anon);
+            hlist_bl_unlock(&ip->i_sb->s_anon);
+#endif /* else LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0) */
             dp = dnew;
             /* skip the dput call for dnew, we will need it */
             dnew = NULL;
         }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
         spin_unlock(&dcache_lock);
+#else
+        spin_unlock(&ip->i_lock);
+#endif
     }
     /* dput dnew if we don't use it */
     if (dnew != NULL)
@@ -1194,4 +1328,4 @@ vnlayer_find_dentry(VNODE_T *vp)
     return dp;
 }
 
-static const char vnode_verid_mvfs_linux_sops_c[] = "$Id:  a7cbf7b3.dc5411df.9210.00:01:83:0a:3b:75 $";
+static const char vnode_verid_mvfs_linux_sops_c[] = "$Id:  2d7ea047.afe111e1.8fa4.00:01:84:c3:8a:52 $";

@@ -1,7 +1,7 @@
 #ifndef _MVFS_VNODE_H_
 #define _MVFS_VNODE_H_
 /*
- * Copyright (C) 1994, 2010 IBM Corporation.
+ * Copyright (C) 1994, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -253,6 +253,17 @@ typedef struct lookup_ctx {
 #define LOOKUP_CTX_VALID        (1 << 0)
     void *dentrypp;
 } lookup_ctx;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+#define fsync_ctx file_ctx
+#else
+typedef struct fsync_ctx {
+    struct file *file_p;
+#if !defined(MRG)
+    loff_t start;
+    loff_t end;
+#endif
+} fsync_ctx;
+#endif
 
 /*
  * Define vnodeops struct.  Form of all vnode ops exactly matches
@@ -396,7 +407,7 @@ typedef int (*vop_fsync_fn_t)(
     struct mdki_vnode *vp,
     int flag,
     CALL_DATA_T *cd,
-    file_ctx *ctx
+    fsync_ctx *ctx
 );
 typedef int (*vop_inactive_fn_t)(
     struct mdki_vnode *vp,
@@ -538,4 +549,4 @@ mvop_linux_close(
     file_ctx *ctx
 );
 #endif /* _MVFS_VNODE_H_ */
-/* $Id: a86bf7e3.dc5411df.9210.00:01:83:0a:3b:75 $ */
+/* $Id: 0ed582bf.e6e311e1.8799.00:01:84:c3:8a:52 $ */

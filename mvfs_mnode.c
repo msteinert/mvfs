@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2010. */
+/* * (C) Copyright IBM Corporation 1991, 2011. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -3196,13 +3196,12 @@ mvfs_mnallocatemnode(
 
     mfs_mnode_t *mnp;
     VNODE_T *vp;
-
     /*
      * Vnode allocated separately from mnode in VNO_ALLOC system.
      * mn_hdr.vp will be filled in by makenode call
      */
     vp = NULL; 
-    mnp = (mfs_mnode_t *)KMEM_ALLOC(msize,KM_NOSLEEP|KM_PAGED);
+    mnp = (mfs_mnode_t *)KMEM_ALLOC(msize, MNODE_ALLOC_FLAG);
     if (mnp) {
 	BZERO(mnp, msize);
     }
@@ -4139,4 +4138,4 @@ mvfs_mnverify_destroy(void)
 
 	return (cnt);
 }
-static const char vnode_verid_mvfs_mnode_c[] = "$Id:  d2808706.afb811df.84ca.00:01:84:7a:f2:e4 $";
+static const char vnode_verid_mvfs_mnode_c[] = "$Id:  c020e85c.737211e1.90e6.00:01:83:0a:3b:75 $";

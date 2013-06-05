@@ -1,4 +1,4 @@
-/* * (C) Copyright IBM Corporation 1991, 2011. */
+/* * (C) Copyright IBM Corporation 1991, 2012. */
 /*
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -261,9 +261,9 @@
  * Get current credentials (based on object view and current credentials)
  * The credentials are returned WITH NO ADDITIONAL REFERENCE COUNT
  */
-#define MVFS_VIEW_CREDS(vp, cred)	(cred)
+#define MVFS_VIEW_CREDS(vp, cred, mnode_locked)	(cred)
 
-#define MVFS_DUP_VIEW_CREDS(vp, cred) 	MDKI_CRDUP(cred)
+#define MVFS_DUP_VIEW_CREDS(vp, cred, mnode_locked) 	MDKI_CRDUP(cred)
 
 #define MVFS_DUP_DEFAULT_CREDS() 	MDKI_DUP_UCRED()
 
@@ -326,6 +326,14 @@
  * prefix effectively hides them from normal directory lookups.
  */
 #define MVFS_SKIP_AUDIT(vp) (FALSE)
+
+#ifndef MVFS_XID_T
+#define MVFS_XID_T uint32_t
+#endif
+
+#ifndef MVFS_XID_ULIMIT
+#define MVFS_XID_ULIMIT (0xffffffff)
+#endif
 
 #define MVFS_THREAD_LOOKUP_ROOT(th)   NULL
 #define MVFS_ROOT_LOOKUP(root,nm,vpp,pnp,flags,cd,ctx) 0
@@ -562,13 +570,16 @@
 /*
  * MDKI_AOP_KIND_NEEDS_REAL_MTIME determines which operations will result in a
  * call to getattr to obtain the mtime, when a file is being audited.
- * The default case is to avoid the getattr call for write operations.
- * If a different behaviour is needed, #define this macro inside the
- * platform's mdep header (see mvfs_mdep_linux.h).
- * The getattr call will be skipped when the macro resolves to 0.
+ * The default case skips getattr for both read/write audit operations.
+ * The write is skipped because getattr forces a write flush back to the actual
+ * file on NFS to update mtime, which can severely affect performance of
+ * audited builds, especially if there are small writes.  The mtime for
+ * auditing for Reads and Writes is informational only and can safely use the
+ * value obtained by the last getattr call.
  */
 #ifndef MDKI_AOP_KIND_NEEDS_REAL_MTIME
-# define MDKI_AOP_KIND_NEEDS_REAL_MTIME(OP_KIND)  ((OP_KIND) != MFS_AR_WRITE)
+#define MDKI_AOP_KIND_NEEDS_REAL_MTIME(OP_KIND)  \
+		((OP_KIND) != MFS_AR_WRITE && (OP_KIND) != MFS_AR_READ)
 #endif
 
 #define MDKI_ISVCEXCL(x) ((x) == EXCL)   /* check exclusive create bit */
@@ -681,7 +692,11 @@
 
 #define MVFS_FSTYP_T short
 
-#define MVFS_PROD_PARENT_DIR_CACHE mvfs_prod_parent_dir_cache
+#ifndef MVFS_PROD_PARENT_DIR_CACHE
+/* for those platforms whose NFS ENOENT caches react quickly enough to
+ * server-side changes */
+#define MVFS_PROD_PARENT_DIR_CACHE(mnp, cred) (1)
+#endif
 
 #ifndef STRRCHR
 #define MVFS_GENERIC_STRRCHR
@@ -889,5 +904,16 @@ extern struct mvfs_slab_list* mvfs_vattr_slabs;
 #define MVFS_STAT_ZERO MVFS_STAT_ZERO_COMMON
 #endif
 
+/* Flag for mnode allocation.  If another value is needed, set in your
+ * mdep file.
+ */
+#ifndef MNODE_ALLOC_FLAG
+#define MNODE_ALLOC_FLAG (KM_NOSLEEP|KM_PAGED)
+#endif
+
+#ifndef MDKI_ATOMIC_READ_UINT32
+#define MDKI_ATOMIC_READ_UINT32(addr) (*(addr))
+#endif
+
 #endif /* MVFS_SYSTM_H_ */
-/* $Id: 95a2eff8.45b111e0.9a57.00:11:25:23:c8:f1 $ */
+/* $Id: fdebbfdf.236411e2.8951.00:01:84:c3:8a:52 $ */

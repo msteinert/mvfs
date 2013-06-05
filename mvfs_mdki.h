@@ -1,7 +1,7 @@
 #ifndef MVFS_MDKI_H_
 #define MVFS_MDKI_H_
 /*
- * Copyright (C) 1999, 2010 IBM Corporation.
+ * Copyright (C) 1999, 2012 IBM Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -344,9 +344,20 @@ typedef struct semaphore mdki_sleeplock_t;
 #define MDKI_SLEEP_LOCK(semap) down(semap)
 #define MDKI_SLEEP_UNLOCK(semap) up(semap)
 #define MDKI_SLEEP_TRYLOCK(semap) down_trylock(semap)
-#define MDKI_INIT_SLEEPLOCK(semap) init_MUTEX(semap)
+
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,33)
+#   define MDKI_INIT_SLEEPLOCK(semap) init_MUTEX(semap)
+#   define MDKI_DECLARE_SLEEPLOCK(name) DECLARE_MUTEX(name)
+# else
+#   define MDKI_INIT_SLEEPLOCK(semap) sema_init(semap, 1)
+# if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)
+#   define MDKI_DECLARE_SLEEPLOCK(name) DEFINE_SEMAPHORE(name, 1)
+# else
+#   define MDKI_DECLARE_SLEEPLOCK(name) DEFINE_SEMAPHORE(name)
+# endif /* else < KERNEL_VERSION(2,6,36)  */
+# endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,33) */
+
 #define MDKI_FREE_SLEEPLOCK(semap) /* nothing to do */
-#define MDKI_DECLARE_SLEEPLOCK(name) DECLARE_MUTEX(name)
 
 extern void
 mdki_makevfsdev(
@@ -933,6 +944,35 @@ mdki_getmycallerscaller(void);
 # define MDKI_GET_CURRENT_SUID()  current_suid()
 # define MDKI_GET_CURRENT_SGID()  current_sgid()
 #endif
+            
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+/*
+ * Use d_set_d_op instead of direct assigment, 
+ * so we don't need to adjust the various flags.
+ */
+#if defined(MRG) && (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,25))
+# define MDKI_SET_DOPS(D, OPS)   do {\
+                                    seq_spin_lock(&(D)->d_lock);\
+                                    d_set_d_op((D), (OPS));\
+                                    seq_spin_unlock(&(D)->d_lock);\
+                                } while(0)
+#else /* defined(MRG) && (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,25)) */
+# define MDKI_SET_DOPS(D, OPS)   do {\
+                                    spin_lock(&(D)->d_lock);\
+                                    d_set_d_op((D), (OPS));\
+                                    spin_unlock(&(D)->d_lock);\
+                                } while(0)
+#endif /* else defined(MRG) && (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,25)) */
+#define MDKI_UNSET_DOPS(D)      do {(D)->d_flags &= ~(DCACHE_OP_HASH | \
+                                                      DCACHE_OP_COMPARE | \
+                                                      DCACHE_OP_REVALIDATE | \
+                                                      DCACHE_OP_DELETE); \
+                                    (D)->d_op = NULL; \
+                                }while(0)
+#else
+#define MDKI_SET_DOPS(D, OPS)   (D)->d_op = (OPS)
+#define MDKI_UNSET_DOPS(D)      MDKI_SET_DOPS((D), NULL)
+#endif
 
 typedef MDKI_GEN_TYPE(vnode_kdirent_t);
 
@@ -1010,7 +1050,6 @@ mdki_linux_uioset(
 #define MVFS_DEF_MAX_FILESIZE 0x7fffffffffffffffLL
 
 extern MVFS_KMEM_CACHE_T *vnlayer_vnode_cache;
-extern u_int mdki_linux_boottime;
 
 extern int
 mdki_set_vfs_opvec(struct vfsops *vfsopp);
@@ -1424,5 +1463,20 @@ extern u_int mvfs_view_shift_bits;
 #define MVFS_NOINLINE
 #endif
 
+/* The following macro will check if the current process has received
+ * a signal.  It is used in the vwcall/rpc code to circumvent timeouts
+ * and retries because the sunrpc code will not send RPCs if the process
+ * has been signalled.  This is only implemented for kernels 2.6.27 
+ * and higher because before that, the RPC code switched signal masks
+ * so our signal pending mask does not match the RPC code so it is
+ * of no use in determining if an EIO error was really ERESTARTSYS.
+ */
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27))
+#define MDKI_FATAL_SIGNAL_PENDING() (FALSE)
+#else
+#define MDKI_FATAL_SIGNAL_PENDING() fatal_signal_pending(current)
+#endif
+
 #endif /* MVFS_MDKI_H_ */
-/* $Id: a86bf7cb.dc5411df.9210.00:01:83:0a:3b:75 $ */
+/* $Id: 28a0d345.ec6311e1.905b.00:01:84:c3:8a:52 $ */
